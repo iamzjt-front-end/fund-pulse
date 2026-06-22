@@ -83,85 +83,6 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
-                    PanelSection(title: "软件更新") {
-                        infoRow("当前版本", "v\(appVersion)")
-                        updateStatusRow
-                        HStack(spacing: 8) {
-                            plainTextButton("检查更新", systemImage: "arrow.clockwise") {
-                                checkUpdate()
-                            }
-                            .disabled(isUpdateBusy)
-
-                            if let actionTitle = updateStore.primaryActionTitle {
-                                plainTextButton(actionTitle, systemImage: updateStore.primaryActionSystemImage) {
-                                    updateStore.openUpdate()
-                                }
-                                .disabled(updateStore.isPrimaryActionDisabled)
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                    }
-
-                    PanelSection(title: "数据源") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            infoRow("当前策略", QuoteSource.fundBabyAuto.title)
-                            Divider().opacity(0.34)
-                            dataSourceRow("组合入口", "fundgz.1234567.com.cn")
-                            dataSourceRow("实时估值", "qt.gtimg.cn")
-                            dataSourceRow("官方净值", "fundf10.eastmoney.com")
-                        }
-                        .padding(9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
-                    PanelSection(title: "主弹窗") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("高度")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                mainPanelHeightInput
-                            }
-
-                            Slider(
-                                value: mainPanelHeightBinding,
-                                in: Double(AppSettings.minMainPanelHeight)...Double(AppSettings.maxMainPanelHeight)
-                            )
-                            .controlSize(.small)
-                        }
-                        .padding(9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
-                    PanelSection(title: "自动刷新") {
-                        PanelSegmentedPicker(
-                            values: Array(AutoRefreshInterval.allCases),
-                            selection: Binding(
-                                get: { selectedAutoRefreshInterval },
-                                set: { interval in
-                                    selectedAutoRefreshInterval = interval
-                                    settingsStore.setAutoRefreshInterval(interval)
-                                    onSettingsChanged?()
-                                }
-                            ),
-                            title: { $0.title }
-                        )
-
-                        Text(selectedAutoRefreshInterval.detail)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .padding(9)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
                     PanelSection(title: "基金操作提醒") {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(alignment: .center, spacing: 12) {
@@ -196,6 +117,51 @@ struct SettingsView: View {
                         }
                     }
 
+                    PanelSection(title: "自动刷新") {
+                        PanelSegmentedPicker(
+                            values: Array(AutoRefreshInterval.allCases),
+                            selection: Binding(
+                                get: { selectedAutoRefreshInterval },
+                                set: { interval in
+                                    selectedAutoRefreshInterval = interval
+                                    settingsStore.setAutoRefreshInterval(interval)
+                                    onSettingsChanged?()
+                                }
+                            ),
+                            title: { $0.title }
+                        )
+
+                        Text(selectedAutoRefreshInterval.detail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .padding(9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay(PanelDesign.border(cornerRadius: 9))
+                    }
+
+                    PanelSection(title: "主弹窗") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("高度")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                mainPanelHeightInput
+                            }
+
+                            Slider(
+                                value: mainPanelHeightBinding,
+                                in: Double(AppSettings.minMainPanelHeight)...Double(AppSettings.maxMainPanelHeight)
+                            )
+                            .controlSize(.small)
+                        }
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(PanelDesign.border(cornerRadius: 9))
+                    }
+
                     if let message {
                         Text(message)
                             .font(.system(size: 12, weight: .medium))
@@ -206,6 +172,7 @@ struct SettingsView: View {
                             .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                             .overlay(PanelDesign.border(cornerRadius: 9))
                     }
+
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 8)
