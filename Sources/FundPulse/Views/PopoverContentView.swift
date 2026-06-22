@@ -1840,43 +1840,15 @@ struct FundDetailView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text("持有收益率")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 96, alignment: .leading)
-
-                Text("持仓占比")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 76, alignment: .leading)
             }
 
-            HStack(alignment: .lastTextBaseline, spacing: 16) {
-                Text(MoneyFormatter.percent(fund.todayRate, signed: true))
-                    .font(.system(size: 32, weight: .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                    .foregroundStyle(toneColor(for: fund.todayRate))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Text(fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%")
-                    .font(.system(size: 20, weight: .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(toneColor(for: fund.holdingRate ?? 0))
-                    .frame(width: 96, alignment: .leading)
-
-                Text(holdingRatioText)
-                    .font(.system(size: 20, weight: .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .foregroundStyle(.primary)
-                    .frame(width: 76, alignment: .leading)
-            }
+            Text(MoneyFormatter.percent(fund.todayRate, signed: true))
+                .font(.system(size: 32, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .foregroundStyle(toneColor(for: fund.todayRate))
+                .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 3)
         }
         .padding(.horizontal, 12)
