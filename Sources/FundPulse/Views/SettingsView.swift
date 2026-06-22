@@ -21,6 +21,7 @@ private struct FocuslessSwitch: NSViewRepresentable {
         Coordinator(isOn: $isOn)
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var isOn: Binding<Bool>
 
@@ -52,6 +53,10 @@ struct SettingsView: View {
     @State private var message: String?
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
     @State private var mainPanelHeightText: String
+    @State private var operationReminderTimeText: String
+    @State private var operationReminderDraftHour: Int
+    @State private var operationReminderDraftMinute: Int
+    @State private var isOperationReminderTimeSelectorPresented = false
     @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
@@ -74,6 +79,9 @@ struct SettingsView: View {
         self.onClose = onClose
         _selectedAutoRefreshInterval = State(initialValue: settingsStore.settings.autoRefreshInterval)
         _mainPanelHeightText = State(initialValue: "\(settingsStore.settings.mainPanelHeight)")
+        _operationReminderTimeText = State(initialValue: settingsStore.settings.operationReminderTimeText)
+        _operationReminderDraftHour = State(initialValue: settingsStore.settings.operationReminderTimeMinutes / 60)
+        _operationReminderDraftMinute = State(initialValue: settingsStore.settings.operationReminderTimeMinutes % 60)
     }
 
     var body: some View {
@@ -103,11 +111,7 @@ struct SettingsView: View {
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Spacer()
-                                PanelNativeTimePicker(
-                                    selection: operationReminderDateBinding,
-                                    isEnabled: settingsStore.settings.operationReminderEnabled
-                                )
-                                .frame(width: 98, height: 24)
+                                operationReminderTimeInput
                             }
                             .padding(9)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -152,7 +156,8 @@ struct SettingsView: View {
 
                             Slider(
                                 value: mainPanelHeightBinding,
-                                in: Double(AppSettings.minMainPanelHeight)...Double(AppSettings.maxMainPanelHeight)
+                                in: Double(AppSettings.minMainPanelHeight)...Double(AppSettings.maxMainPanelHeight),
+                                step: Double(AppSettings.mainPanelHeightSliderStep)
                             )
                             .controlSize(.small)
                         }
@@ -187,10 +192,16 @@ struct SettingsView: View {
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
             syncMainPanelHeightText()
+            syncOperationReminderTimeText()
         }
         .onChange(of: settingsStore.settings.mainPanelHeight) { _, _ in
             if !isMainPanelHeightFocused {
                 syncMainPanelHeightText()
+            }
+        }
+        .onChange(of: settingsStore.settings.operationReminderTimeMinutes) { _, _ in
+            if !isOperationReminderTimeSelectorPresented {
+                syncOperationReminderTimeText()
             }
         }
     }
@@ -282,6 +293,52 @@ struct SettingsView: View {
         .overlay(PanelDesign.border(cornerRadius: 7))
     }
 
+    private var operationReminderTimeInput: some View {
+        Button {
+            syncOperationReminderTimeDraft()
+            isOperationReminderTimeSelectorPresented = true
+        } label: {
+            Text(settingsStore.settings.operationReminderTimeText)
+                .font(.system(size: 12, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+        }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(!settingsStore.settings.operationReminderEnabled)
+            .padding(.horizontal, 8)
+            .frame(width: 74, height: 26)
+            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 7))
+            .popover(isPresented: $isOperationReminderTimeSelectorPresented, arrowEdge: .top) {
+                OperationReminderTimeSelectorPanel(
+                    text: $operationReminderTimeText,
+                    hour: $operationReminderDraftHour,
+                    minute: $operationReminderDraftMinute,
+                    onUseCurrentTime: setOperationReminderDraftToCurrentTime,
+                    onConfirm: commitOperationReminderTimeText
+                )
+            }
+    }
+
+    private func setOperationReminderDraftToCurrentTime() {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: Date())
+        operationReminderDraftHour = components.hour ?? 0
+        operationReminderDraftMinute = components.minute ?? 0
+        operationReminderTimeText = reminderTimeText(
+            hour: operationReminderDraftHour,
+            minute: operationReminderDraftMinute
+        )
+    }
+
+    private func syncOperationReminderTimeDraft() {
+        syncOperationReminderTimeText()
+        operationReminderDraftHour = settingsStore.settings.operationReminderTimeMinutes / 60
+        operationReminderDraftMinute = settingsStore.settings.operationReminderTimeMinutes % 60
+    }
+
     private func commitMainPanelHeightText() {
         guard let height = Int(mainPanelHeightText) else {
             syncMainPanelHeightText()
@@ -301,27 +358,25 @@ struct SettingsView: View {
         mainPanelHeightText = "\(settingsStore.settings.mainPanelHeight)"
     }
 
-    private var operationReminderDateBinding: Binding<Date> {
-        Binding(
-            get: {
-                dateForReminderMinutes(settingsStore.settings.operationReminderTimeMinutes)
-            },
-            set: { date in
-                let components = Calendar.current.dateComponents([.hour, .minute], from: date)
-                let minutes = (components.hour ?? 14) * 60 + (components.minute ?? 30)
-                settingsStore.setOperationReminderTimeMinutes(minutes)
-                onSettingsChanged?()
-            }
-        )
+    private func commitOperationReminderTimeText() {
+        guard let minutes = parsedReminderTimeMinutes(operationReminderTimeText) else {
+            syncOperationReminderTimeText()
+            isOperationReminderTimeSelectorPresented = false
+            return
+        }
+
+        let previousMinutes = settingsStore.settings.operationReminderTimeMinutes
+        settingsStore.setOperationReminderTimeMinutes(minutes)
+        syncOperationReminderTimeText()
+
+        if settingsStore.settings.operationReminderTimeMinutes != previousMinutes {
+            onSettingsChanged?()
+        }
+        isOperationReminderTimeSelectorPresented = false
     }
 
-    private func dateForReminderMinutes(_ minutes: Int) -> Date {
-        let clampedMinutes = AppSettings.clampedReminderTimeMinutes(minutes)
-        var components = Calendar.current.dateComponents([.year, .month, .day], from: Date())
-        components.hour = clampedMinutes / 60
-        components.minute = clampedMinutes % 60
-        components.second = 0
-        return Calendar.current.date(from: components) ?? Date()
+    private func syncOperationReminderTimeText() {
+        operationReminderTimeText = settingsStore.settings.operationReminderTimeText
     }
 
     @ViewBuilder
@@ -475,4 +530,415 @@ struct SettingsView: View {
             await onCheckUpdate?()
         }
     }
+}
+
+private struct OperationReminderTimeSelectorPanel: View {
+    @Binding var text: String
+    @Binding var hour: Int
+    @Binding var minute: Int
+
+    let onUseCurrentTime: () -> Void
+    let onConfirm: () -> Void
+
+    @FocusState private var isTextFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                TextField("", text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 18, weight: .medium))
+                    .monospacedDigit()
+                    .focused($isTextFocused)
+                    .onSubmit {
+                        syncDraftFromText()
+                    }
+                    .onChange(of: text) { _, newValue in
+                        let normalized = normalizedTimeInput(newValue)
+                        if normalized != newValue {
+                            text = normalized
+                            return
+                        }
+                        syncDraftFromText()
+                    }
+
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(0.72))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 42)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.92))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .systemBlue), lineWidth: 1.4)
+            )
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            HStack(spacing: 0) {
+                timeColumn(values: Array(0...23), selection: $hour)
+                Divider().opacity(0.4)
+                timeColumn(values: Array(0...59), selection: $minute)
+            }
+            .frame(height: 178)
+            .padding(.horizontal, 10)
+            .onChange(of: hour) { _, _ in
+                syncTextFromDraft()
+            }
+            .onChange(of: minute) { _, _ in
+                syncTextFromDraft()
+            }
+
+            Divider().opacity(0.45)
+
+            HStack {
+                Button("此刻") {
+                    onUseCurrentTime()
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color(nsColor: .systemBlue))
+
+                Spacer()
+
+                Button {
+                    syncDraftFromText()
+                    onConfirm()
+                } label: {
+                    Text("确定")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 58, height: 30)
+                        .background(Color(nsColor: .systemBlue), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 52)
+        }
+        .frame(width: 160)
+        .background(PanelDesign.panelBackground)
+        .onAppear {
+            isTextFocused = true
+        }
+    }
+
+    private func timeColumn(values: [Int], selection: Binding<Int>) -> some View {
+        ZStack {
+            SnappingTimeColumn(values: values, selection: selection)
+
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color(nsColor: .systemBlue).opacity(0.12))
+                .frame(height: 28)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func syncTextFromDraft() {
+        text = reminderTimeText(hour: hour, minute: minute)
+    }
+
+    private func syncDraftFromText() {
+        guard let minutes = parsedReminderTimeMinutes(text) else { return }
+        hour = minutes / 60
+        minute = minutes % 60
+        text = reminderTimeText(hour: hour, minute: minute)
+    }
+}
+
+private func normalizedTimeInput(_ value: String) -> String {
+    let normalized = value
+        .replacingOccurrences(of: "：", with: ":")
+        .filter { $0.isNumber || $0 == ":" }
+    return String(normalized.prefix(normalized.contains(":") ? 5 : 4))
+}
+
+private func reminderTimeText(hour: Int, minute: Int) -> String {
+    String(format: "%02d:%02d", hour, minute)
+}
+
+private func parsedReminderTimeMinutes(_ value: String) -> Int? {
+    let text = value
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "：", with: ":")
+
+    let hour: Int
+    let minute: Int
+
+    if text.contains(":") {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let parsedHour = Int(parts[0]),
+              let parsedMinute = Int(parts[1])
+        else { return nil }
+        hour = parsedHour
+        minute = parsedMinute
+    } else {
+        let digits = text.filter(\.isNumber)
+        guard !digits.isEmpty, digits.count <= 4 else { return nil }
+        if digits.count <= 2 {
+            guard let parsedHour = Int(digits) else { return nil }
+            hour = parsedHour
+            minute = 0
+        } else {
+            let splitIndex = digits.index(digits.endIndex, offsetBy: -2)
+            guard let parsedHour = Int(digits[..<splitIndex]),
+                  let parsedMinute = Int(digits[splitIndex...])
+            else { return nil }
+            hour = parsedHour
+            minute = parsedMinute
+        }
+    }
+
+    guard (0...23).contains(hour), (0...59).contains(minute) else { return nil }
+    return hour * 60 + minute
+}
+
+private struct SnappingTimeColumn: NSViewRepresentable {
+    let values: [Int]
+    @Binding var selection: Int
+
+    @MainActor
+    func makeNSView(context: Context) -> SnappingTimeColumnScrollView {
+        let scrollView = SnappingTimeColumnScrollView()
+        scrollView.coordinator = context.coordinator
+        context.coordinator.configure(scrollView: scrollView, values: values)
+        context.coordinator.applySelection(selection, animated: false)
+        return scrollView
+    }
+
+    @MainActor
+    func updateNSView(_ scrollView: SnappingTimeColumnScrollView, context: Context) {
+        context.coordinator.selection = $selection
+        context.coordinator.configure(scrollView: scrollView, values: values)
+        context.coordinator.updateButtonStyles(selected: selection)
+        if !context.coordinator.isUserInteracting {
+            context.coordinator.applySelection(selection, animated: true)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(selection: $selection)
+    }
+
+    final class Coordinator: NSObject {
+        var selection: Binding<Int>
+        var isUserInteracting = false
+
+        private weak var scrollView: SnappingTimeColumnScrollView?
+        private var buttons: [Int: NSButton] = [:]
+        private var values: [Int] = []
+        private var snapWorkItem: DispatchWorkItem?
+        private var isProgrammaticScroll = false
+
+        private let rowHeight: CGFloat = 28
+        private let rowStride: CGFloat = 30
+        private let visibleHeight: CGFloat = 178
+
+        init(selection: Binding<Int>) {
+            self.selection = selection
+        }
+
+        @MainActor
+        func configure(scrollView: SnappingTimeColumnScrollView, values: [Int]) {
+            guard self.scrollView !== scrollView || self.values != values else { return }
+
+            self.scrollView = scrollView
+            self.values = values
+            self.buttons = [:]
+
+            scrollView.drawsBackground = false
+            scrollView.borderType = .noBorder
+            scrollView.hasVerticalScroller = false
+            scrollView.hasHorizontalScroller = false
+            scrollView.autohidesScrollers = true
+            scrollView.verticalScrollElasticity = .none
+            scrollView.horizontalScrollElasticity = .none
+            scrollView.contentView.postsBoundsChangedNotifications = true
+
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSView.boundsDidChangeNotification,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(boundsDidChange(_:)),
+                name: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView
+            )
+
+            let topPadding = (visibleHeight - rowHeight) / 2
+            let contentHeight = topPadding * 2 + CGFloat(values.count) * rowStride
+            let documentView = FlippedDocumentView(frame: NSRect(x: 0, y: 0, width: 70, height: contentHeight))
+
+            for (index, value) in values.enumerated() {
+                let button = NSButton(title: "", target: self, action: #selector(valueButtonClicked(_:)))
+                button.identifier = NSUserInterfaceItemIdentifier("\(value)")
+                button.isBordered = false
+                button.bezelStyle = .regularSquare
+                button.setButtonType(.momentaryChange)
+                button.focusRingType = .none
+                button.frame = NSRect(
+                    x: 0,
+                    y: topPadding + CGFloat(index) * rowStride,
+                    width: documentView.bounds.width,
+                    height: rowHeight
+                )
+                button.autoresizingMask = [.width]
+                documentView.addSubview(button)
+                buttons[value] = button
+            }
+
+            scrollView.documentView = documentView
+            updateButtonStyles(selected: selection.wrappedValue)
+        }
+
+        @MainActor
+        func applySelection(_ selected: Int, animated: Bool) {
+            guard let scrollView,
+                  let index = values.firstIndex(of: selected)
+            else { return }
+
+            let targetY = CGFloat(index) * rowStride
+            let currentY = scrollView.contentView.bounds.origin.y
+            guard abs(currentY - targetY) > 0.5 else {
+                updateButtonStyles(selected: selected)
+                return
+            }
+
+            isProgrammaticScroll = true
+            let targetOrigin = NSPoint(x: 0, y: targetY)
+            if animated {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.12
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    scrollView.contentView.animator().setBoundsOrigin(targetOrigin)
+                }
+                isProgrammaticScroll = false
+            } else {
+                scrollView.contentView.setBoundsOrigin(targetOrigin)
+                isProgrammaticScroll = false
+            }
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+            updateButtonStyles(selected: selected)
+        }
+
+        @MainActor
+        func scheduleSnap() {
+            isUserInteracting = true
+            snapWorkItem?.cancel()
+
+            let workItem = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    self?.snapToNearestValue()
+                }
+            }
+            snapWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.13, execute: workItem)
+        }
+
+        @MainActor
+        @objc private func boundsDidChange(_ notification: Notification) {
+            guard !isProgrammaticScroll else { return }
+            updateSelectionFromScrollPosition()
+        }
+
+        @MainActor
+        @objc private func valueButtonClicked(_ sender: NSButton) {
+            guard let rawValue = sender.identifier?.rawValue,
+                  let value = Int(rawValue)
+            else { return }
+
+            selection.wrappedValue = value
+            applySelection(value, animated: true)
+        }
+
+        @MainActor
+        private func updateSelectionFromScrollPosition() {
+            guard let scrollView,
+                  let value = nearestValue(for: scrollView.contentView.bounds.origin.y)
+            else { return }
+
+            if selection.wrappedValue != value {
+                selection.wrappedValue = value
+            }
+            updateButtonStyles(selected: value)
+        }
+
+        @MainActor
+        private func snapToNearestValue() {
+            guard let scrollView,
+                  let value = nearestValue(for: scrollView.contentView.bounds.origin.y)
+            else {
+                isUserInteracting = false
+                return
+            }
+
+            selection.wrappedValue = value
+            applySelection(value, animated: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+                Task { @MainActor in
+                    self?.isUserInteracting = false
+                }
+            }
+        }
+
+        private func nearestValue(for offsetY: CGFloat) -> Int? {
+            guard !values.isEmpty else { return nil }
+            let rawIndex = Int(round(offsetY / rowStride))
+            let clampedIndex = min(max(rawIndex, 0), values.count - 1)
+            return values[clampedIndex]
+        }
+
+        @MainActor
+        func updateButtonStyles(selected: Int) {
+            for (value, button) in buttons {
+                let isSelected = value == selected
+                let color: NSColor = isSelected ? .labelColor : .secondaryLabelColor
+                let font = NSFont.monospacedDigitSystemFont(
+                    ofSize: 15,
+                    weight: isSelected ? .semibold : .medium
+                )
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.alignment = .center
+                button.attributedTitle = NSAttributedString(
+                    string: String(format: "%02d", value),
+                    attributes: [
+                        .font: font,
+                        .foregroundColor: color,
+                        .paragraphStyle: paragraph
+                    ]
+                )
+            }
+        }
+    }
+}
+
+@MainActor
+private final class SnappingTimeColumnScrollView: NSScrollView {
+    weak var coordinator: SnappingTimeColumn.Coordinator?
+
+    override func scrollWheel(with event: NSEvent) {
+        super.scrollWheel(with: event)
+        coordinator?.scheduleSnap()
+    }
+}
+
+@MainActor
+private final class FlippedDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }

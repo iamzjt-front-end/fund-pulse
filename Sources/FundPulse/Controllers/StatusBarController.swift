@@ -11,7 +11,7 @@ enum PopoverLayout {
     static let editorWidth: CGFloat = 360
     static let editorHeight: CGFloat = 600
     static let tradeEditorHeight: CGFloat = 514
-    static let fundDetailHeight: CGFloat = 600
+    static let fundDetailHeight: CGFloat = 660
     static let tradeRecordsHeight: CGFloat = 520
     static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
     static let arrowHeight: CGFloat = 10
@@ -58,11 +58,12 @@ private enum ChildPanelKind {
     case tradeRecords(FundPosition)
     case buyFund(FundPosition)
     case sellFund(FundPosition)
+    case editTradeRecord(FundPosition, FundTradeRecord)
     case editFund(FundPosition)
 
     var selectedFundCode: String? {
         switch self {
-        case .fundDetail(let fund), .tradeRecords(let fund), .buyFund(let fund), .sellFund(let fund), .editFund(let fund):
+        case .fundDetail(let fund), .tradeRecords(let fund), .buyFund(let fund), .sellFund(let fund), .editTradeRecord(let fund, _), .editFund(let fund):
             fund.code
         case .settings, .addFund:
             nil
@@ -476,6 +477,12 @@ final class StatusBarController: NSObject {
             let view = FundTradeRecordsPanelView(
                 fund: fund,
                 tradeRecords: store.snapshot.tradeRecords ?? [],
+                onEdit: { [weak self] record in
+                    self?.showChildPanel(.editTradeRecord(fund, record))
+                },
+                onDelete: { [weak self] record in
+                    await self?.deleteTradeRecord(record, returningTo: fund)
+                },
                 onClose: { [weak self] in
                     self?.showChildPanel(.fundDetail(fund))
                 }
@@ -510,6 +517,25 @@ final class StatusBarController: NSObject {
                 },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+
+        case .editTradeRecord(let fund, let record):
+            let action: FundTradeAction = record.kind == .sell ? .sell : .buy
+            let view = FundTradeEditorView(
+                store: store,
+                fund: fund,
+                action: action,
+                editingRecord: record,
+                onSaved: { [weak self] in
+                    await MainActor.run {
+                        self?.updateStatusTitle()
+                        self?.showChildPanel(.tradeRecords(fund))
+                    }
+                },
+                onClose: { [weak self] in
+                    self?.showChildPanel(.tradeRecords(fund))
                 }
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
@@ -586,7 +612,7 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.tradeRecordsSize
         case .addFund, .editFund:
             size = PopoverLayout.editorSize
-        case .buyFund, .sellFund:
+        case .buyFund, .sellFund, .editTradeRecord:
             size = PopoverLayout.tradeEditorSize
         case nil:
             return
@@ -920,6 +946,17 @@ final class StatusBarController: NSObject {
             refreshVisiblePanels()
         } catch {
             // Keep the existing data visible; PortfolioStore.loadState will surface refresh failures.
+        }
+    }
+
+    private func deleteTradeRecord(_ record: FundTradeRecord, returningTo fund: FundPosition) async {
+        do {
+            try await store.deleteTradeRecord(id: record.id)
+            updateStatusTitle()
+            showChildPanel(.tradeRecords(fund))
+            updateMainPanelRootView()
+        } catch {
+            refreshVisiblePanels()
         }
     }
 

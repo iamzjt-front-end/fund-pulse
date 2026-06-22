@@ -41,6 +41,7 @@ struct PanelHeader: View {
     var actionSystemImage: String? = nil
     var actionTitle: String? = nil
     var actionBadgeText: String? = nil
+    var actionTint: Color? = nil
     var actionHelp: String? = nil
     var onAction: (() -> Void)? = nil
     let onClose: () -> Void
@@ -79,6 +80,7 @@ struct PanelHeader: View {
             Spacer()
 
             if let actionTitle, let onAction {
+                let resolvedActionTint = actionTint ?? Color.secondary
                 Button {
                     onAction()
                 } label: {
@@ -95,14 +97,26 @@ struct PanelHeader: View {
                             Text(actionBadgeText)
                                 .font(.system(size: 9, weight: .semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(resolvedActionTint.opacity(0.82))
                         }
                     }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .frame(minWidth: 64, minHeight: 26)
-                    .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(PanelDesign.border(cornerRadius: 7))
+                    .foregroundStyle(resolvedActionTint)
+                    .padding(.horizontal, actionSystemImage == nil ? 8 : 9)
+                    .frame(minWidth: 68, minHeight: 28)
+                    .background {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PanelDesign.selectorBackground)
+                            if let actionTint {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(actionTint.opacity(0.11))
+                            }
+                        }
+                    }
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(resolvedActionTint.opacity(actionTint == nil ? 0.24 : 0.28), lineWidth: 0.75)
+                    )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -375,88 +389,6 @@ struct PanelNativeDatePicker: NSViewRepresentable {
     }
 }
 
-struct PanelNativeTimePicker: NSViewRepresentable {
-    @Binding var selection: Date
-    var isEnabled = true
-
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: "", target: context.coordinator, action: #selector(Coordinator.showPicker(_:)))
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        button.contentTintColor = .systemBlue
-        button.setButtonType(.momentaryPushIn)
-        context.coordinator.button = button
-        context.coordinator.updateButtonTitle()
-        return button
-    }
-
-    func updateNSView(_ button: NSButton, context: Context) {
-        context.coordinator.selection = $selection
-        context.coordinator.updateButtonTitle()
-        button.isEnabled = isEnabled
-        button.alphaValue = isEnabled ? 1 : 0.58
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection)
-    }
-
-    final class Coordinator: NSObject {
-        var selection: Binding<Date>
-        weak var button: NSButton?
-        private var popover: NSPopover?
-
-        init(selection: Binding<Date>) {
-            self.selection = selection
-        }
-
-        @MainActor
-        @objc func showPicker(_ sender: NSButton) {
-            if popover?.isShown == true {
-                popover?.close()
-                return
-            }
-
-            let contentSize = NSSize(width: 268, height: 252)
-            let hostingView = NSHostingView(
-                rootView: PanelTimeWheelPopoverContent(selectedTime: selection.wrappedValue) { [weak self] date in
-                    guard let self else { return }
-                    selection.wrappedValue = date
-                    updateButtonTitle()
-                }
-            )
-            hostingView.frame = NSRect(origin: .zero, size: contentSize)
-
-            let controller = NSViewController()
-            controller.view = hostingView
-            controller.preferredContentSize = contentSize
-
-            let popover = NSPopover()
-            popover.behavior = .transient
-            popover.animates = false
-            popover.contentSize = contentSize
-            popover.contentViewController = controller
-            self.popover = popover
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
-        }
-
-        @MainActor
-        func updateButtonTitle() {
-            button?.title = formatted(selection.wrappedValue)
-        }
-
-        private func formatted(_ date: Date) -> String {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "zh_CN")
-            formatter.calendar = Calendar.current
-            formatter.timeZone = TimeZone.current
-            formatter.dateFormat = "HH:mm"
-            return formatter.string(from: date)
-        }
-    }
-}
-
 private struct PanelCalendarPopoverContent: View {
     let selectedDate: Date
     let onSelect: (Date) -> Void
@@ -647,150 +579,6 @@ private struct PanelCalendarPopoverContent: View {
         let isCurrentMonth: Bool
 
         var id: TimeInterval { date.timeIntervalSince1970 }
-    }
-}
-
-private struct PanelTimeWheelPopoverContent: View {
-    let selectedTime: Date
-    let onChange: (Date) -> Void
-
-    @State private var hour: Int
-    @State private var minute: Int
-
-    private let calendar: Calendar
-    private let rowHeight: CGFloat = 30
-    private let wheelHeight: CGFloat = 150
-
-    init(selectedTime: Date, onChange: @escaping (Date) -> Void) {
-        self.selectedTime = selectedTime
-        self.onChange = onChange
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.locale = Locale(identifier: "zh_CN")
-        self.calendar = calendar
-        _hour = State(initialValue: calendar.component(.hour, from: selectedTime))
-        _minute = State(initialValue: calendar.component(.minute, from: selectedTime))
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("时间")
-                    .font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Text(timeText(hour: hour, minute: minute))
-                    .font(.system(size: 14, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(Color(nsColor: .systemBlue))
-                    .padding(.horizontal, 12)
-                    .frame(height: 32)
-                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.82), in: Capsule())
-            }
-            .padding(.horizontal, 16)
-            .frame(height: 56)
-
-            Divider()
-                .opacity(0.45)
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 17, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.70))
-                    .frame(height: 34)
-
-                HStack(spacing: 18) {
-                    wheelColumn(values: Array(0...23), selection: $hour, label: "时")
-                    wheelColumn(values: Array(0...59), selection: $minute, label: "分")
-                }
-            }
-            .frame(height: wheelHeight)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-        }
-        .frame(width: 268, height: 252)
-        .background(PanelDesign.panelBackground)
-        .onChange(of: hour) { _, _ in
-            emitChange()
-        }
-        .onChange(of: minute) { _, _ in
-            emitChange()
-        }
-    }
-
-    private func wheelColumn(values: [Int], selection: Binding<Int>, label: String) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 0) {
-                    Spacer()
-                        .frame(height: (wheelHeight - rowHeight) / 2)
-                    ForEach(values, id: \.self) { value in
-                        Button {
-                            withAnimation(.easeOut(duration: 0.12)) {
-                                selection.wrappedValue = value
-                                proxy.scrollTo(value, anchor: .center)
-                            }
-                        } label: {
-                            Text(String(format: "%02d", value))
-                                .font(.system(size: 15, weight: value == selection.wrappedValue ? .semibold : .regular))
-                                .monospacedDigit()
-                                .foregroundStyle(wheelForeground(value: value, selected: selection.wrappedValue))
-                                .frame(width: 58, height: rowHeight)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .focusable(false)
-                        .id(value)
-                    }
-                    Spacer()
-                        .frame(height: (wheelHeight - rowHeight) / 2)
-                }
-            }
-            .frame(width: 58, height: wheelHeight)
-            .overlay(alignment: .trailing) {
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .offset(x: 14)
-                    .allowsHitTesting(false)
-            }
-            .mask(
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0),
-                        .init(color: .black, location: 0.24),
-                        .init(color: .black, location: 0.76),
-                        .init(color: .clear, location: 1)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .onAppear {
-                DispatchQueue.main.async {
-                    proxy.scrollTo(selection.wrappedValue, anchor: .center)
-                }
-            }
-        }
-    }
-
-    private func wheelForeground(value: Int, selected: Int) -> Color {
-        let distance = abs(value - selected)
-        if distance == 0 { return .primary }
-        if distance == 1 { return Color.secondary.opacity(0.62) }
-        if distance == 2 { return Color.secondary.opacity(0.36) }
-        return Color.secondary.opacity(0.20)
-    }
-
-    private func emitChange() {
-        var components = calendar.dateComponents([.year, .month, .day], from: selectedTime)
-        components.hour = hour
-        components.minute = minute
-        components.second = 0
-        if let date = calendar.date(from: components) {
-            onChange(date)
-        }
-    }
-
-    private func timeText(hour: Int, minute: Int) -> String {
-        String(format: "%02d:%02d", hour, minute)
     }
 }
 
