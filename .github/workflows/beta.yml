@@ -1,0 +1,35 @@
+name: Build Beta
+
+on:
+  push:
+    branches: [beta]
+
+jobs:
+  build_beta:
+    runs-on: macos-latest
+
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_KEY }}
+          submodules: recursive
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run test
+        run: swift test
+
+      - name: Run package
+        run: npm run package
+
+      - name: Upload beta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fund-pulse-beta-macos
+          path: |
+            release/swift/*.dmg
+            release/swift/*.zip

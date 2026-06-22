@@ -1,0 +1,62 @@
+{
+  "name": "fund-pulse",
+  "productName": "fund-pulse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "基金持仓收益 macOS 状态栏工具，Swift 原生实现，数据源来自东方财富/天天基金等",
+  "scripts": {
+    "dev": "npm run swift:run",
+    "build": "swift build",
+    "preview": "npm run swift:run",
+    "package": "npm run swift:package",
+    "package-mac": "npm run swift:package",
+    "package-all": "npm run swift:package",
+    "release-all": "npm run swift:package",
+    "beta-mac": "npm run swift:package",
+    "beta-all": "npm run swift:package",
+    "swift:migrate": "node scripts/migrate-legacy-data-to-swift.mjs",
+    "swift:run": "./script/build_and_run.sh",
+    "swift:verify": "./script/build_and_run.sh --verify",
+    "swift:package": "./script/package_swift.sh",
+    "icon:build": "python3 scripts/generate-app-icon.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamzjt-front-end/fund-pulse.git"
+  },
+  "author": {
+    "name": "iamzjt-front-end",
+    "url": "https://github.com/iamzjt-front-end"
+  },
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/iamzjt-front-end/fund-pulse/issues"
+  },
+  "keywords": [
+    "swift",
+    "swiftui",
+    "macos",
+    "menu-bar",
+    "status-bar",
+    "chinese",
+    "funds"
+  ],
+  "homepage": "https://github.com/iamzjt-front-end/fund-pulse",
+  "devDependencies": {},
+  "dependencies": {},
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.8.x",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=10.9.x",
+      "onFail": "error"
+    }
+  },
+  "pnpm": {
+    "neverBuiltDependencies": []
+  }
+}

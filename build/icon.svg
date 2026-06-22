@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+  <defs>
+    <linearGradient id="fundPulseLogoFill" x1="10" y1="4" x2="90" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#20c997"/>
+      <stop offset="0.52" stop-color="#1677ff"/>
+      <stop offset="1" stop-color="#ff5a6b"/>
+    </linearGradient>
+    <filter id="fundPulseLogoShadow" x="-20%" y="-16%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="1.1" stdDeviation="2.6" flood-color="#000" flood-opacity=".35"/>
+    </filter>
+  </defs>
+  <rect x="9.375" y="9.375" width="77.25" height="77.25" rx="17.38" fill="url(#fundPulseLogoFill)" filter="url(#fundPulseLogoShadow)"/>
+  <rect x="9.56" y="9.56" width="76.88" height="76.88" rx="17.2" fill="none" stroke="rgba(255,255,255,.21)" stroke-width=".28"/>
+  <path
+    d="M19 52h13l7-22 13 42 9-29h16"
+    fill="none"
+    stroke="rgba(11,48,104,.31)"
+    stroke-width="8.4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    transform="translate(1.25 1.6)"
+  />
+  <path
+    d="M19 52h13l7-22 13 42 9-29h16"
+    fill="none"
+    stroke="#fff"
+    stroke-width="7.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="72" cy="24" r="5.8" fill="#fff" opacity=".97"/>
+</svg>
