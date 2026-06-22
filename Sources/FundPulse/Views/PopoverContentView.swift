@@ -111,10 +111,6 @@ struct PopoverContentView: View {
                 .zIndex(1)
             toolbar
                 .zIndex(3)
-            if shouldShowAppUpdateRow {
-                appUpdateRow
-                    .zIndex(2)
-            }
             fundList
                 .zIndex(0)
         }
@@ -136,10 +132,6 @@ struct PopoverContentView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 Spacer()
-                ZStack {
-                    updateButton
-                }
-                .frame(width: 30, height: 24)
                 marketBadge
                 if displayPendingCount > 0 {
                     Text("待确认 \(displayPendingCount)笔")
@@ -157,6 +149,10 @@ struct PopoverContentView: View {
 
             if let statusMessage {
                 statusBanner(statusMessage)
+            }
+
+            if shouldShowAppUpdateRow {
+                appUpdateRow
             }
 
             HStack(spacing: 6) {
@@ -297,6 +293,7 @@ struct PopoverContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(toolbarSurfaceBackground)
         .overlay(alignment: .bottom) {
             Divider()
