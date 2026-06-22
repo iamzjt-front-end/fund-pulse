@@ -264,18 +264,18 @@ struct PopoverContentView: View {
     }
 
     private var appUpdateRow: some View {
-        HStack(alignment: .top, spacing: 9) {
+        HStack(alignment: .center, spacing: 10) {
             appUpdateRowIcon
-                .frame(width: 28, height: 28)
+                .frame(width: 30, height: 30)
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(appUpdateRowTitle)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 Text(appUpdateRowDetail)
-                    .font(.system(size: 10))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -292,12 +292,15 @@ struct PopoverContentView: View {
             appUpdateRowTrailingControl
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.vertical, 8)
+        .frame(minHeight: 58)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(toolbarSurfaceBackground)
+        .background(listSurfaceBackground)
         .overlay(alignment: .bottom) {
-            Divider()
-                .opacity(colorScheme == .dark ? 0.42 : 0.50)
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.24 : 0.18))
+                .frame(height: 0.6)
+                .padding(.horizontal, 12)
         }
     }
 
@@ -305,21 +308,29 @@ struct PopoverContentView: View {
     private var appUpdateRowIcon: some View {
         switch updateStore.status {
         case .available:
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(.orange)
+            appUpdateIconShell(systemName: "arrow.down", color: appUpdateRowAccentColor)
         case .downloading:
             UpdateProgressRing(progress: updateStore.downloadProgress)
                 .frame(width: 26, height: 26)
         case .downloaded:
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Color.fundPulseGreen)
+            appUpdateIconShell(systemName: "checkmark", color: appUpdateRowAccentColor)
         case .installing:
             ProgressView()
                 .controlSize(.small)
         case .idle, .checking, .upToDate, .failed:
             EmptyView()
+        }
+    }
+
+    private func appUpdateIconShell(systemName: String, color: Color) -> some View {
+        ZStack {
+            Circle()
+                .fill(color.opacity(colorScheme == .dark ? 0.18 : 0.12))
+            Circle()
+                .stroke(color.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 0.8)
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(color)
         }
     }
 
@@ -373,6 +384,10 @@ struct PopoverContentView: View {
         }
     }
 
+    private var appUpdateRowAccentColor: Color {
+        appUpdateRowButtonColor
+    }
+
     @ViewBuilder
     private var appUpdateRowTrailingControl: some View {
         switch updateStore.status {
@@ -380,14 +395,14 @@ struct PopoverContentView: View {
             if let title = appUpdateRowButtonTitle {
                 Button(action: { onOpenUpdate?() }) {
                     Text(title)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(appUpdateRowButtonColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(appUpdateRowButtonColor)
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background(appUpdateRowButtonColor.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(appUpdateRowButtonColor.opacity(0.44), lineWidth: 0.8)
+                                .stroke(appUpdateRowButtonColor.opacity(colorScheme == .dark ? 0.34 : 0.24), lineWidth: 0.8)
                         )
                 }
                 .buttonStyle(.plain)
