@@ -148,6 +148,10 @@ struct AppUpdateService {
         let latestVersion = normalizedVersion(feed.version ?? tag)
         let htmlURL = releasesBaseURL.appending(path: "tag").appending(path: tag)
         let downloadURL = preferredDownloadURL(from: feed.files, tag: tag)
+        if VersionComparator.isVersion(latestVersion, newerThan: currentVersion),
+           downloadURL == nil {
+            throw UpdateError.noDownloadURL
+        }
         let info = AppUpdateInfo(
             version: latestVersion,
             releaseName: "fund-pulse \(latestVersion)",
@@ -185,13 +189,18 @@ struct AppUpdateService {
         }
 
         let latestVersion = normalizedVersion(release.tagName)
+        let downloadURL = preferredDownloadURL(from: release.assets)
+        if VersionComparator.isVersion(latestVersion, newerThan: currentVersion),
+           downloadURL == nil {
+            throw UpdateError.noDownloadURL
+        }
         let info = AppUpdateInfo(
             version: latestVersion,
             releaseName: release.name ?? release.tagName,
             releaseNotes: release.body ?? "",
             publishedAt: release.publishedAt,
             htmlURL: htmlURL,
-            downloadURL: preferredDownloadURL(from: release.assets)
+            downloadURL: downloadURL
         )
 
         if VersionComparator.isVersion(latestVersion, newerThan: currentVersion) {
@@ -222,14 +231,17 @@ struct AppUpdateService {
         let sortedAssets = assets.sorted { lhs, rhs in
             assetScore(lhs.name) > assetScore(rhs.name)
         }
-        return sortedAssets.compactMap { URL(string: $0.browserDownloadURL) }.first
+        return sortedAssets
+            .filter { $0.name.lowercased().hasSuffix(".zip") }
+            .compactMap { URL(string: $0.browserDownloadURL) }
+            .first
     }
 
     private func preferredDownloadURL(from files: [MacReleaseFeed.File], tag: String) -> URL? {
         let sortedFiles = files.sorted { lhs, rhs in
             assetScore(lhs.url) > assetScore(rhs.url)
         }
-        guard let file = sortedFiles.first else { return nil }
+        guard let file = sortedFiles.first(where: { $0.url.lowercased().hasSuffix(".zip") }) else { return nil }
         return releasesBaseURL
             .appending(path: "download")
             .appending(path: tag)
