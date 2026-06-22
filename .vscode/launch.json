@@ -1,0 +1,24 @@
+{
+	"configurations": [
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:fund-pulse}",
+			"name": "Debug FundPulse",
+			"target": "FundPulse",
+			"configuration": "debug",
+			"preLaunchTask": "swift: Build Debug FundPulse"
+		},
+		{
+			"type": "swift",
+			"request": "launch",
+			"args": [],
+			"cwd": "${workspaceFolder:fund-pulse}",
+			"name": "Release FundPulse",
+			"target": "FundPulse",
+			"configuration": "release",
+			"preLaunchTask": "swift: Build Release FundPulse"
+		}
+	]
+}

@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build_release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_KEY }}
+          submodules: recursive
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run test
+        run: swift test
+
+      - name: Run package
+        run: npm run package
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fund-pulse-macos
+          path: |
+            release/swift/*.dmg
+            release/swift/*.zip
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" release/swift/* --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

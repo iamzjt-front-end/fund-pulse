@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+jobs:
+  swift:
+    runs-on: macos-latest
+
+    steps:
+      - name: Setup repo
+        uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.SSH_KEY }}
+          submodules: recursive
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Run test
+        run: swift test
+
+      - name: Run build
+        run: npm run build

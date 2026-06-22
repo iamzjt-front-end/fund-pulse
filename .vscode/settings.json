@@ -1,0 +1,16 @@
+{
+  "files.associations": {
+    ".prettierrc": "jsonc",
+    ".eslintignore": "ignore"
+  },
+
+  "search.exclude": {
+    ".git": true,
+    "node_modules": true,
+    "release": true,
+    "package-lock.json": true,
+    "pnpm-lock.yaml": true,
+    "LICENSE": true,
+    "*.{css,sass,scss}.d.ts": true
+  }
+}
