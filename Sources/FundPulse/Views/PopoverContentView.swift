@@ -115,11 +115,6 @@ struct PopoverContentView: View {
                 .zIndex(0)
         }
         .background(panelSurfaceBackground)
-        .onChange(of: displayPendingCount) { _, pendingCount in
-            if pendingCount == 0, filter == .pending {
-                filter = .holding
-            }
-        }
     }
 
     private var header: some View {
@@ -1274,7 +1269,7 @@ struct PopoverContentView: View {
     }
 
     private var visibleFilters: [FundListFilter] {
-        displayPendingCount > 0 ? FundListFilter.allCases : [.holding]
+        FundListFilter.allCases
     }
 
     private func isPendingStatus(_ status: FundHoldingStatus) -> Bool {
@@ -1777,7 +1772,10 @@ struct FundDetailView: View {
                 tint: toneColor(for: fund.todayRate),
                 accessoryText: zdfRangeReminderText,
                 accessoryColor: .orange,
+                actionSystemImage: "list.bullet.rectangle",
                 actionTitle: "交易记录",
+                actionBadgeText: tradeRecordsBadgeText,
+                actionTint: .blue,
                 actionHelp: tradeRecordsEntrySubtitle,
                 onAction: {
                     onOpenTradeRecords(fund)
@@ -1802,8 +1800,6 @@ struct FundDetailView: View {
             .scrollIndicators(.hidden)
 
             actionBar
-                .padding(.horizontal, 14)
-                .padding(.bottom, 14)
         }
         .background(PanelDesign.panelBackground)
         .task(id: fund.code) {
@@ -1844,8 +1840,8 @@ struct FundDetailView: View {
     }
 
     private var todayRateHero: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .bottom, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
                     Text("当日涨幅")
                         .font(.system(size: 12, weight: .medium))
@@ -1854,17 +1850,29 @@ struct FundDetailView: View {
                         detailTag("已更新", color: updatedDetailTagColor)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
 
-            Text(MoneyFormatter.percent(fund.todayRate, signed: true))
-                .font(.system(size: 32, weight: .semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .foregroundStyle(toneColor(for: fund.todayRate))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 3)
+                Text(MoneyFormatter.percent(fund.todayRate, signed: true))
+                    .font(.system(size: 32, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .foregroundStyle(toneColor(for: fund.todayRate))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("当日收益")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                Text(signedNumberText(fund.todayIncome))
+                    .font(.system(size: 22, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .foregroundStyle(toneColor(for: fund.todayIncome))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -2037,40 +2045,48 @@ struct FundDetailView: View {
     }
 
     private var actionBar: some View {
-        HStack(spacing: 8) {
-            Button {
-                onBuy(fund)
-            } label: {
-                PanelButtonLabel(title: "加仓", systemImage: "plus.circle")
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
+        VStack(spacing: 0) {
+            Divider()
+                .opacity(0.45)
 
-            Button {
-                onSell(fund)
-            } label: {
-                PanelButtonLabel(title: "减仓", systemImage: "minus.circle")
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .disabled((fund.migratedShares ?? 0) <= 0)
+            HStack(spacing: 8) {
+                Button {
+                    onBuy(fund)
+                } label: {
+                    PanelButtonLabel(title: "加仓", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
 
-            Button {
-                onEdit(fund)
-            } label: {
-                PanelButtonLabel(title: "编辑", systemImage: "pencil")
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
+                Button {
+                    onSell(fund)
+                } label: {
+                    PanelButtonLabel(title: "减仓", systemImage: "minus.circle")
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .disabled((fund.migratedShares ?? 0) <= 0)
 
-            Button(role: .destructive) {
-                isDeleteConfirmationPresented = true
-            } label: {
-                PanelButtonLabel(title: "删除", systemImage: "trash", style: .destructive)
+                Button {
+                    onEdit(fund)
+                } label: {
+                    PanelButtonLabel(title: "编辑", systemImage: "pencil")
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+
+                Button(role: .destructive) {
+                    isDeleteConfirmationPresented = true
+                } label: {
+                    PanelButtonLabel(title: "删除", systemImage: "trash", style: .destructive)
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
             }
-            .buttonStyle(.plain)
-            .focusable(false)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
+        .background(PanelDesign.panelBackground)
     }
 
     private func sectionHeader(_ title: String, trailing: String? = nil) -> some View {
@@ -2101,8 +2117,11 @@ struct FundDetailView: View {
     }
 
     private var recentTradeRecords: [FundTradeRecord] {
-        tradeRecords
-            .filter { $0.code == fund.code }
+        let actualRecords = tradeRecords.filter { $0.code == fund.code }
+        let records = actualRecords.contains { $0.kind == .newFund }
+            ? actualRecords
+            : actualRecords + (inferredInitialTradeRecord(for: fund).map { [$0] } ?? [])
+        return records
             .sorted {
                 if $0.createdAt != $1.createdAt {
                     return $0.createdAt > $1.createdAt
@@ -2191,6 +2210,11 @@ struct FundDetailView: View {
         let pendingCount = recentTradeRecords.filter { $0.status == .pending }.count
         guard pendingCount > 0 else { return "查看新增、加仓、减仓流水" }
         return "含待确认 \(pendingCount) 笔"
+    }
+
+    private var tradeRecordsBadgeText: String? {
+        let count = recentTradeRecords.count
+        return count > 0 ? "\(count)" : nil
     }
 
     private func historyHeader(_ title: String, alignment: Alignment) -> some View {
@@ -2527,9 +2551,12 @@ private enum TradeRecordFilter: String, CaseIterable, Identifiable {
 struct FundTradeRecordsPanelView: View {
     let fund: FundPosition
     let tradeRecords: [FundTradeRecord]
+    let onEdit: (FundTradeRecord) -> Void
+    let onDelete: (FundTradeRecord) async -> Void
     let onClose: () -> Void
 
     @State private var filter: TradeRecordFilter = .all
+    @State private var deletingRecord: FundTradeRecord?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2561,6 +2588,20 @@ struct FundTradeRecordsPanelView: View {
             .scrollIndicators(.hidden)
         }
         .background(PanelDesign.panelBackground)
+        .alert("删除交易记录", isPresented: deleteConfirmationBinding) {
+            Button("取消", role: .cancel) {
+                deletingRecord = nil
+            }
+            Button("删除", role: .destructive) {
+                guard let record = deletingRecord else { return }
+                Task {
+                    await onDelete(record)
+                    deletingRecord = nil
+                }
+            }
+        } message: {
+            Text("删除后会重新计算这只基金的持有金额、持有份额和成本。")
+        }
     }
 
     private var filterBar: some View {
@@ -2590,8 +2631,11 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private var recentTradeRecords: [FundTradeRecord] {
-        tradeRecords
-            .filter { $0.code == fund.code }
+        let actualRecords = tradeRecords.filter { $0.code == fund.code }
+        let records = actualRecords.contains { $0.kind == .newFund }
+            ? actualRecords
+            : actualRecords + (inferredInitialTradeRecord(for: fund).map { [$0] } ?? [])
+        return records
             .sorted {
                 if $0.createdAt != $1.createdAt {
                     return $0.createdAt > $1.createdAt
@@ -2602,6 +2646,17 @@ struct FundTradeRecordsPanelView: View {
 
     private var filteredTradeRecords: [FundTradeRecord] {
         recentTradeRecords.filter(filter.matches)
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deletingRecord != nil },
+            set: { isPresented in
+                if !isPresented {
+                    deletingRecord = nil
+                }
+            }
+        )
     }
 
     private var emptyTitle: String {
@@ -2634,7 +2689,7 @@ struct FundTradeRecordsPanelView: View {
 
             Spacer(minLength: 8)
 
-            VStack(alignment: .trailing, spacing: 5) {
+            VStack(alignment: .trailing, spacing: 6) {
                 Text(tradeRecordAmountText(record))
                     .font(.system(size: 14, weight: .semibold))
                     .monospacedDigit()
@@ -2649,14 +2704,51 @@ struct FundTradeRecordsPanelView: View {
                 Text(record.mode.title)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.tertiary)
+
+                HStack(spacing: 4) {
+                    if canEdit(record) {
+                        recordActionButton(systemName: "pencil", title: "编辑") {
+                            onEdit(record)
+                        }
+                    }
+                    if !isInferredInitialTradeRecord(record) {
+                        recordActionButton(systemName: "trash", title: "删除", color: .red) {
+                            deletingRecord = record
+                        }
+                    }
+                }
             }
-            .frame(width: 84, alignment: .trailing)
+            .frame(width: 92, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
         .frame(minHeight: 74)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private func recordActionButton(
+        systemName: String,
+        title: String,
+        color: Color = .secondary,
+        backgroundOpacity: Double = 0.06,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 22, height: 20)
+                .background(color.opacity(backgroundOpacity), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(title)
+    }
+
+    private func canEdit(_ record: FundTradeRecord) -> Bool {
+        record.kind == .buy || record.kind == .sell
     }
 
     private func recordTag(_ title: String, color: Color) -> some View {
@@ -2954,6 +3046,44 @@ private func todayIncomeAmount(_ value: Double) -> Text {
     let amount = abs(value).formatted(.number.precision(.fractionLength(2)))
     return Text("\(sign)\(amount)")
         .font(.system(size: 30, weight: .semibold))
+}
+
+private func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeRecord? {
+    let shares = fund.migratedShares ?? 0
+    let amount = fund.migratedPrincipal ?? fund.pendingAmount
+    guard shares > 0 || (amount ?? 0) > 0 else {
+        return nil
+    }
+
+    let tradeDate = fund.positionDate ?? fund.incomeStartDate ?? ""
+    let acceptedDate = fund.incomeStartDate ?? fund.positionDate ?? tradeDate
+    let status: FundTradeRecordStatus = fund.status.isPendingDisplay ? .pending : .confirmed
+    return FundTradeRecord(
+        id: inferredInitialTradeRecordID(for: fund.code),
+        kind: .newFund,
+        status: status,
+        code: fund.code,
+        name: fund.name,
+        mode: fund.positionMode ?? .share,
+        amount: amount,
+        shares: shares > 0 ? shares : nil,
+        confirmedShares: status == .confirmed && shares > 0 ? shares : nil,
+        price: fund.migratedCost,
+        tradeDate: tradeDate,
+        tradeTimeType: fund.positionTimeType ?? .before15,
+        acceptedDate: acceptedDate,
+        createdAt: .distantPast,
+        confirmedAt: status == .confirmed ? .distantPast : nil,
+        failureReason: nil
+    )
+}
+
+private func inferredInitialTradeRecordID(for code: String) -> String {
+    "inferred-new-fund-\(code)"
+}
+
+private func isInferredInitialTradeRecord(_ record: FundTradeRecord) -> Bool {
+    record.id == inferredInitialTradeRecordID(for: record.code)
 }
 
 private let refreshTimeFormatter: DateFormatter = {

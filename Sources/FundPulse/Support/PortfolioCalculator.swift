@@ -83,7 +83,7 @@ enum PortfolioCalculator {
     }
 
     private static func effectiveLots(for fund: FundPosition) -> [FundPositionLot] {
-        if let lots = fund.lots, !lots.isEmpty {
+        if let lots = fund.lots {
             return lots
         }
         guard let shares = fund.migratedShares,

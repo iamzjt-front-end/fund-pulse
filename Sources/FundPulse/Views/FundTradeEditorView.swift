@@ -4,6 +4,7 @@ struct FundTradeEditorView: View {
     let store: PortfolioStore
     let fund: FundPosition
     let action: FundTradeAction
+    let editingRecord: FundTradeRecord?
     let onSaved: (() async -> Void)?
     let onClose: (() -> Void)?
 
@@ -19,15 +20,21 @@ struct FundTradeEditorView: View {
         store: PortfolioStore,
         fund: FundPosition,
         action: FundTradeAction,
+        editingRecord: FundTradeRecord? = nil,
         onSaved: (() async -> Void)? = nil,
         onClose: (() -> Void)? = nil
     ) {
         self.store = store
         self.fund = fund
         self.action = action
+        self.editingRecord = editingRecord
         self.onSaved = onSaved
         self.onClose = onClose
-        _mode = State(initialValue: action == .buy ? .amount : .share)
+        _mode = State(initialValue: editingRecord?.mode ?? (action == .buy ? .amount : .share))
+        _amount = State(initialValue: editingRecord?.amount.map { Self.initialNumberText($0, places: 2) } ?? "")
+        _shares = State(initialValue: (editingRecord?.shares ?? editingRecord?.confirmedShares).map { Self.initialNumberText($0, places: 2) } ?? "")
+        _tradeDate = State(initialValue: editingRecord.flatMap { DateOnlyFormatter.parse($0.tradeDate) } ?? .now)
+        _tradeTimeType = State(initialValue: editingRecord?.tradeTimeType ?? TradingCalendar.defaultPositionTimeType())
     }
 
     var body: some View {
@@ -68,7 +75,7 @@ struct FundTradeEditorView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(action.title)
                     .font(.system(size: 15, weight: .semibold))
-                Text(action == .buy ? "记录一笔追加买入" : "记录一笔卖出赎回")
+                Text(headerSubtitle)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -228,7 +235,7 @@ struct FundTradeEditorView: View {
             Button {
                 save()
             } label: {
-                Text(isSaving ? "处理中" : "确认\(action.title)")
+                Text(submitTitle)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(canSubmit ? Color.white : Color.secondary)
                     .frame(maxWidth: .infinity)
@@ -254,6 +261,20 @@ struct FundTradeEditorView: View {
         case .share:
             return (Self.number(shares) ?? 0) > 0
         }
+    }
+
+    private var headerSubtitle: String {
+        if editingRecord != nil {
+            return "修改后会重新计算持仓"
+        }
+        return action == .buy ? "记录一笔追加买入" : "记录一笔卖出赎回"
+    }
+
+    private var submitTitle: String {
+        if editingRecord != nil {
+            return isSaving ? "保存中" : "保存修改"
+        }
+        return isSaving ? "处理中" : "确认\(action.title)"
     }
 
     private var actionColor: Color {
@@ -358,7 +379,11 @@ struct FundTradeEditorView: View {
 
         Task {
             do {
-                try await store.adjustFundPosition(draft)
+                if let editingRecord {
+                    try await store.editTradeRecord(id: editingRecord.id, with: draft)
+                } else {
+                    try await store.adjustFundPosition(draft)
+                }
                 if let onSaved {
                     await onSaved()
                 }
@@ -377,6 +402,10 @@ struct FundTradeEditorView: View {
     }
 
     private func numberText(_ value: Double, places: Int) -> String {
+        value.formatted(.number.precision(.fractionLength(0...places)))
+    }
+
+    private static func initialNumberText(_ value: Double, places: Int) -> String {
         value.formatted(.number.precision(.fractionLength(0...places)))
     }
 

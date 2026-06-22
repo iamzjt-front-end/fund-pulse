@@ -81,18 +81,26 @@ struct FundQuoteService {
         return nil
     }
 
-    func fetchFundDetailSupplement(code: String) async -> FundDetailSupplement {
+    func fetchFundDetailSupplement(code: String, now: Date = .now) async -> FundDetailSupplement {
         async let history = fetchNetValueHistorySafely(code: code)
         async let holdings = fetchTopStockHoldingsSafely(code: code)
         let (historyPoints, topHoldings) = await (history, holdings)
         let trendPoints = Array(historyPoints.suffix(90))
-        let yesterdayPoint = trendPoints.count >= 2 ? trendPoints[trendPoints.count - 2] : nil
+        let yesterdayPoint = Self.yesterdayNetValuePoint(from: trendPoints, now: now)
         return FundDetailSupplement(
             trend: trendPoints,
             history: historyPoints,
             topHoldings: topHoldings,
             yesterdayPoint: yesterdayPoint
         )
+    }
+
+    private static func yesterdayNetValuePoint(from points: [FundNetValuePoint], now: Date) -> FundNetValuePoint? {
+        let today = DateOnlyFormatter.string(from: now)
+        return points.last { point in
+            let date = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
+            return DateOnlyFormatter.string(from: date) < today
+        }
     }
 
     private func fetchFundBabyAutoQuote(code: String) async throws -> FundQuote {
