@@ -18,9 +18,9 @@ enum PanelDesign {
     static let panelChromeNSColor = NSColor(name: nil) { appearance in
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         if isDark {
-            return NSColor(red: 35 / 255, green: 39 / 255, blue: 46 / 255, alpha: 0.98)
+            return NSColor(red: 35 / 255, green: 39 / 255, blue: 46 / 255, alpha: 1)
         }
-        return NSColor(red: 255 / 255, green: 251 / 255, blue: 242 / 255, alpha: 0.98)
+        return NSColor(red: 254 / 255, green: 247 / 255, blue: 236 / 255, alpha: 1)
     }
 
     static let panelChromeBackground = Color(nsColor: panelChromeNSColor)

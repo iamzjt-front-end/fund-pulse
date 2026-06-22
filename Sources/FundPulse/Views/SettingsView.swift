@@ -51,6 +51,8 @@ struct SettingsView: View {
 
     @State private var message: String?
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
+    @State private var mainPanelHeightText: String
+    @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
         store: PortfolioStore,
@@ -71,6 +73,7 @@ struct SettingsView: View {
         self.onCheckUpdate = onCheckUpdate
         self.onClose = onClose
         _selectedAutoRefreshInterval = State(initialValue: settingsStore.settings.autoRefreshInterval)
+        _mainPanelHeightText = State(initialValue: "\(settingsStore.settings.mainPanelHeight)")
     }
 
     var body: some View {
@@ -121,9 +124,7 @@ struct SettingsView: View {
                                     .font(.system(size: 11, weight: .medium))
                                     .foregroundStyle(.secondary)
                                 Spacer()
-                                Text("\(settingsStore.settings.mainPanelHeight) px")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .monospacedDigit()
+                                mainPanelHeightInput
                             }
 
                             Slider(
@@ -218,6 +219,12 @@ struct SettingsView: View {
         .background(PanelDesign.panelBackground)
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
+            syncMainPanelHeightText()
+        }
+        .onChange(of: settingsStore.settings.mainPanelHeight) { _, _ in
+            if !isMainPanelHeightFocused {
+                syncMainPanelHeightText()
+            }
         }
     }
 
@@ -269,9 +276,62 @@ struct SettingsView: View {
             get: { Double(settingsStore.settings.mainPanelHeight) },
             set: { height in
                 settingsStore.setMainPanelHeight(Int(height.rounded()))
+                syncMainPanelHeightText()
                 onSettingsChanged?()
             }
         )
+    }
+
+    private var mainPanelHeightInput: some View {
+        HStack(spacing: 4) {
+            TextField("", text: $mainPanelHeightText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .multilineTextAlignment(.trailing)
+                .focused($isMainPanelHeightFocused)
+                .onSubmit {
+                    commitMainPanelHeightText()
+                }
+                .onChange(of: mainPanelHeightText) { _, newValue in
+                    let filtered = newValue.filter(\.isNumber)
+                    if filtered != newValue {
+                        mainPanelHeightText = filtered
+                    }
+                }
+                .onChange(of: isMainPanelHeightFocused) { _, isFocused in
+                    if !isFocused {
+                        commitMainPanelHeightText()
+                    }
+                }
+
+            Text("px")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 84, height: 26)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 7))
+    }
+
+    private func commitMainPanelHeightText() {
+        guard let height = Int(mainPanelHeightText) else {
+            syncMainPanelHeightText()
+            return
+        }
+
+        let previousHeight = settingsStore.settings.mainPanelHeight
+        settingsStore.setMainPanelHeight(height)
+        syncMainPanelHeightText()
+
+        if settingsStore.settings.mainPanelHeight != previousHeight {
+            onSettingsChanged?()
+        }
+    }
+
+    private func syncMainPanelHeightText() {
+        mainPanelHeightText = "\(settingsStore.settings.mainPanelHeight)"
     }
 
     private var operationReminderDateBinding: Binding<Date> {

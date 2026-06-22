@@ -246,15 +246,10 @@ struct PopoverContentView: View {
             }
             .zIndex(isSortMenuPresented ? 20 : 0)
 
-            toolbarIconButton("plus", "新增基金", action: onAddFund)
-            toolbarIconButton("arrow.clockwise", isRefreshing ? "刷新中" : "刷新") {
-                refresh()
-            }
-            .disabled(isRefreshing)
-            toolbarRefreshStateButton
-            toolbarIconButton("gearshape", "设置", action: onOpenSettings)
+            toolbarActionGroup
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
         .frame(height: 44)
         .background(toolbarSurfaceBackground)
         .overlay(alignment: .bottom) {
@@ -427,6 +422,23 @@ struct PopoverContentView: View {
         }
     }
 
+    private var toolbarActionGroup: some View {
+        HStack(spacing: 8) {
+            addFundToolbarButton
+            refreshToolbarButton
+            toolbarRefreshStateButton
+            toolbarIconButton("gearshape", "设置", action: onOpenSettings)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var refreshToolbarButton: some View {
+        toolbarIconButton("arrow.clockwise", isRefreshing ? "刷新中" : "刷新") {
+            refresh()
+        }
+        .disabled(isRefreshing)
+    }
+
     @ViewBuilder
     private var toolbarRefreshStateButton: some View {
         if case .failed(let reason) = store.loadState {
@@ -436,8 +448,10 @@ struct PopoverContentView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
+                    .frame(width: 28, height: 28)
+                    .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(toolbarControlBorder(cornerRadius: 8))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .focusable(false)
@@ -449,16 +463,58 @@ struct PopoverContentView: View {
     private func toolbarIconButton(_ systemName: String, _ help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 26)
-                .background(iconButtonHoverSurface, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(Rectangle())
+                .foregroundStyle(toolbarIconForeground)
+                .frame(width: 28, height: 28)
+                .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(toolbarControlBorder(cornerRadius: 8))
+                .overlay(toolbarControlInnerHighlight(cornerRadius: 7.4))
+                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .focusable(false)
         .help(help)
+    }
+
+    private var addFundToolbarButton: some View {
+        Button(action: onAddFund) {
+            Image(systemName: "plus")
+                .font(.system(size: 14, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(PanelDesign.accent)
+                .frame(width: 28, height: 28)
+                .background(addFundToolbarButtonBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(addFundToolbarButtonBorder)
+                .overlay(toolbarControlInnerHighlight(cornerRadius: 7.4))
+                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("新增基金")
+    }
+
+    private var addFundToolbarButtonBorder: some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(PanelDesign.accent.opacity(colorScheme == .dark ? 0.68 : 0.52), lineWidth: 0.85)
+    }
+
+    private var addFundToolbarButtonBackground: some ShapeStyle {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [
+                    PanelDesign.accent.opacity(0.18),
+                    PanelDesign.accent.opacity(0.10)
+                ]
+                : [
+                    PanelDesign.accent.opacity(0.10),
+                    PanelDesign.accent.opacity(0.05)
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var filterSwitchControl: some View {
@@ -815,6 +871,45 @@ struct PopoverContentView: View {
         colorScheme == .dark
             ? Color.white.opacity(0.055)
             : Color.black.opacity(0.035)
+    }
+
+    private var toolbarIconForeground: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.86)
+            : Color(red: 44 / 255, green: 47 / 255, blue: 52 / 255)
+    }
+
+    private var toolbarControlBackground: some ShapeStyle {
+        LinearGradient(
+            colors: colorScheme == .dark
+                ? [
+                    Color.white.opacity(0.105),
+                    Color.white.opacity(0.060)
+                ]
+                : [
+                    Color.white.opacity(0.92),
+                    Color(red: 247 / 255, green: 242 / 255, blue: 233 / 255).opacity(0.90)
+                ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private func toolbarControlBorder(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(
+                colorScheme == .dark
+                    ? Color.white.opacity(0.12)
+                    : Color(red: 213 / 255, green: 204 / 255, blue: 190 / 255).opacity(0.44),
+                lineWidth: 0.85
+            )
+    }
+
+    private func toolbarControlInnerHighlight(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(Color.white.opacity(colorScheme == .dark ? 0.04 : 0.55), lineWidth: 0.65)
+            .padding(0.7)
+            .blendMode(.plusLighter)
     }
 
     private var iconButtonHoverSurface: Color {
@@ -1460,7 +1555,7 @@ struct FundRowView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 5) {
                     if fund.isUpdated {
-                        tag("已更新", color: .fundPulseGreen)
+                        tag("已更新", color: updatedTagColor)
                     }
                     Text(fund.name)
                         .font(.system(size: 14, weight: .semibold))
@@ -1529,6 +1624,10 @@ struct FundRowView: View {
             )
     }
 
+    private var updatedTagColor: Color {
+        Color(red: 254 / 255, green: 143 / 255, blue: 37 / 255)
+    }
+
     private var rowHoldingIncome: Double {
         if let holdingIncome = fund.holdingIncome {
             return holdingIncome
@@ -1591,10 +1690,14 @@ struct FundRowView: View {
         Text(title)
             .font(.system(size: 8, weight: .semibold))
             .lineLimit(1)
-            .foregroundStyle(color)
+            .foregroundStyle(.white)
             .padding(.horizontal, 4)
             .frame(height: 14)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .background(color, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.42), lineWidth: 0.6)
+            )
     }
 
     private func rateBadgeBackground(_ value: Double) -> AnyShapeStyle {
@@ -1649,6 +1752,7 @@ struct FundDetailView: View {
     @State private var supplement: FundDetailSupplement = .empty
     @State private var isSupplementLoading = false
     @State private var didLoadSupplement = false
+    @Environment(\.colorScheme) private var colorScheme
 
     private let supplementService = FundQuoteService()
 
@@ -1672,6 +1776,7 @@ struct FundDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     fundTitle
+                    todayRateHero
                     pendingTradeSummary
                     metricsGrid
                     trendSection
@@ -1711,10 +1816,6 @@ struct FundDetailView: View {
                 Text(fund.name)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
-                detailTag(fund.status.title, color: fund.status.isPendingDisplay ? .orange : .blue)
-                if fund.isUpdated {
-                    detailTag("已更新", color: .fundPulseGreen)
-                }
             }
             HStack(spacing: 7) {
                 Text(FundCodeFormatter.display(fund.code))
@@ -1728,6 +1829,67 @@ struct FundDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var todayRateHero: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center, spacing: 16) {
+                HStack(spacing: 6) {
+                    Text("当日涨幅")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    if fund.isUpdated {
+                        detailTag("已更新", color: updatedDetailTagColor)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("持有收益率")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 96, alignment: .leading)
+
+                Text("持仓占比")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 76, alignment: .leading)
+            }
+
+            HStack(alignment: .lastTextBaseline, spacing: 16) {
+                Text(MoneyFormatter.percent(fund.todayRate, signed: true))
+                    .font(.system(size: 32, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .foregroundStyle(toneColor(for: fund.todayRate))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%")
+                    .font(.system(size: 20, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(toneColor(for: fund.holdingRate ?? 0))
+                    .frame(width: 96, alignment: .leading)
+
+                Text(holdingRatioText)
+                    .font(.system(size: 20, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .foregroundStyle(.primary)
+                    .frame(width: 76, alignment: .leading)
+            }
+            .padding(.top, 3)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(todayRateHeroBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(toneColor(for: fund.todayRate).opacity(colorScheme == .dark ? 0.16 : 0.10), lineWidth: 0.8)
+        )
     }
 
     @ViewBuilder
@@ -1784,7 +1946,7 @@ struct FundDetailView: View {
             spacing: 14
         ) {
             metric("持有金额", numberText(currentTotal, places: 2))
-            metric("持仓份额", totalShares > 0 ? "\(numberText(totalShares, places: 2))份" : "--")
+            metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
             metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
             metric("持有收益", signedNumberText(holdingIncome), tone: holdingIncome)
             metric("持有收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
@@ -2127,10 +2289,29 @@ struct FundDetailView: View {
         Text(title)
             .font(.system(size: 9, weight: .semibold))
             .lineLimit(1)
-            .foregroundStyle(color)
+            .foregroundStyle(.white)
             .padding(.horizontal, 5)
             .frame(height: 16)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .background(color, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.white.opacity(0.42), lineWidth: 0.6)
+            )
+    }
+
+    private var updatedDetailTagColor: Color {
+        Color(red: 254 / 255, green: 143 / 255, blue: 37 / 255)
+    }
+
+    private var todayRateHeroBackground: some ShapeStyle {
+        LinearGradient(
+            colors: [
+                toneColor(for: fund.todayRate).opacity(colorScheme == .dark ? 0.14 : 0.075),
+                PanelDesign.cardBackground
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private func detailPill(_ text: String) -> some View {
@@ -2776,7 +2957,7 @@ private struct FundTrendMiniChart: View {
     }
 }
 
-let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.24)
+let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.12)
 
 private func toneColor(for value: Double) -> Color {
     if value > 0 { return Color(red: 239 / 255, green: 77 / 255, blue: 98 / 255) }
