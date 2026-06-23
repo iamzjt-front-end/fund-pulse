@@ -251,9 +251,9 @@ struct PopoverContentView: View {
 
     private var shouldShowAppUpdateRow: Bool {
         switch updateStore.status {
-        case .available, .downloading, .downloaded, .installing:
+        case .checking, .available, .downloading, .downloaded, .installing, .upToDate, .failed:
             return true
-        case .idle, .checking, .upToDate, .failed:
+        case .idle:
             return false
         }
     }
@@ -302,6 +302,9 @@ struct PopoverContentView: View {
     @ViewBuilder
     private var appUpdateRowIcon: some View {
         switch updateStore.status {
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
         case .available:
             appUpdateIconShell(systemName: "arrow.down", color: appUpdateRowAccentColor)
         case .downloading:
@@ -312,7 +315,11 @@ struct PopoverContentView: View {
         case .installing:
             ProgressView()
                 .controlSize(.small)
-        case .idle, .checking, .upToDate, .failed:
+        case .upToDate:
+            appUpdateIconShell(systemName: "checkmark", color: appUpdateRowAccentColor)
+        case .failed:
+            appUpdateIconShell(systemName: "exclamationmark.triangle", color: appUpdateRowAccentColor)
+        case .idle:
             EmptyView()
         }
     }
@@ -331,6 +338,8 @@ struct PopoverContentView: View {
 
     private var appUpdateRowTitle: String {
         switch updateStore.status {
+        case .checking:
+            return "正在检查更新"
         case .available(let info):
             return "发现新版本 v\(info.version)"
         case .downloading:
@@ -339,13 +348,19 @@ struct PopoverContentView: View {
             return "更新已下载"
         case .installing:
             return "正在安装更新"
-        case .idle, .checking, .upToDate, .failed:
+        case .upToDate:
+            return "已是最新版本"
+        case .failed:
+            return "更新检查失败"
+        case .idle:
             return ""
         }
     }
 
     private var appUpdateRowDetail: String {
         switch updateStore.status {
+        case .checking:
+            return "正在确认是否有新版本。"
         case .available(let info):
             return "\(info.releaseName.isEmpty ? "fund-pulse" : info.releaseName) · 点击后先下载，下载完成后再安装。"
         case .downloading:
@@ -354,7 +369,11 @@ struct PopoverContentView: View {
             return "v\(info.version) 已准备好。现在更新会退出并重新打开 fund-pulse。"
         case .installing:
             return "fund-pulse 将自动退出并重新打开。"
-        case .idle, .checking, .upToDate, .failed:
+        case .upToDate(let checkedAt):
+            return "上次检查 \(checkedAt.formatted(date: .omitted, time: .shortened))。"
+        case .failed(let message):
+            return message
+        case .idle:
             return ""
         }
     }
@@ -365,7 +384,9 @@ struct PopoverContentView: View {
             return "下载"
         case .downloaded:
             return "现在更新"
-        case .idle, .checking, .downloading, .installing, .upToDate, .failed:
+        case .failed:
+            return "重试"
+        case .idle, .checking, .downloading, .installing, .upToDate:
             return nil
         }
     }
@@ -374,7 +395,13 @@ struct PopoverContentView: View {
         switch updateStore.status {
         case .downloaded:
             return .fundPulseGreen
-        case .available, .idle, .checking, .downloading, .installing, .upToDate, .failed:
+        case .upToDate:
+            return .fundPulseGreen
+        case .checking:
+            return .blue
+        case .failed:
+            return .red
+        case .available, .idle, .downloading, .installing:
             return .orange
         }
     }
@@ -388,22 +415,23 @@ struct PopoverContentView: View {
         switch updateStore.status {
         case .available, .downloaded:
             if let title = appUpdateRowButtonTitle {
-                Button(action: { onOpenUpdate?() }) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(appUpdateRowButtonColor)
-                        .padding(.horizontal, 10)
-                        .frame(height: 26)
-                        .background(appUpdateRowButtonColor.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(appUpdateRowButtonColor.opacity(colorScheme == .dark ? 0.34 : 0.24), lineWidth: 0.8)
-                        )
+                appUpdateRowActionButton(title: title, color: appUpdateRowButtonColor) {
+                    onOpenUpdate?()
                 }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .help(title)
             }
+        case .failed:
+            if let title = appUpdateRowButtonTitle {
+                appUpdateRowActionButton(title: title, color: appUpdateRowButtonColor) {
+                    Task {
+                        await onCheckUpdate?()
+                    }
+                }
+            }
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 30, height: 30)
+                .help(updateStore.badgeTitle ?? "正在检查更新")
         case .downloading:
             HStack(spacing: 6) {
                 UpdateProgressRing(progress: updateStore.downloadProgress, lineWidth: 3.4, showsGlyph: false)
@@ -424,9 +452,27 @@ struct PopoverContentView: View {
                 .controlSize(.small)
                 .frame(width: 30, height: 30)
                 .help(updateStore.badgeTitle ?? "正在安装更新")
-        case .idle, .checking, .upToDate, .failed:
+        case .idle, .upToDate:
             EmptyView()
         }
+    }
+
+    private func appUpdateRowActionButton(title: String, color: Color, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(color.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(color.opacity(colorScheme == .dark ? 0.34 : 0.24), lineWidth: 0.8)
+                )
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(title)
     }
 
     private var toolbarActionGroup: some View {
