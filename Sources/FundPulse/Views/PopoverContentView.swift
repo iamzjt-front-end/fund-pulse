@@ -290,13 +290,10 @@ struct PopoverContentView: View {
         .padding(.vertical, 8)
         .frame(minHeight: 58)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(listSurfaceBackground)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.24 : 0.18))
-                .frame(height: 0.6)
-                .padding(.horizontal, 12)
-        }
+        .background(appUpdateCardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(appUpdateCardBorder)
+        .overlay(appUpdateCardInnerHighlight)
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.13 : 0.04), radius: 9, x: 0, y: 4)
     }
 
     @ViewBuilder
@@ -305,8 +302,7 @@ struct PopoverContentView: View {
         case .available:
             appUpdateIconShell(systemName: "arrow.down", color: appUpdateRowAccentColor)
         case .downloading:
-            UpdateProgressRing(progress: updateStore.downloadProgress)
-                .frame(width: 26, height: 26)
+            appUpdateIconShell(systemName: "arrow.down", color: appUpdateRowAccentColor)
         case .downloaded:
             appUpdateIconShell(systemName: "checkmark", color: appUpdateRowAccentColor)
         case .installing:
@@ -383,6 +379,32 @@ struct PopoverContentView: View {
         appUpdateRowButtonColor
     }
 
+    private var appUpdateCardBackground: some ShapeStyle {
+        LinearGradient(
+            colors: [
+                appUpdateRowAccentColor.opacity(colorScheme == .dark ? 0.16 : 0.08),
+                metricCardBaseBackground
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var appUpdateCardBorder: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(
+                appUpdateRowAccentColor.opacity(colorScheme == .dark ? 0.28 : 0.22),
+                lineWidth: 0.9
+            )
+    }
+
+    private var appUpdateCardInnerHighlight: some View {
+        RoundedRectangle(cornerRadius: 9.4, style: .continuous)
+            .stroke(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.34), lineWidth: 0.55)
+            .padding(0.7)
+            .blendMode(.plusLighter)
+    }
+
     @ViewBuilder
     private var appUpdateRowTrailingControl: some View {
         switch updateStore.status {
@@ -393,17 +415,12 @@ struct PopoverContentView: View {
                 }
             }
         case .downloading:
-            HStack(spacing: 6) {
-                UpdateProgressRing(progress: updateStore.downloadProgress, lineWidth: 3.4, showsGlyph: false)
-                    .frame(width: 30, height: 30)
-                Text("\(Int(updateStore.downloadProgress * 100))%")
-                    .font(.system(size: 10, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.orange)
-                    .frame(width: 32, alignment: .trailing)
-            }
-            .padding(.leading, 2)
-            .accessibilityElement(children: .ignore)
+            Text("\(Int(updateStore.downloadProgress * 100))%")
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.orange)
+                .frame(width: 36, alignment: .trailing)
+                .accessibilityElement(children: .ignore)
             .accessibilityLabel("正在下载更新")
             .accessibilityValue("\(Int(updateStore.downloadProgress * 100))%")
             .help(updateStore.badgeTitle ?? "正在下载更新")

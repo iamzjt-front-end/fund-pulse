@@ -769,49 +769,14 @@ final class StatusBarController: NSObject {
     private func showContextMenu(relativeTo sender: NSStatusBarButton) {
         let menu = NSMenu()
 
-        let titleItem = NSMenuItem(title: "fund-pulse", action: nil, keyEquivalent: "")
-        titleItem.isEnabled = false
-        menu.addItem(titleItem)
+        menu.addItem(disabledMenuItem("fund-pulse v\(appVersion)"))
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "打开面板", action: #selector(openMainPanelFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "刷新基金数据", action: #selector(refreshFromMenu), keyEquivalent: "r"))
         menu.addItem(.separator())
 
-        switch updateStore.status {
-        case .available(let updateInfo):
-            menu.addItem(NSMenuItem(title: "下载新版本 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
-        case .downloading(let updateInfo):
-            let downloadingItem = NSMenuItem(
-                title: "正在下载 v\(updateInfo.version) · \(Int(updateStore.downloadProgress * 100))%",
-                action: nil,
-                keyEquivalent: ""
-            )
-            downloadingItem.isEnabled = false
-            menu.addItem(downloadingItem)
-        case .downloaded(let updateInfo, _):
-            menu.addItem(NSMenuItem(title: "现在更新 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
-        case .installing:
-            let installingItem = NSMenuItem(title: "正在更新，应用将自动重启", action: nil, keyEquivalent: "")
-            installingItem.isEnabled = false
-            menu.addItem(installingItem)
-        case .checking:
-            let checkingItem = NSMenuItem(title: "正在检查更新", action: nil, keyEquivalent: "")
-            checkingItem.isEnabled = false
-            menu.addItem(checkingItem)
-        case .failed(let reason):
-            let failedItem = NSMenuItem(title: "更新检查失败", action: nil, keyEquivalent: "")
-            failedItem.toolTip = reason
-            failedItem.isEnabled = false
-            menu.addItem(failedItem)
-            menu.addItem(NSMenuItem(title: "重新检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: ""))
-        case .upToDate:
-            let latestItem = NSMenuItem(title: "已是最新版本", action: nil, keyEquivalent: "")
-            latestItem.isEnabled = false
-            menu.addItem(latestItem)
-        case .idle:
-            menu.addItem(NSMenuItem(title: "检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: ""))
-        }
+        addUpdateMenuItems(to: menu)
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "设置", action: #selector(openSettingsFromMenu), keyEquivalent: ","))
@@ -826,6 +791,34 @@ final class StatusBarController: NSObject {
 
         closeAllPanels()
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
+    private func addUpdateMenuItems(to menu: NSMenu) {
+        switch updateStore.status {
+        case .idle, .upToDate:
+            menu.addItem(NSMenuItem(title: "检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: ""))
+        case .available(let updateInfo):
+            menu.addItem(NSMenuItem(title: "下载新版本 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
+        case .downloading(let updateInfo):
+            menu.addItem(disabledMenuItem("正在下载 v\(updateInfo.version) · \(Int(updateStore.downloadProgress * 100))%"))
+        case .downloaded(let updateInfo, _):
+            menu.addItem(NSMenuItem(title: "现在更新 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
+        case .installing:
+            menu.addItem(disabledMenuItem("正在更新，应用将自动重启"))
+        case .checking:
+            menu.addItem(disabledMenuItem("正在检查更新"))
+        case .failed(let reason):
+            let retryItem = NSMenuItem(title: "重新检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: "")
+            retryItem.toolTip = reason
+            menu.addItem(retryItem)
+        }
+    }
+
+    private func disabledMenuItem(_ title: String, toolTip: String? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        item.toolTip = toolTip
+        return item
     }
 
     private func checkForUpdates() {
