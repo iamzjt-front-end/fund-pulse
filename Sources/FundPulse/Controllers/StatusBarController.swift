@@ -1,9 +1,68 @@
 import AppKit
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 @preconcurrency import UserNotifications
 
 private let operationReminderNotificationID = "fund-pulse.operation-reminder"
+
+private enum StatusItemPresentation {
+    static let height: CGFloat = 24
+    static let iconSize: CGFloat = 16
+    static let hiddenLength: CGFloat = iconSize
+
+    static func visualLength(
+        for text: String,
+        attributes: [NSAttributedString.Key: Any],
+        isHidden: Bool
+    ) -> CGFloat {
+        if isHidden {
+            return hiddenLength
+        }
+
+        let textWidth = (text as NSString).size(withAttributes: attributes).width
+        return ceil(iconSize + textWidth)
+    }
+}
+
+private struct StatusTitlePresentation {
+    let text: String
+    let attributes: [NSAttributedString.Key: Any]
+    let isHidden: Bool
+    let visualLength: CGFloat
+}
+
+private func makeStatusPulseImage(size: NSSize, tintColor: NSColor? = nil) -> NSImage {
+    let image = NSImage(size: size, flipped: false) { rect in
+        let color = tintColor ?? .labelColor
+        color.setStroke()
+        color.setFill()
+
+        let path = NSBezierPath()
+        path.lineWidth = 1.8
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        path.move(to: NSPoint(x: rect.minX + 1.6, y: rect.minY + 8.0))
+        path.line(to: NSPoint(x: rect.minX + 4.6, y: rect.minY + 8.0))
+        path.line(to: NSPoint(x: rect.minX + 6.4, y: rect.minY + 13.0))
+        path.line(to: NSPoint(x: rect.minX + 9.5, y: rect.minY + 4.0))
+        path.line(to: NSPoint(x: rect.minX + 11.5, y: rect.minY + 10.0))
+        path.line(to: NSPoint(x: rect.minX + 14.4, y: rect.minY + 10.0))
+        path.stroke()
+
+        NSBezierPath(
+            ovalIn: NSRect(
+                x: rect.minX + 12.0,
+                y: rect.minY + 12.5,
+                width: 2.8,
+                height: 2.8
+            )
+        ).fill()
+        return true
+    }
+    image.isTemplate = tintColor == nil
+    return image
+}
 
 enum PopoverLayout {
     static let mainWidth: CGFloat = 360
@@ -180,6 +239,9 @@ final class StatusBarController: NSObject {
     private let updateStore: AppUpdateStore
     private let appVersion: String
     private let popoverState = PopoverUIState()
+    private lazy var statusPulseImage = makeStatusPulseImage(
+        size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize)
+    )
     private let onCheckUpdate: () async -> Void
     private let onOpenUpdate: () -> Void
 
@@ -191,6 +253,7 @@ final class StatusBarController: NSObject {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
     private var deactivateObserver: NSObjectProtocol?
+    private var amountPrivacyObserver: NSObjectProtocol?
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
     private var isRefreshingQuotes = false
@@ -221,6 +284,7 @@ final class StatusBarController: NSObject {
         super.init()
 
         configureStatusItem()
+        configureAmountPrivacyObserver()
         updateStatusTitle()
         configureAutoRefreshTimer()
         configureOperationReminder()
@@ -231,30 +295,96 @@ final class StatusBarController: NSObject {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
         removeEventMonitors()
+        if let amountPrivacyObserver {
+            NotificationCenter.default.removeObserver(amountPrivacyObserver)
+            self.amountPrivacyObserver = nil
+        }
     }
 
     private func configureStatusItem() {
         guard let button = statusItem.button else { return }
-        button.image = makePulseImage()
+        button.image = statusPulseImage
         button.imagePosition = .imageLeft
+        button.imageScaling = .scaleProportionallyDown
         button.target = self
-        button.action = #selector(toggleMainPanel(_:))
+        button.action = #selector(handleStatusItemAction(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        button.wantsLayer = true
+        button.layer?.backgroundColor = NSColor.clear.cgColor
+        statusItem.length = StatusItemPresentation.hiddenLength
     }
 
-    func updateStatusTitle() {
+    func updateStatusTitle(animated: Bool = false) {
+        let presentation = currentStatusTitlePresentation()
         guard let button = statusItem.button else { return }
+        button.toolTip = presentation.isHidden ? "显示金额" : "隐藏金额"
+        if presentation.isHidden {
+            button.image = makeStatusPulseImage(
+                size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize),
+                tintColor: statusTitleColor(for: store.snapshot.todayIncome).withAlphaComponent(0.9)
+            )
+            button.imagePosition = .imageOnly
+            button.attributedTitle = NSAttributedString(string: "")
+        } else {
+            button.image = statusPulseImage
+            button.imagePosition = .imageLeft
+            button.attributedTitle = NSAttributedString(
+                string: presentation.text,
+                attributes: presentation.attributes
+            )
+        }
+        setStatusItemLength(for: presentation)
+    }
 
+    private func currentStatusTitlePresentation() -> StatusTitlePresentation {
         let value = store.snapshot.todayIncome
-        let text = signedStatusText(value)
-        let font = button.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        button.attributedTitle = NSAttributedString(
-            string: " \(text)",
-            attributes: [
-                .font: font,
-                .foregroundColor: statusTitleColor(for: value)
-            ]
+        let isHidden = UserDefaults.standard.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
+        let font = statusTitleFont(forHiddenState: isHidden)
+        let text = statusTitleText(for: signedStatusText(value), isHidden: isHidden)
+        let attributes = statusTitleAttributes(for: value, font: font, isHidden: isHidden)
+        let visualLength = StatusItemPresentation.visualLength(
+            for: text,
+            attributes: attributes,
+            isHidden: isHidden
         )
+
+        return StatusTitlePresentation(
+            text: text,
+            attributes: attributes,
+            isHidden: isHidden,
+            visualLength: visualLength
+        )
+    }
+
+    private func setStatusItemLength(for presentation: StatusTitlePresentation) {
+        let systemButtonPadding: CGFloat = presentation.isHidden ? 8 : 10
+        statusItem.length = ceil(presentation.visualLength + systemButtonPadding)
+    }
+
+    private func statusTitleFont(forHiddenState isHidden: Bool) -> NSFont {
+        if isHidden {
+            return .systemFont(ofSize: 12, weight: .semibold)
+        }
+        return .systemFont(ofSize: NSFont.systemFontSize)
+    }
+
+    private func statusTitleText(for amountText: String, isHidden: Bool) -> String {
+        if isHidden {
+            return ""
+        }
+        return amountText
+    }
+
+    private func statusTitleAttributes(
+        for value: Double,
+        font: NSFont,
+        isHidden: Bool
+    ) -> [NSAttributedString.Key: Any] {
+        let color = statusTitleColor(for: value)
+        return [
+            .font: font,
+            .foregroundColor: isHidden ? color.withAlphaComponent(0.86) : color
+        ]
     }
 
     private func signedStatusText(_ value: Double) -> String {
@@ -268,12 +398,19 @@ final class StatusBarController: NSObject {
         return .secondaryLabelColor
     }
 
-    @objc private func toggleMainPanel(_ sender: NSStatusBarButton) {
-        if NSApp.currentEvent?.type == .rightMouseUp {
-            showContextMenu(relativeTo: sender)
-            return
+    private func configureAmountPrivacyObserver() {
+        amountPrivacyObserver = NotificationCenter.default.addObserver(
+            forName: .fundPulseAmountPrivacyDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateStatusTitle(animated: true)
+            }
         }
+    }
 
+    private func toggleMainPanelFromStatusItem() {
         if let mainPanelWindow, mainPanelWindow.isVisible {
             closeAllPanels()
         } else {
@@ -281,10 +418,21 @@ final class StatusBarController: NSObject {
         }
     }
 
+    @objc private func handleStatusItemAction(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || event?.modifierFlags.contains(.control) == true {
+            showContextMenu(relativeTo: sender)
+            return
+        }
+
+        toggleMainPanelFromStatusItem()
+    }
+
     private func showMainPanel() {
         let window = mainPanelWindow ?? createMainPanelWindow()
         window.appearance = NSApp.effectiveAppearance
         window.contentView?.appearance = NSApp.effectiveAppearance
+        setStatusItemHighlighted(true)
 
         store.load()
         updateStatusTitle()
@@ -575,6 +723,7 @@ final class StatusBarController: NSObject {
         clearChildPanelState()
         mainPanelAnchorFrame = nil
         removeEventMonitors()
+        setStatusItemHighlighted(false)
     }
 
     private func closeAllPanels() {
@@ -583,6 +732,7 @@ final class StatusBarController: NSObject {
         clearChildPanelState()
         mainPanelAnchorFrame = nil
         removeEventMonitors()
+        setStatusItemHighlighted(false)
     }
 
     private func clearChildPanelState() {
@@ -724,10 +874,8 @@ final class StatusBarController: NSObject {
     }
 
     private func pointIsInsideStatusButton(_ point: NSPoint) -> Bool {
-        guard let button = statusItem.button,
-              let buttonWindow = button.window else { return false }
-        let buttonFrame = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        return buttonFrame.insetBy(dx: -4, dy: -4).contains(point)
+        guard let frame = currentStatusButtonFrame() else { return false }
+        return frame.insetBy(dx: -4, dy: -4).contains(point)
     }
 
     private func positionMainPanel(window: NSWindow, size: NSSize) {
@@ -762,8 +910,28 @@ final class StatusBarController: NSObject {
 
     private func currentStatusButtonFrame() -> NSRect? {
         guard let button = statusItem.button,
-              let buttonWindow = button.window else { return nil }
-        return buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+              let window = button.window
+        else { return nil }
+        return window.convertToScreen(button.convert(button.bounds, to: nil))
+    }
+
+    private func setStatusItemHighlighted(_ isHighlighted: Bool) {
+        guard let button = statusItem.button else { return }
+        button.wantsLayer = true
+        button.layer?.cornerRadius = min(button.bounds.width, button.bounds.height) / 2
+        button.layer?.masksToBounds = true
+        button.layer?.backgroundColor = isHighlighted
+            ? statusItemHighlightColor().cgColor
+            : NSColor.clear.cgColor
+        button.needsDisplay = true
+    }
+
+    private func statusItemHighlightColor() -> NSColor {
+        let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return isDark
+            ? NSColor.white.withAlphaComponent(0.14)
+            : NSColor.black.withAlphaComponent(0.08)
     }
 
     private func showContextMenu(relativeTo sender: NSStatusBarButton) {
@@ -772,7 +940,7 @@ final class StatusBarController: NSObject {
         menu.addItem(disabledMenuItem("fund-pulse v\(appVersion)"))
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: "打开面板", action: #selector(openMainPanelFromMenu), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: amountPrivacyMenuTitle, action: #selector(toggleAmountPrivacyFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "刷新基金数据", action: #selector(refreshFromMenu), keyEquivalent: "r"))
         menu.addItem(.separator())
 
@@ -780,8 +948,8 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "设置", action: #selector(openSettingsFromMenu), keyEquivalent: ","))
-        menu.addItem(NSMenuItem(title: "打开数据目录", action: #selector(openDataDirectoryFromMenu), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "定位 portfolio.json", action: #selector(revealPortfolioFromMenu), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "导入基金配置", action: #selector(importFundConfigurationFromMenu), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "导出基金配置", action: #selector(exportFundConfigurationFromMenu), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quitFromMenu), keyEquivalent: "q"))
 
@@ -790,7 +958,8 @@ final class StatusBarController: NSObject {
         }
 
         closeAllPanels()
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+        let popUpMenuSelector = NSSelectorFromString("popUpStatusItemMenu:")
+        _ = statusItem.perform(popUpMenuSelector, with: menu)
     }
 
     private func addUpdateMenuItems(to menu: NSMenu) {
@@ -821,14 +990,23 @@ final class StatusBarController: NSObject {
         return item
     }
 
+    private var amountPrivacyMenuTitle: String {
+        UserDefaults.standard.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
+            ? "显示金额"
+            : "隐藏金额"
+    }
+
     private func checkForUpdates() {
         Task { [weak self] in
             await self?.onCheckUpdate()
         }
     }
 
-    @objc private func openMainPanelFromMenu() {
-        showMainPanel()
+    @objc private func toggleAmountPrivacyFromMenu() {
+        let defaults = UserDefaults.standard
+        let shouldHideAmounts = !defaults.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
+        defaults.set(shouldHideAmounts, forKey: AppPreferenceKey.hideHeaderAmounts)
+        NotificationCenter.default.post(name: .fundPulseAmountPrivacyDidChange, object: nil)
     }
 
     @objc private func refreshFromMenu() {
@@ -848,16 +1026,65 @@ final class StatusBarController: NSObject {
         showChildPanel(.settings)
     }
 
-    @objc private func openDataDirectoryFromMenu() {
-        NSWorkspace.shared.open(store.dataDirectory)
+    @objc private func importFundConfigurationFromMenu() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let panel = NSOpenPanel()
+        panel.title = "导入基金配置"
+        panel.prompt = "导入"
+        panel.message = "选择 fund-pulse 导出的 JSON 配置文件。"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try store.importPortfolio(from: url)
+            updateStatusTitle()
+            showMainPanel()
+        } catch {
+            presentConfigurationError(title: "导入基金配置失败", error: error)
+        }
     }
 
-    @objc private func revealPortfolioFromMenu() {
-        NSWorkspace.shared.activateFileViewerSelecting([store.dataFileURL])
+    @objc private func exportFundConfigurationFromMenu() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let panel = NSSavePanel()
+        panel.title = "导出基金配置"
+        panel.prompt = "导出"
+        panel.message = "导出当前录入的基金、持仓日期、待确认交易和交易记录。"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = defaultFundConfigurationFileName()
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            try store.exportPortfolio(to: url)
+        } catch {
+            presentConfigurationError(title: "导出基金配置失败", error: error)
+        }
     }
 
     @objc private func quitFromMenu() {
         NSApp.terminate(nil)
+    }
+
+    private func defaultFundConfigurationFileName() -> String {
+        "fund-pulse-portfolio-\(DateOnlyFormatter.string(from: .now)).json"
+    }
+
+    private func presentConfigurationError(title: String, error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     private func refreshQuotesAndStatusTitle() {
@@ -951,31 +1178,5 @@ final class StatusBarController: NSObject {
         } catch {
             refreshVisiblePanels()
         }
-    }
-
-    private func makePulseImage() -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size)
-        image.lockFocus()
-
-        NSColor.labelColor.setStroke()
-        NSColor.labelColor.setFill()
-
-        let path = NSBezierPath()
-        path.lineWidth = 1.8
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: 2.6, y: 8.0))
-        path.line(to: NSPoint(x: 5.6, y: 8.0))
-        path.line(to: NSPoint(x: 7.4, y: 13.0))
-        path.line(to: NSPoint(x: 10.5, y: 4.0))
-        path.line(to: NSPoint(x: 12.5, y: 10.0))
-        path.line(to: NSPoint(x: 15.4, y: 10.0))
-        path.stroke()
-
-        NSBezierPath(ovalIn: NSRect(x: 13.0, y: 12.5, width: 2.8, height: 2.8)).fill()
-        image.unlockFocus()
-        image.isTemplate = true
-        return image
     }
 }

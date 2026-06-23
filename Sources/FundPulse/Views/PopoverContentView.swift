@@ -99,6 +99,7 @@ struct PopoverContentView: View {
     let onOpenUpdate: (() -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(AppPreferenceKey.hideHeaderAmounts) private var hidesHeaderAmounts = false
     @State private var isRefreshing = false
     @State private var filter: FundListFilter = .holding
     @State private var sortMode: FundSortMode = .todayRate
@@ -127,19 +128,28 @@ struct PopoverContentView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 Spacer()
-                marketBadge
                 if displayPendingCount > 0 {
-                    Text("待确认 \(displayPendingCount)笔")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(pendingBadgeForeground)
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(pendingBadgeBackground, in: Capsule())
-                        .overlay(
-                            Capsule()
-                                .stroke(pendingBadgeForeground.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 0.6)
-                        )
+                    Button {
+                        selectFilter(.pending)
+                    } label: {
+                        Text("待确认 \(displayPendingCount)笔")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(pendingBadgeForeground)
+                            .padding(.horizontal, 8)
+                            .frame(height: 22)
+                            .background(pendingBadgeBackground, in: Capsule())
+                            .overlay(
+                                Capsule()
+                                    .stroke(pendingBadgeForeground.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 0.6)
+                            )
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .help("查看待确认")
                 }
+                marketBadge
+                privacyToggleButton
             }
 
             if let statusMessage {
@@ -179,6 +189,7 @@ struct PopoverContentView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                         .foregroundStyle(toneColor(for: store.snapshot.todayIncome))
+                        .blur(radius: headerAmountBlurRadius)
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
@@ -189,6 +200,7 @@ struct PopoverContentView: View {
                         .font(.system(size: 16, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(toneColor(for: store.snapshot.todayIncomeRate))
+                        .blur(radius: headerAmountBlurRadius)
                 }
                 .padding(.bottom, 3)
             }
@@ -570,16 +582,13 @@ struct PopoverContentView: View {
         let pendingHasItems = isPending && currentCount > 0
 
         return Button {
-            withAnimation(.easeInOut(duration: 0.12)) {
-                filter = value
-                isSortMenuPresented = false
-            }
+            selectFilter(value)
         } label: {
             HStack(spacing: 6) {
                 Text(value.title)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
-            Text("\(currentCount)")
+                Text("\(currentCount)")
                     .font(.system(size: 9, weight: .semibold))
                     .monospacedDigit()
                     .lineLimit(1)
@@ -609,6 +618,13 @@ struct PopoverContentView: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
+    }
+
+    private func selectFilter(_ value: FundListFilter) {
+        withAnimation(.easeInOut(duration: 0.12)) {
+            filter = value
+            isSortMenuPresented = false
+        }
     }
 
     private var sortMenuLabel: some View {
@@ -753,6 +769,47 @@ struct PopoverContentView: View {
             .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.24 : 0.12), radius: 6, x: 0, y: 3)
     }
 
+    private var privacyToggleButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                hidesHeaderAmounts.toggle()
+            }
+            NotificationCenter.default.post(name: .fundPulseAmountPrivacyDidChange, object: nil)
+        } label: {
+            Image(systemName: hidesHeaderAmounts ? "eye.slash.fill" : "eye.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(privacyToggleForeground)
+                .frame(width: 22, height: 22)
+                .background(privacyToggleBackground, in: Circle())
+                .overlay(
+                    Circle()
+                        .stroke(privacyToggleForeground.opacity(colorScheme == .dark ? 0.22 : 0.18), lineWidth: 0.6)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(hidesHeaderAmounts ? "显示顶部金额" : "隐藏顶部金额")
+        .accessibilityLabel(hidesHeaderAmounts ? "显示顶部金额" : "隐藏顶部金额")
+    }
+
+    private var headerAmountBlurRadius: CGFloat {
+        hidesHeaderAmounts ? 5.5 : 0
+    }
+
+    private var privacyToggleForeground: Color {
+        hidesHeaderAmounts
+            ? .orange
+            : Color.secondary.opacity(colorScheme == .dark ? 0.86 : 0.72)
+    }
+
+    private var privacyToggleBackground: Color {
+        hidesHeaderAmounts
+            ? Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12)
+            : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05)
+    }
+
     @ViewBuilder
     private var updateButton: some View {
         switch updateStore.status {
@@ -878,6 +935,7 @@ struct PopoverContentView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .foregroundStyle(isTotal ? totalAmountAccentColor : (tone.map(toneColor(for:)) ?? Color.primary))
+                .blur(radius: headerAmountBlurRadius)
 
             if let footnote {
                 Text(footnote)
@@ -886,6 +944,7 @@ struct PopoverContentView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                     .foregroundStyle(pendingAmountFootnoteColor)
+                    .blur(radius: headerAmountBlurRadius)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

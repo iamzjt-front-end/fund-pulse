@@ -238,6 +238,172 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testNewFundAddedTodayStaysPendingAfterNetValueUpdatesUntilNextDay() async throws {
+        var now = try chinaDate("2026-06-23 21:48")
+        let service = quoteServiceWithMockResponses([
+            "https://fundgz.1234567.com.cn/js/025833.js": """
+            jsonpgz({"fundcode":"025833","name":"天弘电网设备特高压指数C","jzrq":"2026-06-23","dwjz":"1.5130","gsz":"1.5130","gszzl":"-2.76","gztime":"2026-06-23 15:00"});
+            """,
+            "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=025833&page=1&per=1": """
+            var apidata={ content:"<table><tbody><tr><td>2026-06-23</td><td class='tor bold'>1.5130</td><td>1.5130</td><td class='green'>-2.76%</td></tr></tbody></table>",records:1,pages:1,curpage:1};
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-new-fund-same-day-pending-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        let draft = FundPositionDraft(
+            code: "025833",
+            name: "",
+            positionMode: .amount,
+            positionAmount: 5_000,
+            positionProfit: 0,
+            shares: nil,
+            cost: nil,
+            positionDate: "2026-06-23",
+            positionTimeType: .before15,
+            zdfRange: nil,
+            jzNotice: nil,
+            memo: ""
+        )
+
+        try await store.upsertFund(draft)
+
+        let pendingFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
+        XCTAssertEqual(pendingFund.name, "天弘电网设备特高压指数C")
+        XCTAssertEqual(pendingFund.status, .pending)
+        XCTAssertEqual(pendingFund.pendingAmount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(pendingFund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingCount, 1)
+        let pendingRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(pendingRecord.kind, .newFund)
+        XCTAssertEqual(pendingRecord.status, .pending)
+        XCTAssertNil(pendingRecord.confirmedShares)
+        XCTAssertNil(pendingRecord.price)
+
+        await store.refreshQuotes()
+
+        let stillPendingFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
+        XCTAssertEqual(stillPendingFund.status, .pending)
+        XCTAssertEqual(stillPendingFund.pendingAmount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(stillPendingFund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.tradeRecords?.first?.status, .pending)
+
+        now = try chinaDate("2026-06-24 09:30")
+        await store.refreshQuotes()
+
+        let confirmedFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
+        XCTAssertEqual(confirmedFund.status, .holding)
+        XCTAssertEqual(confirmedFund.pendingAmount ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(confirmedFund.migratedShares ?? 0, 3304.69, accuracy: 0.0001)
+        XCTAssertEqual(confirmedFund.migratedCost ?? 0, 1.5130, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+        let confirmedRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(confirmedRecord.status, .confirmed)
+        XCTAssertEqual(confirmedRecord.confirmedShares ?? 0, 3304.69, accuracy: 0.0001)
+        XCTAssertEqual(confirmedRecord.price ?? 0, 1.5130, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPrematureSameDayNewFundConfirmationIsRestoredToPending() async throws {
+        let now = try chinaDate("2026-06-23 21:48")
+        let createdAt = try chinaDate("2026-06-23 15:41")
+        let service = quoteServiceWithMockResponses([
+            "https://fundgz.1234567.com.cn/js/025833.js": """
+            jsonpgz({"fundcode":"025833","name":"天弘电网设备特高压指数C","jzrq":"2026-06-23","dwjz":"1.5130","gsz":"1.5130","gszzl":"-2.76","gztime":"2026-06-23 15:00"});
+            """,
+            "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=025833&page=1&per=1": """
+            var apidata={ content:"<table><tbody><tr><td>2026-06-23</td><td class='tor bold'>1.5130</td><td>1.5130</td><td class='green'>-2.76%</td></tr></tbody></table>",records:1,pages:1,curpage:1};
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-premature-new-fund-confirmation-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 5_000,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: -142.10,
+                todayIncomeRate: -2.76,
+                pendingCount: 0,
+                funds: [
+                    FundPosition(
+                        code: "025833",
+                        name: "天弘电网设备特高压指数C",
+                        dateText: "06-23 15:00",
+                        todayIncome: -142.10,
+                        todayRate: -2.76,
+                        holdingRate: 0,
+                        status: .holding,
+                        isUpdated: true,
+                        isIncomeActive: true,
+                        migratedShares: 3304.69,
+                        migratedCost: 1.5130,
+                        migratedPrincipal: 5_000,
+                        incomeStartDate: "2026-06-23",
+                        positionMode: .amount,
+                        positionDate: "2026-06-23",
+                        positionTimeType: .before15,
+                        lots: [
+                            FundPositionLot(
+                                id: "premature-lot",
+                                shares: 3304.69,
+                                cost: 1.5130,
+                                incomeStartDate: "2026-06-23",
+                                positionDate: "2026-06-23",
+                                positionTimeType: .before15
+                            )
+                        ]
+                    )
+                ],
+                migration: nil,
+                tradeRecords: [
+                    FundTradeRecord(
+                        id: "premature-record",
+                        kind: .newFund,
+                        status: .confirmed,
+                        code: "025833",
+                        name: "天弘电网设备特高压指数C",
+                        mode: .amount,
+                        amount: 5_000,
+                        shares: nil,
+                        confirmedShares: 3304.69,
+                        price: 1.5130,
+                        tradeDate: "2026-06-23",
+                        tradeTimeType: .before15,
+                        acceptedDate: "2026-06-23",
+                        createdAt: createdAt,
+                        confirmedAt: createdAt,
+                        failureReason: nil
+                    )
+                ]
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        await store.refreshQuotes()
+
+        let restoredFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
+        XCTAssertEqual(restoredFund.status, .pending)
+        XCTAssertEqual(restoredFund.pendingAmount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(restoredFund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingCount, 1)
+        let restoredRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(restoredRecord.status, .pending)
+        XCTAssertNil(restoredRecord.confirmedShares)
+        XCTAssertNil(restoredRecord.price)
+        XCTAssertNil(restoredRecord.confirmedAt)
+    }
+
+    @MainActor
     func testConfirmedBuyTradeCreatesRecordAndUpdatesWeightedCost() async throws {
         let service = quoteServiceWithMockResponses([
             "https://fundgz.1234567.com.cn/js/026210.js": """
@@ -1218,6 +1384,124 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.funds[0].migratedShares, 150)
         XCTAssertEqual(result.funds[0].isIncomeActive, true)
         XCTAssertEqual(result.todayIncome, 0)
+    }
+
+    @MainActor
+    func testPortfolioImportExportPreservesEnteredFundConfiguration() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-import-export-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let importedDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-imported-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+            try? FileManager.default.removeItem(at: importedDirectory)
+        }
+
+        let createdAt = try chinaDate("2026-06-23 15:41")
+        let confirmedAt = try chinaDate("2026-06-24 09:30")
+        let snapshot = PortfolioSnapshot(
+            updateTime: createdAt,
+            totalAmount: 1_250,
+            holdingIncome: 50,
+            holdingIncomeRate: 4.17,
+            todayIncome: 12.5,
+            todayIncomeRate: 1,
+            pendingCount: 1,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-23 15:00",
+                    todayIncome: 12.5,
+                    todayRate: 1,
+                    holdingIncome: 50,
+                    holdingRate: 4.17,
+                    confirmedHoldingIncome: 50,
+                    confirmedHoldingRate: 4.17,
+                    currentAmount: 1_250,
+                    status: .holding,
+                    isUpdated: true,
+                    isIncomeActive: true,
+                    migratedShares: 500,
+                    migratedCost: 2.4,
+                    migratedPrincipal: 1_200,
+                    incomeStartDate: "2026-06-23",
+                    positionMode: .amount,
+                    positionDate: "2026-06-23",
+                    positionTimeType: .before15,
+                    pendingAmount: nil,
+                    pendingProfit: nil,
+                    zdfRange: 3.2,
+                    jzNotice: 1.1,
+                    memo: "核心仓",
+                    lots: [
+                        FundPositionLot(
+                            id: "lot-1",
+                            shares: 500,
+                            cost: 2.4,
+                            incomeStartDate: "2026-06-23",
+                            positionDate: "2026-06-23",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil,
+            pendingTrades: [
+                FundPendingTrade(
+                    id: "pending-buy",
+                    recordID: "record-buy",
+                    action: .buy,
+                    code: "026210",
+                    mode: .amount,
+                    amount: 300,
+                    shares: nil,
+                    tradeDate: "2026-06-23",
+                    tradeTimeType: .after15,
+                    createdAt: createdAt
+                )
+            ],
+            tradeRecords: [
+                FundTradeRecord(
+                    id: "record-new",
+                    kind: .newFund,
+                    status: .confirmed,
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    mode: .amount,
+                    amount: 1_200,
+                    shares: nil,
+                    confirmedShares: 500,
+                    price: 2.4,
+                    tradeDate: "2026-06-23",
+                    tradeTimeType: .before15,
+                    acceptedDate: "2026-06-23",
+                    createdAt: createdAt,
+                    confirmedAt: confirmedAt,
+                    failureReason: nil
+                )
+            ]
+        )
+        let store = PortfolioStore(dataDirectory: tempDirectory)
+        try seedPortfolio(snapshot, into: store, directory: tempDirectory)
+
+        let exportURL = tempDirectory.appending(path: "fund-config.json")
+        try store.exportPortfolio(to: exportURL)
+
+        let exportedJSON = try String(contentsOf: exportURL, encoding: .utf8)
+        XCTAssertTrue(exportedJSON.contains("\"funds\""))
+        XCTAssertTrue(exportedJSON.contains("\"positionDate\""))
+        XCTAssertTrue(exportedJSON.contains("\"pendingTrades\""))
+        XCTAssertTrue(exportedJSON.contains("\"tradeRecords\""))
+        XCTAssertTrue(exportedJSON.contains("\"createdAt\""))
+
+        let importedStore = PortfolioStore(dataDirectory: importedDirectory)
+        try importedStore.importPortfolio(from: exportURL)
+
+        XCTAssertEqual(importedStore.snapshot, snapshot)
+        XCTAssertEqual(importedStore.snapshot.funds.first?.positionDate, "2026-06-23")
+        XCTAssertEqual(importedStore.snapshot.pendingTrades?.first?.createdAt, createdAt)
+        XCTAssertEqual(importedStore.snapshot.tradeRecords?.first?.confirmedAt, confirmedAt)
     }
 
     @MainActor
