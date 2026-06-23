@@ -77,8 +77,8 @@ final class PortfolioStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let importedSnapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
-        snapshot = importedSnapshot
         try save(importedSnapshot)
+        snapshot = importedSnapshot
         loadState = .loaded
     }
 
@@ -97,6 +97,7 @@ final class PortfolioStore {
 
         do {
             let quotes = await fetchQuotes(codes: codes, source: .fundBabyAuto)
+            normalizePrematureInitialConfirmations()
             await processPendingTrades(quotes: quotes)
             await processPendingPositions(quotes: quotes)
             snapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: nowProvider())
@@ -119,11 +120,13 @@ final class PortfolioStore {
             positionDate: draft.positionDate,
             timeType: draft.positionTimeType
         )
-        let confirmedNetValue = await quoteService.fetchConfirmedNetValue(
+        let canConfirmInitialPosition = existingFund != nil || shouldConfirmPendingTrade(acceptedDate: acceptedDate)
+        let fetchedConfirmedNetValue = await quoteService.fetchConfirmedNetValue(
             code: code,
             acceptedDate: acceptedDate,
             latestQuote: quote
         )
+        let confirmedNetValue = canConfirmInitialPosition ? fetchedConfirmedNetValue : nil
         let fund = try makeFundPosition(
             from: draft,
             existingFund: existingFund,
@@ -458,6 +461,70 @@ final class PortfolioStore {
         return acceptedDate < DateOnlyFormatter.string(from: nowProvider())
     }
 
+    private func normalizePrematureInitialConfirmations() {
+        guard var records = snapshot.tradeRecords, !records.isEmpty else {
+            return
+        }
+
+        var affectedCodes = Set<String>()
+        for index in records.indices {
+            guard records[index].kind == .newFund,
+                  records[index].status == .confirmed,
+                  records[index].mode == .amount,
+                  !shouldConfirmPendingTrade(acceptedDate: records[index].acceptedDate)
+            else {
+                continue
+            }
+
+            records[index].status = .pending
+            records[index].confirmedShares = nil
+            records[index].price = nil
+            records[index].confirmedAt = nil
+            records[index].failureReason = nil
+            affectedCodes.insert(records[index].code)
+        }
+
+        guard !affectedCodes.isEmpty else {
+            return
+        }
+
+        snapshot.tradeRecords = records
+        for code in affectedCodes {
+            restorePendingInitialPosition(for: code, records: records)
+        }
+    }
+
+    private func restorePendingInitialPosition(for code: String, records: [FundTradeRecord]) {
+        guard let index = snapshot.funds.firstIndex(where: { $0.code == code }),
+              let record = records
+                .filter({ $0.code == code && $0.kind == .newFund && $0.status == .pending })
+                .sorted(by: { $0.createdAt < $1.createdAt })
+                .last
+        else {
+            return
+        }
+
+        var fund = snapshot.funds[index]
+        fund.status = .pending
+        fund.lots = []
+        fund.migratedShares = 0
+        fund.migratedCost = nil
+        fund.migratedPrincipal = 0
+        fund.isIncomeActive = false
+        fund.currentAmount = 0
+        fund.holdingIncome = 0
+        fund.holdingRate = nil
+        fund.confirmedHoldingIncome = nil
+        fund.confirmedHoldingRate = nil
+        fund.pendingAmount = record.amount
+        fund.pendingProfit = nil
+        fund.positionMode = record.mode
+        fund.positionDate = record.tradeDate
+        fund.positionTimeType = record.tradeTimeType
+        fund.incomeStartDate = record.acceptedDate
+        snapshot.funds[index] = fund
+    }
+
     private func processPendingPositions(quotes: [String: FundQuote]) async {
         for index in snapshot.funds.indices {
             var fund = snapshot.funds[index]
@@ -475,6 +542,9 @@ final class PortfolioStore {
                 positionDate: positionDate,
                 timeType: positionTimeType
             )
+            guard shouldConfirmPendingTrade(acceptedDate: acceptedDate) else {
+                continue
+            }
             guard let confirmedNetValue = await quoteService.fetchConfirmedNetValue(
                 code: fund.code,
                 acceptedDate: acceptedDate,
