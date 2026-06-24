@@ -833,6 +833,9 @@ final class StatusBarController: NSObject {
     private func handlePanelEvent(_ event: NSEvent, screenLocation: NSPoint) {
         switch event.type {
         case .leftMouseDown, .rightMouseDown:
+            if PanelAuxiliaryPopoverRegistry.handlePanelMouseDown(at: screenLocation) {
+                return
+            }
             guard !pointIsInsideManagedPanels(screenLocation), !pointIsInsideStatusButton(screenLocation) else { return }
             closeAllPanels()
         default:
