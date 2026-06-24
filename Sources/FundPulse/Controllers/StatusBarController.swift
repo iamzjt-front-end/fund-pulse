@@ -39,7 +39,7 @@ private func makeStatusPulseImage(size: NSSize, tintColor: NSColor? = nil) -> NS
         color.setFill()
 
         let path = NSBezierPath()
-        path.lineWidth = 1.8
+        path.lineWidth = tintColor == nil ? 1.8 : 2.05
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
         path.move(to: NSPoint(x: rect.minX + 1.6, y: rect.minY + 8.0))
@@ -321,7 +321,7 @@ final class StatusBarController: NSObject {
         if presentation.isHidden {
             button.image = makeStatusPulseImage(
                 size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize),
-                tintColor: statusTitleColor(for: store.snapshot.todayIncome).withAlphaComponent(0.9)
+                tintColor: StatusBarTone.menuBarColor(forRate: store.snapshot.todayIncomeRate).withAlphaComponent(0.96)
             )
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")

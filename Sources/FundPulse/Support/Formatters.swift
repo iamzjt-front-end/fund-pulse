@@ -42,6 +42,27 @@ enum ValueTone {
     }
 }
 
+enum StatusBarTone {
+    enum Intensity: Equatable {
+        case neutral
+        case subtle
+        case normal
+        case clear
+        case strong
+        case extreme
+    }
+
+    static func intensity(forRate rate: Double) -> Intensity {
+        let magnitude = abs(rate)
+        if magnitude <= 0.10 { return .neutral }
+        if magnitude < 1.00 { return .subtle }
+        if magnitude < 2.00 { return .normal }
+        if magnitude < 3.00 { return .clear }
+        if magnitude < 4.00 { return .strong }
+        return .extreme
+    }
+}
+
 extension Color {
     static let fundPulseGreen = Color(red: 75 / 255, green: 166 / 255, blue: 110 / 255)
 }
@@ -49,5 +70,29 @@ extension Color {
 #if canImport(AppKit)
 extension NSColor {
     static let fundPulseGreen = NSColor(red: 75 / 255, green: 166 / 255, blue: 110 / 255, alpha: 1)
+}
+
+extension StatusBarTone {
+    static func menuBarColor(forRate rate: Double) -> NSColor {
+        let palette: [Intensity: (red: CGFloat, green: CGFloat, blue: CGFloat)] = rate > 0
+            ? [
+                .neutral: (142, 142, 147),
+                .subtle: (255, 138, 128),
+                .normal: (255, 90, 106),
+                .clear: (230, 59, 74),
+                .strong: (185, 21, 42),
+                .extreme: (110, 7, 20)
+            ]
+            : [
+                .neutral: (142, 142, 147),
+                .subtle: (123, 216, 143),
+                .normal: (75, 166, 110),
+                .clear: (46, 139, 87),
+                .strong: (20, 107, 58),
+                .extreme: (7, 59, 36)
+            ]
+        let color = palette[intensity(forRate: rate)] ?? (142, 142, 147)
+        return NSColor(red: color.red / 255, green: color.green / 255, blue: color.blue / 255, alpha: 1)
+    }
 }
 #endif
