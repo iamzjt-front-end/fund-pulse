@@ -133,6 +133,7 @@ struct AppUpdateService {
             .appending(path: tag)
             .appending(path: "latest-mac.yml")
         var request = URLRequest(url: feedURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
@@ -172,6 +173,7 @@ struct AppUpdateService {
         let apiURL = URL(string: "https://api.github.com/repos/iamzjt-front-end/fund-pulse/releases/latest")!
         var request = URLRequest(url: latestReleaseURL)
         request.url = apiURL
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
 
@@ -212,6 +214,7 @@ struct AppUpdateService {
 
     private func resolveLatestTag() async throws -> String {
         var request = URLRequest(url: latestReleaseURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
         let (_, response) = try await session.data(for: request)
         guard let finalURL = response.url,
