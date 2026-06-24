@@ -1,5 +1,8 @@
 import XCTest
 @testable import FundPulse
+#if canImport(AppKit)
+import AppKit
+#endif
 
 final class FundPulseCoreTests: XCTestCase {
     override func tearDown() {
@@ -20,6 +23,34 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(FundCodeFormatter.display("  #024418  "), "024418")
         XCTAssertEqual(FundCodeFormatter.display(""), "--")
     }
+
+    func testStatusBarToneIntensityUsesTodayRateThresholds() {
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 0), .neutral)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 0.10), .neutral)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 0.11), .subtle)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 1.00), .normal)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 2.00), .clear)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 3.00), .strong)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 4.00), .extreme)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: -4.00), .extreme)
+    }
+
+    #if canImport(AppKit)
+    func testStatusBarToneMenuBarColorsUseFundBabyStyleDepth() throws {
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0)), "#8E8E93")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0.50)), "#FF8A80")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 1.50)), "#FF5A6A")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 2.50)), "#E63B4A")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 3.50)), "#B9152A")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 4.50)), "#6E0714")
+
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -0.50)), "#7BD88F")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -1.50)), "#4BA66E")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -2.50)), "#2E8B57")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -3.50)), "#146B3A")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -4.50)), "#073B24")
+    }
+    #endif
 
     func testDefaultAutoRefreshIntervalIsTenSeconds() {
         let settings = AppSettings()
@@ -1542,6 +1573,16 @@ final class FundPulseCoreTests: XCTestCase {
         return try XCTUnwrap(formatter.date(from: value))
     }
 }
+
+#if canImport(AppKit)
+private func rgbHex(_ color: NSColor) throws -> String {
+    let converted = try XCTUnwrap(color.usingColorSpace(.sRGB))
+    let red = Int(round(converted.redComponent * 255))
+    let green = Int(round(converted.greenComponent * 255))
+    let blue = Int(round(converted.blueComponent * 255))
+    return String(format: "#%02X%02X%02X", red, green, blue)
+}
+#endif
 
 private final class MockResponseStore: @unchecked Sendable {
     private let lock = NSLock()

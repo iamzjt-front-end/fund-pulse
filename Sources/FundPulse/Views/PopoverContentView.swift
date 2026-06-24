@@ -1677,11 +1677,13 @@ struct FundRowView: View {
                     }
                 }
 
-                HStack(spacing: 6) {
-                    if fund.isUpdated {
-                        tag("已更新", color: updatedTagColor)
+                HStack(spacing: 4) {
+                    HStack(spacing: 1) {
+                        Text(FundCodeFormatter.display(fund.code))
+                        if showsUpdateStar {
+                            updateStar
+                        }
                     }
-                    Text(FundCodeFormatter.display(fund.code))
                     Text(rowHoldingAmountText)
                     Text(compactMoney(rowConfirmedHoldingIncome))
                         .foregroundStyle(toneColor(for: rowConfirmedHoldingIncome))
@@ -1737,8 +1739,21 @@ struct FundRowView: View {
             )
     }
 
-    private var updatedTagColor: Color {
-        Color(red: 254 / 255, green: 143 / 255, blue: 37 / 255)
+    private var updateStarColor: Color {
+        Color(nsColor: StatusBarTone.menuBarColor(forRate: fund.todayRate))
+    }
+
+    private var updateStar: some View {
+        UpdatedFundStarShape()
+            .fill(updateStarColor)
+            .frame(width: 10.4, height: 10.4)
+            .frame(width: 11, height: 14, alignment: .center)
+            .shadow(color: updateStarColor.opacity(colorScheme == .dark ? 0.28 : 0.18), radius: 2, x: 0, y: 1)
+            .accessibilityLabel("净值已更新")
+    }
+
+    private var showsUpdateStar: Bool {
+        fund.isUpdated
     }
 
     private var rowHoldingIncome: Double {
@@ -1846,6 +1861,50 @@ struct FundRowView: View {
         }
 
         return toneColor(for: value).opacity(colorScheme == .dark ? 0.76 : 0.60)
+    }
+}
+
+private struct UpdatedFundStarShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let outerRadius = min(rect.width, rect.height) / 2
+        let innerRadius = outerRadius * 0.56
+        let points = (0..<10).map { index in
+            let angle = -CGFloat.pi / 2 + CGFloat(index) * CGFloat.pi / 5
+            let radius = index.isMultiple(of: 2) ? outerRadius : innerRadius
+            return CGPoint(
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
+            )
+        }
+        var path = Path()
+
+        for index in points.indices {
+            let current = points[index]
+            let previous = points[(index + points.count - 1) % points.count]
+            let next = points[(index + 1) % points.count]
+            let cornerLength = index.isMultiple(of: 2) ? outerRadius * 0.18 : outerRadius * 0.12
+            let start = point(from: current, toward: previous, distance: cornerLength)
+            let end = point(from: current, toward: next, distance: cornerLength)
+
+            if index == 0 {
+                path.move(to: start)
+            } else {
+                path.addLine(to: start)
+            }
+            path.addQuadCurve(to: end, control: current)
+        }
+
+        path.closeSubpath()
+        return path
+    }
+
+    private func point(from start: CGPoint, toward end: CGPoint, distance: CGFloat) -> CGPoint {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = max(sqrt(dx * dx + dy * dy), 0.001)
+        let scale = min(distance / length, 0.45)
+        return CGPoint(x: start.x + dx * scale, y: start.y + dy * scale)
     }
 }
 
