@@ -153,12 +153,16 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var shares: Double?
     var confirmedShares: Double?
     var price: Double?
+    var profit: Double? = nil
     var tradeDate: String
     var tradeTimeType: PositionTimeType
     var acceptedDate: String
     var createdAt: Date
     var confirmedAt: Date?
     var failureReason: String?
+    var buyFeeRate: Double? = nil
+    var sellFeeMode: TradeFeeMode? = nil
+    var sellFeeValue: Double? = nil
 }
 
 enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
@@ -177,6 +181,22 @@ enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
     }
 }
 
+enum TradeFeeMode: String, Codable, CaseIterable, Identifiable, Equatable {
+    case rate
+    case amount
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .rate:
+            "费率"
+        case .amount:
+            "金额"
+        }
+    }
+}
+
 struct FundTradeDraft: Equatable {
     var action: FundTradeAction
     var code: String
@@ -185,6 +205,9 @@ struct FundTradeDraft: Equatable {
     var shares: Double?
     var tradeDate: String
     var tradeTimeType: PositionTimeType
+    var buyFeeRate: Double? = nil
+    var sellFeeMode: TradeFeeMode? = nil
+    var sellFeeValue: Double? = nil
 }
 
 struct FundPendingTrade: Codable, Identifiable, Equatable {
@@ -198,6 +221,9 @@ struct FundPendingTrade: Codable, Identifiable, Equatable {
     var tradeDate: String
     var tradeTimeType: PositionTimeType
     var createdAt: Date
+    var buyFeeRate: Double? = nil
+    var sellFeeMode: TradeFeeMode? = nil
+    var sellFeeValue: Double? = nil
 
     var draft: FundTradeDraft {
         FundTradeDraft(
@@ -207,7 +233,10 @@ struct FundPendingTrade: Codable, Identifiable, Equatable {
             amount: amount,
             shares: shares,
             tradeDate: tradeDate,
-            tradeTimeType: tradeTimeType
+            tradeTimeType: tradeTimeType,
+            buyFeeRate: buyFeeRate,
+            sellFeeMode: sellFeeMode,
+            sellFeeValue: sellFeeValue
         )
     }
 }
@@ -225,6 +254,7 @@ struct FundPositionDraft: Equatable {
     var zdfRange: Double?
     var jzNotice: Double?
     var memo: String
+    var requiresTradeConfirmation: Bool = true
 }
 
 struct MigrationInfo: Codable, Equatable {

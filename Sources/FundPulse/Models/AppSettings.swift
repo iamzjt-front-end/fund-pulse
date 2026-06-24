@@ -1,12 +1,13 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 5
+    static let currentSchemaVersion = 7
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
     static let mainPanelHeightSliderStep = 10
     static let defaultOperationReminderTimeMinutes = 14 * 60 + 30
+    static let defaultThresholdReminderInterval: FundThresholdReminderInterval = .thirtyMinutes
 
     var settingsSchemaVersion: Int? = Self.currentSchemaVersion
     var menuBarDisplayMode: MenuBarDisplayMode = .color
@@ -14,6 +15,8 @@ struct AppSettings: Codable, Equatable {
     var mainPanelHeight: Int = Self.defaultMainPanelHeight
     var operationReminderEnabled: Bool = true
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
+    var thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval
+    var appearanceMode: AppAppearanceMode = .system
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -21,7 +24,9 @@ struct AppSettings: Codable, Equatable {
         autoRefreshInterval: AutoRefreshInterval = .tenSeconds,
         mainPanelHeight: Int = Self.defaultMainPanelHeight,
         operationReminderEnabled: Bool = true,
-        operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
+        operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
+        thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
+        appearanceMode: AppAppearanceMode = .system
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -29,6 +34,8 @@ struct AppSettings: Codable, Equatable {
         self.mainPanelHeight = Self.clampedMainPanelHeight(mainPanelHeight)
         self.operationReminderEnabled = operationReminderEnabled
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
+        self.thresholdReminderInterval = thresholdReminderInterval
+        self.appearanceMode = appearanceMode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -38,6 +45,8 @@ struct AppSettings: Codable, Equatable {
         case mainPanelHeight
         case operationReminderEnabled
         case operationReminderTimeMinutes
+        case thresholdReminderInterval
+        case appearanceMode
     }
 
     init(from decoder: Decoder) throws {
@@ -52,6 +61,11 @@ struct AppSettings: Codable, Equatable {
         let decodedReminderMinutes = try container.decodeIfPresent(Int.self, forKey: .operationReminderTimeMinutes)
             ?? Self.defaultOperationReminderTimeMinutes
         operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(decodedReminderMinutes)
+        thresholdReminderInterval = try container.decodeIfPresent(
+            FundThresholdReminderInterval.self,
+            forKey: .thresholdReminderInterval
+        ) ?? Self.defaultThresholdReminderInterval
+        appearanceMode = try container.decodeIfPresent(AppAppearanceMode.self, forKey: .appearanceMode) ?? .system
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {
@@ -66,6 +80,86 @@ struct AppSettings: Codable, Equatable {
         let hours = operationReminderTimeMinutes / 60
         let minutes = operationReminderTimeMinutes % 60
         return String(format: "%02d:%02d", hours, minutes)
+    }
+}
+
+enum AppAppearanceMode: String, Codable, CaseIterable, Identifiable, Equatable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system:
+            "跟随系统"
+        case .light:
+            "浅色"
+        case .dark:
+            "深色"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .system:
+            "display"
+        case .light:
+            "sun.max"
+        case .dark:
+            "moon"
+        }
+    }
+}
+
+enum FundThresholdReminderInterval: String, Codable, CaseIterable, Identifiable, Equatable {
+    case fifteenMinutes = "15m"
+    case thirtyMinutes = "30m"
+    case oneHour = "1h"
+    case twoHours = "2h"
+    case fourHours = "4h"
+    case oneDay = "1d"
+
+    var id: String { rawValue }
+
+    var seconds: TimeInterval {
+        switch self {
+        case .fifteenMinutes:
+            15 * 60
+        case .thirtyMinutes:
+            30 * 60
+        case .oneHour:
+            60 * 60
+        case .twoHours:
+            2 * 60 * 60
+        case .fourHours:
+            4 * 60 * 60
+        case .oneDay:
+            24 * 60 * 60
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .fifteenMinutes:
+            "15分钟"
+        case .thirtyMinutes:
+            "30分钟"
+        case .oneHour:
+            "1小时"
+        case .twoHours:
+            "2小时"
+        case .fourHours:
+            "4小时"
+        case .oneDay:
+            "每天一次"
+        }
+    }
+
+    var detail: String {
+        let intervalText = self == .oneDay ? "24小时" : title
+        return "同一只基金同一类提醒命中后，\(intervalText)内不再重复提醒。"
     }
 }
 
@@ -95,6 +189,8 @@ enum MenuBarDisplayMode: String, Codable, CaseIterable, Identifiable, Equatable 
 }
 
 enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable {
+    case twoSeconds = "2s"
+    case fiveSeconds = "5s"
     case tenSeconds = "10s"
     case thirtySeconds = "30s"
     case oneMinute = "1m"
@@ -103,8 +199,21 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
 
     var id: String { rawValue }
 
+    var sliderIndex: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
+
+    static func interval(atSliderIndex index: Int) -> AutoRefreshInterval {
+        let clampedIndex = min(max(index, 0), allCases.count - 1)
+        return allCases[clampedIndex]
+    }
+
     var seconds: TimeInterval {
         switch self {
+        case .twoSeconds:
+            2
+        case .fiveSeconds:
+            5
         case .tenSeconds:
             10
         case .thirtySeconds:
@@ -120,6 +229,10 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
 
     var title: String {
         switch self {
+        case .twoSeconds:
+            "2秒"
+        case .fiveSeconds:
+            "5秒"
         case .tenSeconds:
             "10秒"
         case .thirtySeconds:

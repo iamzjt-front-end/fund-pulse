@@ -14,23 +14,44 @@ enum PortfolioCalculator {
 
         let funds = snapshot.funds.map { fund in
             var next = fund
-            let lots = effectiveLots(for: fund)
             let quote = quotes[fund.code]
+            var lots = effectiveLots(for: fund)
+            if lots.isEmpty,
+               let amount = manualHoldingAmount(for: fund),
+               let referenceNetValue = quoteNetValue(quote),
+               let backfilledLot = amountPositionLot(
+                    code: fund.code,
+                    amount: amount,
+                    profit: fund.pendingProfit ?? 0,
+                    referenceNetValue: referenceNetValue,
+                    fund: fund
+               ) {
+                lots = [backfilledLot]
+                next.lots = lots
+                next.pendingAmount = nil
+                next.pendingProfit = nil
+            }
             let totalShares = lots.reduce(0) { $0 + $1.shares }
-            let fundCostTotal = lots.reduce(0) { $0 + $1.shares * $1.cost }
-            let cost = totalShares > 0 ? fundCostTotal / totalShares : (fund.migratedCost ?? 0)
-            let status = effectiveStatus(totalShares: totalShares)
+            let lotCostTotal = lots.reduce(0) { $0 + $1.shares * $1.cost }
+            let manualAmount = lots.isEmpty ? manualHoldingAmount(for: fund) : nil
+            let manualProfit = manualAmount == nil ? 0 : (fund.pendingProfit ?? 0)
+            let manualPrincipal = manualAmount.map { max($0 - manualProfit, 0) } ?? 0
+            let fundCostTotal = lotCostTotal + manualPrincipal
+            let cost = totalShares > 0 ? lotCostTotal / totalShares : (fund.migratedCost ?? 0)
+            let hasManualHolding = manualPrincipal > 0 || (manualAmount ?? 0) > 0
+            let status = effectiveStatus(totalShares: totalShares, hasManualHolding: hasManualHolding)
             let netValue = quote?.netValue ?? cost
             let dailyState = quote.map { dailyQuoteState(for: $0, now: now) } ?? .inactive
-            let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue)
-            let holdingIncome = confirmedHoldingIncome
+            let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
+            let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
+            let holdingIncome = calculatedHoldingIncome(lots: lots, quote: quote, netValue: holdingNetValue) + manualProfit
             let todayIncome = quote.map {
                 calculatedTodayIncome(confirmedShares: totalShares, netValue: netValue, quote: $0, dailyState: dailyState)
             } ?? 0
             let confirmedHoldingRate = fundCostTotal > 0 ? confirmedHoldingIncome / fundCostTotal * 100 : nil
             let holdingRate = fundCostTotal > 0 ? holdingIncome / fundCostTotal * 100 : nil
-            let fundCurrentTotal = currentAmount(lots: lots, quote: quote, netValue: netValue)
-            let isIncomeActive = totalShares > 0
+            let fundCurrentTotal = currentAmount(lots: lots, quote: quote, netValue: holdingNetValue) + (manualAmount ?? 0)
+            let isIncomeActive = totalShares > 0 || hasManualHolding
 
             if status == .pending {
                 pendingCount += 1
@@ -43,7 +64,7 @@ enum PortfolioCalculator {
             if let quote {
                 next.name = quote.name.isEmpty ? fund.name : quote.name
                 next.dateText = shortDateText(quote: quote, fallback: fund.dateText, now: now)
-                next.todayRate = dailyState.isActive && isIncomeActive ? quote.growthRate : 0
+                next.todayRate = dailyState.isActive && totalShares > 0 ? quote.growthRate : 0
                 next.isUpdated = isQuoteUpdated(quote, now: now)
             }
             next.status = status
@@ -78,8 +99,19 @@ enum PortfolioCalculator {
         )
     }
 
-    private static func effectiveStatus(totalShares: Double) -> FundHoldingStatus {
-        totalShares > 0 ? .holding : .pending
+    private static func effectiveStatus(totalShares: Double, hasManualHolding: Bool = false) -> FundHoldingStatus {
+        totalShares > 0 || hasManualHolding ? .holding : .pending
+    }
+
+    private static func manualHoldingAmount(for fund: FundPosition) -> Double? {
+        guard fund.positionMode == .amount,
+              !fund.status.isPendingDisplay,
+              let amount = fund.pendingAmount,
+              amount > 0
+        else {
+            return nil
+        }
+        return amount
     }
 
     private static func effectiveLots(for fund: FundPosition) -> [FundPositionLot] {
@@ -103,6 +135,30 @@ enum PortfolioCalculator {
                 positionTimeType: fund.positionTimeType ?? .before15
             )
         ]
+    }
+
+    private static func amountPositionLot(
+        code: String,
+        amount: Double,
+        profit: Double,
+        referenceNetValue: Double,
+        fund: FundPosition
+    ) -> FundPositionLot? {
+        guard amount > 0, referenceNetValue > 0 else { return nil }
+        let principal = amount - profit
+        guard principal > 0 else { return nil }
+        let shares = rounded(amount / referenceNetValue, places: 2)
+        guard shares > 0 else { return nil }
+        let cost = rounded(principal / shares, places: 4)
+        guard cost > 0 else { return nil }
+        return FundPositionLot(
+            id: "\(code)-amount-backfill",
+            shares: shares,
+            cost: cost,
+            incomeStartDate: fund.incomeStartDate ?? fund.positionDate ?? "",
+            positionDate: fund.positionDate ?? "",
+            positionTimeType: fund.positionTimeType ?? .before15
+        )
     }
 
     private static func shortDateText(quote: FundQuote, fallback: String, now: Date) -> String {
@@ -162,6 +218,22 @@ enum PortfolioCalculator {
         return lots.reduce(0) { $0 + $1.shares * (netValue - $1.cost) }
     }
 
+    private static func calculatedHoldingIncome(
+        lots: [FundPositionLot],
+        quote: FundQuote?,
+        netValue: Double
+    ) -> Double {
+        guard quote != nil else { return 0 }
+        return lots.reduce(0) { $0 + $1.shares * (netValue - $1.cost) }
+    }
+
+    private static func confirmedHoldingNetValue(for quote: FundQuote?, fallback: Double) -> Double {
+        guard let quote, quote.netValue > 0 else {
+            return fallback
+        }
+        return quote.netValue
+    }
+
     private static func currentAmount(
         lots: [FundPositionLot],
         quote: FundQuote?,
@@ -171,6 +243,18 @@ enum PortfolioCalculator {
             return lots.reduce(0) { $0 + $1.shares * $1.cost }
         }
         return lots.reduce(0) { $0 + $1.shares * netValue }
+    }
+
+    private static func quoteNetValue(_ quote: FundQuote?) -> Double? {
+        guard let quote else { return nil }
+        if quote.netValue > 0 { return quote.netValue }
+        if quote.estimatedNetValue > 0 { return quote.estimatedNetValue }
+        return nil
+    }
+
+    private static func rounded(_ value: Double, places: Int) -> Double {
+        let scale = pow(10, Double(places))
+        return (value * scale).rounded() / scale
     }
 }
 

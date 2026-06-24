@@ -5,6 +5,57 @@ import UniformTypeIdentifiers
 @preconcurrency import UserNotifications
 
 private let operationReminderNotificationID = "fund-pulse.operation-reminder"
+private let fundThresholdReminderLastSentDefaultsKey = "fund-pulse.threshold-reminder.last-sent-times"
+private let operationReminderNotificationPrefix = "\(operationReminderNotificationID)."
+private let appearanceTransitionOverlayIdentifier = NSUserInterfaceItemIdentifier("fund-pulse.appearance-transition-overlay")
+
+private extension AppAppearanceMode {
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system:
+            nil
+        case .light:
+            NSAppearance(named: .aqua)
+        case .dark:
+            NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+private final class AppearanceTransitionOverlayView: NSView {
+    private let gradientLayer = CAGradientLayer()
+
+    init(appearance: NSAppearance) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer = gradientLayer
+        configure(for: appearance)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        gradientLayer.frame = bounds
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    private func configure(for appearance: NSAppearance) {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let leading = isDark
+            ? NSColor(red: 17 / 255, green: 19 / 255, blue: 24 / 255, alpha: 0.96)
+            : NSColor(red: 251 / 255, green: 249 / 255, blue: 245 / 255, alpha: 0.94)
+        let trailing = isDark
+            ? NSColor(red: 29 / 255, green: 33 / 255, blue: 42 / 255, alpha: 0.86)
+            : NSColor(red: 242 / 255, green: 238 / 255, blue: 229 / 255, alpha: 0.80)
+        gradientLayer.colors = [leading.cgColor, trailing.cgColor]
+        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
+    }
+}
 
 private enum StatusItemPresentation {
     static let height: CGFloat = 24
@@ -69,7 +120,7 @@ enum PopoverLayout {
     static let settingsWidth: CGFloat = 320
     static let editorWidth: CGFloat = 360
     static let editorHeight: CGFloat = 600
-    static let tradeEditorHeight: CGFloat = 514
+    static let tradeEditorHeight: CGFloat = 660
     static let fundDetailHeight: CGFloat = 660
     static let tradeRecordsHeight: CGFloat = 520
     static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
@@ -193,7 +244,6 @@ private final class PanelCardContainerView: NSView {
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.clear.cgColor
         contentView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.appearance = NSApp.effectiveAppearance
         addSubview(contentView)
 
         NSLayoutConstraint.activate([
@@ -213,11 +263,16 @@ private final class PanelCardContainerView: NSView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateAppearanceColors()
-        hostedContentView.appearance = NSApp.effectiveAppearance
+    }
+
+    func applyAppearance(_ appearance: NSAppearance?) {
+        self.appearance = appearance
+        hostedContentView.appearance = appearance
+        updateAppearanceColors()
     }
 
     private func updateAppearanceColors() {
-        let appearance = NSApp.effectiveAppearance
+        let appearance = effectiveAppearance
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         layer?.backgroundColor = (isDark
             ? NSColor(red: 17 / 255, green: 19 / 255, blue: 24 / 255, alpha: 0.98)
@@ -257,6 +312,8 @@ final class StatusBarController: NSObject {
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
     private var isRefreshingQuotes = false
+    private var fundThresholdReminderLastSentAt: [String: Date] = [:]
+    private var pendingFundThresholdReminderKeys: Set<String> = []
 
     private var mainPanelHeight: CGFloat {
         PopoverLayout.clampedMainPanelHeight(CGFloat(settingsStore.settings.mainPanelHeight))
@@ -264,6 +321,10 @@ final class StatusBarController: NSObject {
 
     private var mainPanelWindowSize: NSSize {
         PopoverLayout.mainWindowFrameSize(forHeight: mainPanelHeight)
+    }
+
+    private var panelAppearance: NSAppearance? {
+        settingsStore.settings.appearanceMode.nsAppearance
     }
 
     init(
@@ -283,11 +344,13 @@ final class StatusBarController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
+        fundThresholdReminderLastSentAt = Self.loadFundThresholdReminderLastSentAt()
         configureStatusItem()
         configureAmountPrivacyObserver()
         updateStatusTitle()
         configureAutoRefreshTimer()
         configureOperationReminder()
+        sendFundThresholdRemindersIfNeeded()
         refreshQuotesAndStatusTitle()
     }
 
@@ -430,12 +493,12 @@ final class StatusBarController: NSObject {
 
     private func showMainPanel() {
         let window = mainPanelWindow ?? createMainPanelWindow()
-        window.appearance = NSApp.effectiveAppearance
-        window.contentView?.appearance = NSApp.effectiveAppearance
+        applyPanelAppearance(to: window)
         setStatusItemHighlighted(true)
 
         store.load()
         updateStatusTitle()
+        sendFundThresholdRemindersIfNeeded()
         updateMainPanelRootView()
         mainPanelAnchorFrame = currentStatusButtonFrame()
 
@@ -467,9 +530,11 @@ final class StatusBarController: NSObject {
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        hostingView.appearance = panelAppearance
         mainPanelHostingView = hostingView
         window.contentView = hostingView
         mainPanelWindow = window
+        applyPanelAppearance(to: window)
         return window
     }
 
@@ -495,6 +560,9 @@ final class StatusBarController: NSObject {
             },
             onOpenFundDetail: { [weak self] fund in
                 self?.showChildPanel(.fundDetail(fund))
+            },
+            onOpenTradeRecords: { [weak self] fund in
+                self?.showChildPanel(.tradeRecords(fund))
             },
             onBuyFund: { [weak self] fund in
                 self?.showChildPanel(.buyFund(fund))
@@ -528,11 +596,11 @@ final class StatusBarController: NSObject {
         updateMainPanelRootView()
 
         let window = childPanelWindow ?? createChildPanelWindow()
-        window.appearance = NSApp.effectiveAppearance
         let container = PanelCardContainerView(contentView: contentView)
         container.frame = NSRect(origin: .zero, size: size)
-        container.appearance = NSApp.effectiveAppearance
+        container.applyAppearance(panelAppearance)
         window.contentView = container
+        applyPanelAppearance(to: window)
         window.setContentSize(size)
         positionChildPanel(window: window, size: size)
         window.orderFrontRegardless()
@@ -586,6 +654,7 @@ final class StatusBarController: NSObject {
                 onSaved: { [weak self] in
                     await MainActor.run {
                         self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
                     }
                 },
                 onClose: { [weak self] in
@@ -645,6 +714,7 @@ final class StatusBarController: NSObject {
                 onSaved: { [weak self] in
                     await MainActor.run {
                         self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
                     }
                 },
                 onClose: { [weak self] in
@@ -661,6 +731,7 @@ final class StatusBarController: NSObject {
                 onSaved: { [weak self] in
                     await MainActor.run {
                         self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
                     }
                 },
                 onClose: { [weak self] in
@@ -679,6 +750,7 @@ final class StatusBarController: NSObject {
                 onSaved: { [weak self] in
                     await MainActor.run {
                         self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
                         self?.showChildPanel(.tradeRecords(fund))
                     }
                 },
@@ -695,6 +767,7 @@ final class StatusBarController: NSObject {
                 onSaved: { [weak self] in
                     await MainActor.run {
                         self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
                     }
                 },
                 onClose: { [weak self] in
@@ -745,13 +818,19 @@ final class StatusBarController: NSObject {
     }
 
     private func refreshVisiblePanels() {
+        refreshVisiblePanels(animatedAppearance: false)
+    }
+
+    private func refreshVisiblePanels(animatedAppearance: Bool) {
         guard let mainPanelWindow, mainPanelWindow.isVisible else { return }
+        applyPanelAppearance(to: mainPanelWindow, animated: animatedAppearance)
         updateMainPanelRootView()
         let mainSize = mainPanelWindowSize
         mainPanelWindow.setContentSize(mainSize)
         positionMainPanel(window: mainPanelWindow, size: mainSize)
 
         guard let childPanelWindow, childPanelWindow.isVisible else { return }
+        applyPanelAppearance(to: childPanelWindow, animated: animatedAppearance)
         let size: NSSize
         switch activeChildPanel {
         case .settings:
@@ -769,6 +848,58 @@ final class StatusBarController: NSObject {
         }
         childPanelWindow.setContentSize(size)
         positionChildPanel(window: childPanelWindow, size: size)
+    }
+
+    private func applyPanelAppearance(to window: FundPulsePanel) {
+        applyPanelAppearance(to: window, animated: false)
+    }
+
+    private func applyPanelAppearance(to window: FundPulsePanel, animated: Bool) {
+        if animated {
+            installAppearanceTransitionOverlay(on: window)
+        }
+
+        let appearance = panelAppearance
+        window.appearance = appearance
+        window.contentView?.appearance = appearance
+        mainPanelHostingView?.appearance = appearance
+        if let container = window.contentView as? PanelCardContainerView {
+            container.applyAppearance(appearance)
+        }
+
+        if animated {
+            fadeOutAppearanceTransitionOverlay(on: window)
+        }
+    }
+
+    private func installAppearanceTransitionOverlay(on window: FundPulsePanel) {
+        guard let contentView = window.contentView else { return }
+        contentView.subviews
+            .filter { $0.identifier == appearanceTransitionOverlayIdentifier }
+            .forEach { $0.removeFromSuperview() }
+
+        let overlay = AppearanceTransitionOverlayView(appearance: window.effectiveAppearance)
+        overlay.identifier = appearanceTransitionOverlayIdentifier
+        overlay.frame = contentView.bounds
+        overlay.autoresizingMask = [.width, .height]
+        overlay.alphaValue = 1
+        contentView.addSubview(overlay, positioned: .above, relativeTo: nil)
+    }
+
+    private func fadeOutAppearanceTransitionOverlay(on window: FundPulsePanel) {
+        guard let contentView = window.contentView else { return }
+        let overlays = contentView.subviews.filter { $0.identifier == appearanceTransitionOverlayIdentifier }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            overlays.forEach { overlay in
+                overlay.animator().alphaValue = 0
+            }
+        } completionHandler: {
+            Task { @MainActor in
+                overlays.forEach { $0.removeFromSuperview() }
+            }
+        }
     }
 
     private func installEventMonitorsIfNeeded() {
@@ -1046,6 +1177,7 @@ final class StatusBarController: NSObject {
         do {
             try store.importPortfolio(from: url)
             updateStatusTitle()
+            sendFundThresholdRemindersIfNeeded()
             showMainPanel()
         } catch {
             presentConfigurationError(title: "导入基金配置失败", error: error)
@@ -1099,9 +1231,10 @@ final class StatusBarController: NSObject {
 
     private func handleSettingsChanged() {
         updateStatusTitle()
-        refreshVisiblePanels()
+        refreshVisiblePanels(animatedAppearance: true)
         configureAutoRefreshTimer()
         configureOperationReminder()
+        sendFundThresholdRemindersIfNeeded()
     }
 
     private func refreshQuotesAndStatusTitleAsync() async {
@@ -1112,6 +1245,7 @@ final class StatusBarController: NSObject {
         await store.refreshQuotes()
         updateStatusTitle()
         refreshVisiblePanels()
+        sendFundThresholdRemindersIfNeeded()
     }
 
     private func configureAutoRefreshTimer() {
@@ -1134,32 +1268,123 @@ final class StatusBarController: NSObject {
         let isEnabled = settingsStore.settings.operationReminderEnabled
         let reminderMinutes = settingsStore.settings.operationReminderTimeMinutes
 
-        center.removePendingNotificationRequests(withIdentifiers: [operationReminderNotificationID])
+        center.getPendingNotificationRequests { requests in
+            let operationReminderIDs = requests
+                .map(\.identifier)
+                .filter { $0 == operationReminderNotificationID || $0.hasPrefix(operationReminderNotificationPrefix) }
+            center.removePendingNotificationRequests(withIdentifiers: operationReminderIDs)
 
-        guard isEnabled else { return }
-
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
+            guard isEnabled else { return }
 
             let clampedMinutes = AppSettings.clampedReminderTimeMinutes(reminderMinutes)
-            var dateComponents = DateComponents()
-            dateComponents.calendar = Calendar.current
-            dateComponents.hour = clampedMinutes / 60
-            dateComponents.minute = clampedMinutes % 60
+            let reminderDates = TradingCalendar.nextMarketOpenReminderDates(minutes: clampedMinutes)
+            guard !reminderDates.isEmpty else { return }
 
-            let content = UNMutableNotificationContent()
-            content.title = "基金操作提醒"
-            content.body = "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
-            content.sound = .default
+            center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                guard granted else { return }
 
-            let trigger = UNCalendarNotificationTrigger(dateMatching: dateComponents, repeats: true)
-            let request = UNNotificationRequest(
-                identifier: operationReminderNotificationID,
-                content: content,
-                trigger: trigger
-            )
-            center.add(request)
+                for reminderDate in reminderDates {
+                    let dateKey = DateOnlyFormatter.string(from: reminderDate)
+                    let content = UNMutableNotificationContent()
+                    content.title = "基金操作提醒"
+                    content.body = "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
+                    content.sound = .default
+
+                    let trigger = UNCalendarNotificationTrigger(
+                        dateMatching: TradingCalendar.notificationDateComponents(from: reminderDate),
+                        repeats: false
+                    )
+                    let request = UNNotificationRequest(
+                        identifier: "\(operationReminderNotificationPrefix)\(dateKey)",
+                        content: content,
+                        trigger: trigger
+                    )
+                    center.add(request)
+                }
+            }
         }
+    }
+
+    private func sendFundThresholdRemindersIfNeeded() {
+        let now = Date()
+        let reminders = FundThresholdReminderEvaluator.eligibleReminders(
+            in: store.snapshot,
+            now: now,
+            lastSentAt: fundThresholdReminderLastSentAt,
+            interval: settingsStore.settings.thresholdReminderInterval.seconds
+        )
+        let unsentReminders = reminders.filter {
+            !pendingFundThresholdReminderKeys.contains($0.dedupeKey)
+        }
+        guard !unsentReminders.isEmpty else { return }
+
+        pendingFundThresholdReminderKeys.formUnion(unsentReminders.map(\.dedupeKey))
+
+        Task { [weak self] in
+            let center = UNUserNotificationCenter.current()
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else {
+                await MainActor.run {
+                    unsentReminders.forEach { self?.markFundThresholdReminderFinished($0.dedupeKey) }
+                }
+                return
+            }
+
+            for reminder in unsentReminders {
+                let content = UNMutableNotificationContent()
+                content.title = reminder.title
+                content.body = reminder.body
+                content.sound = .default
+
+                let request = UNNotificationRequest(
+                    identifier: "\(reminder.notificationIdentifier).\(Int(now.timeIntervalSince1970))",
+                    content: content,
+                    trigger: nil
+                )
+
+                do {
+                    try await center.add(request)
+                    await MainActor.run {
+                        self?.markFundThresholdReminderSent(reminder.dedupeKey, at: now)
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.markFundThresholdReminderFinished(reminder.dedupeKey)
+                    }
+                    continue
+                }
+            }
+        }
+    }
+
+    private func markFundThresholdReminderSent(_ key: String, at date: Date) {
+        fundThresholdReminderLastSentAt[key] = date
+        pendingFundThresholdReminderKeys.remove(key)
+        saveFundThresholdReminderLastSentAt()
+    }
+
+    private func markFundThresholdReminderFinished(_ key: String) {
+        pendingFundThresholdReminderKeys.remove(key)
+    }
+
+    private func saveFundThresholdReminderLastSentAt() {
+        UserDefaults.standard.set(
+            fundThresholdReminderLastSentAt.mapValues(\.timeIntervalSince1970),
+            forKey: fundThresholdReminderLastSentDefaultsKey
+        )
+    }
+
+    private static func loadFundThresholdReminderLastSentAt() -> [String: Date] {
+        let rawValues = UserDefaults.standard.dictionary(forKey: fundThresholdReminderLastSentDefaultsKey) as? [String: Double] ?? [:]
+        let earliestDate = Date().addingTimeInterval(-FundThresholdReminderInterval.oneDay.seconds)
+        let values = rawValues.compactMapValues { timestamp -> Date? in
+            let date = Date(timeIntervalSince1970: timestamp)
+            return date >= earliestDate ? date : nil
+        }
+        UserDefaults.standard.set(
+            values.mapValues(\.timeIntervalSince1970),
+            forKey: fundThresholdReminderLastSentDefaultsKey
+        )
+        return values
     }
 
     private func deleteFund(_ fund: FundPosition) async {

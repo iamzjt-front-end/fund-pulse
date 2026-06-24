@@ -6,6 +6,13 @@ enum PanelDesign {
     static let cardBackground = Color(nsColor: .controlBackgroundColor).opacity(0.64)
     static let selectorBackground = Color(nsColor: .controlBackgroundColor).opacity(0.78)
     static let inputBackground = Color(nsColor: .textBackgroundColor).opacity(0.78)
+    static let buttonBackground = Color(nsColor: buttonBackgroundNSColor)
+    static let buttonBorder = Color(nsColor: buttonBorderNSColor)
+    static let segmentSelectionBackground = Color(nsColor: segmentSelectionBackgroundNSColor)
+    static let segmentSelectionBorder = Color(nsColor: segmentSelectionBorderNSColor)
+    static let warningBackground = Color(nsColor: warningBackgroundNSColor)
+    static let warningBorder = Color(nsColor: warningBorderNSColor)
+    static let warningAccent = Color(nsColor: warningAccentNSColor)
 
     static let panelBackgroundNSColor = NSColor(name: nil) { appearance in
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -25,6 +32,62 @@ enum PanelDesign {
 
     static let panelChromeBackground = Color(nsColor: panelChromeNSColor)
 
+    static let buttonBackgroundNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(red: 42 / 255, green: 46 / 255, blue: 54 / 255, alpha: 0.94)
+        }
+        return NSColor.white.withAlphaComponent(0.92)
+    }
+
+    static let buttonBorderNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor.white.withAlphaComponent(0.22)
+        }
+        return NSColor.black.withAlphaComponent(0.16)
+    }
+
+    static let segmentSelectionBackgroundNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(red: 52 / 255, green: 56 / 255, blue: 65 / 255, alpha: 0.98)
+        }
+        return NSColor.white.withAlphaComponent(0.96)
+    }
+
+    static let segmentSelectionBorderNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor.white.withAlphaComponent(0.30)
+        }
+        return NSColor.black.withAlphaComponent(0.18)
+    }
+
+    static let warningBackgroundNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(red: 98 / 255, green: 49 / 255, blue: 18 / 255, alpha: 0.34)
+        }
+        return NSColor(red: 255 / 255, green: 235 / 255, blue: 218 / 255, alpha: 0.96)
+    }
+
+    static let warningBorderNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(red: 255 / 255, green: 137 / 255, blue: 62 / 255, alpha: 0.42)
+        }
+        return NSColor(red: 238 / 255, green: 111 / 255, blue: 38 / 255, alpha: 0.34)
+    }
+
+    static let warningAccentNSColor = NSColor(name: nil) { appearance in
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isDark {
+            return NSColor(red: 255 / 255, green: 153 / 255, blue: 84 / 255, alpha: 0.96)
+        }
+        return NSColor(red: 202 / 255, green: 83 / 255, blue: 13 / 255, alpha: 0.98)
+    }
+
     static func border(cornerRadius: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 0.6)
@@ -35,6 +98,7 @@ struct PanelHeader: View {
     let systemImage: String
     let title: String
     let subtitle: String
+    var subtitleWeight: Font.Weight = .medium
     var tint: Color = PanelDesign.accent
     var accessoryText: String? = nil
     var accessoryColor: Color = .orange
@@ -58,8 +122,10 @@ struct PanelHeader: View {
                 Text(title)
                     .font(.system(size: 15, weight: .semibold))
                 Text(subtitle)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 10, weight: subtitleWeight))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
             }
 
             if let accessoryText {
@@ -170,23 +236,25 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(values) { value in
+                let isSelected = selection == value
                 Button {
                     selection = value
                 } label: {
                     Text(title(value))
-                        .font(.system(size: 11, weight: selection == value ? .semibold : .medium))
-                        .foregroundStyle(selection == value ? tint : Color.secondary)
+                        .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? tint : Color.primary.opacity(0.78))
                         .frame(maxWidth: .infinity)
-                        .frame(height: 24)
-                        .background(
-                            selection == value ? Color(nsColor: .textBackgroundColor).opacity(0.92) : Color.clear,
-                            in: Capsule()
-                        )
+                        .frame(height: 28)
+                        .background {
+                            Capsule()
+                                .fill(isSelected ? Color(nsColor: .textBackgroundColor).opacity(0.94) : PanelDesign.inputBackground.opacity(0.88))
+                        }
                         .overlay {
-                            if selection == value {
-                                Capsule()
-                                    .stroke(tint.opacity(0.18), lineWidth: 0.6)
-                            }
+                            Capsule()
+                                .stroke(
+                                    isSelected ? tint.opacity(0.18) : Color(nsColor: .separatorColor).opacity(0.42),
+                                    lineWidth: 0.6
+                                )
                         }
                 }
                 .buttonStyle(.plain)
@@ -195,6 +263,10 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
         }
         .padding(2)
         .background(PanelDesign.selectorBackground, in: Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(nsColor: .separatorColor).opacity(0.36), lineWidth: 0.6)
+        )
     }
 }
 
@@ -668,6 +740,7 @@ struct PanelButtonLabel: View {
     var style: Style = .secondary
     var tint: Color = PanelDesign.accent
     var isEnabled = true
+    @Environment(\.isEnabled) private var environmentIsEnabled
 
     var body: some View {
         HStack(spacing: 6) {
@@ -682,33 +755,52 @@ struct PanelButtonLabel: View {
         }
         .foregroundStyle(foregroundColor)
         .frame(maxWidth: .infinity)
-        .frame(height: 30)
+        .frame(height: 31)
         .background(backgroundColor, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay {
-            if style != .primary {
-                PanelDesign.border(cornerRadius: 9)
-            }
-        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(borderColor, lineWidth: style == .primary ? 0 : 0.7)
+        )
+        .shadow(color: shadowColor, radius: 4, x: 0, y: 1.5)
         .contentShape(Rectangle())
     }
 
     private var foregroundColor: Color {
         switch style {
         case .primary:
-            isEnabled ? .white : .secondary
+            resolvedIsEnabled ? .white : .secondary
         case .secondary:
-            .primary
+            resolvedIsEnabled ? .primary : .secondary
         case .destructive:
-            .red
+            resolvedIsEnabled ? .red : .secondary
         }
     }
 
     private var backgroundColor: Color {
         switch style {
         case .primary:
-            isEnabled ? tint : Color(nsColor: .controlBackgroundColor).opacity(0.78)
+            resolvedIsEnabled ? tint : Color(nsColor: .controlBackgroundColor).opacity(0.72)
         case .secondary, .destructive:
-            PanelDesign.cardBackground
+            resolvedIsEnabled ? PanelDesign.buttonBackground : PanelDesign.cardBackground
         }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .primary:
+            .clear
+        case .secondary:
+            resolvedIsEnabled ? PanelDesign.buttonBorder : Color(nsColor: .separatorColor).opacity(0.28)
+        case .destructive:
+            resolvedIsEnabled ? Color.red.opacity(0.36) : Color(nsColor: .separatorColor).opacity(0.28)
+        }
+    }
+
+    private var shadowColor: Color {
+        resolvedIsEnabled ? Color.black.opacity(0.035) : .clear
+    }
+
+    private var resolvedIsEnabled: Bool {
+        isEnabled && environmentIsEnabled
     }
 }

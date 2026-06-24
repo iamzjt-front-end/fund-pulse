@@ -11,6 +11,7 @@ struct MainPanelWindowView: View {
     let onOpenSettings: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
+    let onOpenTradeRecords: (FundPosition) -> Void
     let onBuyFund: (FundPosition) -> Void
     let onSellFund: (FundPosition) -> Void
     let onEditFund: (FundPosition) -> Void
@@ -37,6 +38,7 @@ struct MainPanelWindowView: View {
                 onOpenSettings: onOpenSettings,
                 onAddFund: onAddFund,
                 onOpenFundDetail: onOpenFundDetail,
+                onOpenTradeRecords: onOpenTradeRecords,
                 onBuyFund: onBuyFund,
                 onSellFund: onSellFund,
                 onEditFund: onEditFund,
@@ -91,6 +93,7 @@ struct PopoverContentView: View {
     let onOpenSettings: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
+    let onOpenTradeRecords: (FundPosition) -> Void
     let onBuyFund: (FundPosition) -> Void
     let onSellFund: (FundPosition) -> Void
     let onEditFund: (FundPosition) -> Void
@@ -756,9 +759,12 @@ struct PopoverContentView: View {
                 .frame(height: 300)
         } else {
             ForEach(pendingActivities) { activity in
-                PendingTradeActivityRow(activity: activity) {
+                PendingTradeActivityRow(
+                    activity: activity,
+                    isSelected: selectedFundCode == activity.fund?.code
+                ) {
                     if let fund = activity.fund {
-                        onOpenFundDetail(fund)
+                        onOpenTradeRecords(fund)
                     }
                 }
                 Divider()
@@ -1572,7 +1578,10 @@ private struct PendingTradeActivity: Identifiable {
 
 private struct PendingTradeActivityRow: View {
     let activity: PendingTradeActivity
+    let isSelected: Bool
     let onOpen: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Button(action: onOpen) {
@@ -1588,6 +1597,7 @@ private struct PendingTradeActivityRow: View {
 
                     HStack(alignment: .top, spacing: 7) {
                         Text(FundCodeFormatter.display(activity.code))
+                            .fontWeight(.semibold)
                             .frame(width: 58, alignment: .leading)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(activity.tradeDate) \(activity.tradeTimeType.title)")
@@ -1613,6 +1623,14 @@ private struct PendingTradeActivityRow: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 64)
+            .background(selectionBackground)
+            .overlay(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(accentColor)
+                    .frame(width: 3, height: 42)
+                    .opacity(isSelected ? 1 : 0)
+                    .padding(.leading, 4)
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1621,6 +1639,15 @@ private struct PendingTradeActivityRow: View {
 
     private var accentColor: Color {
         activity.kind == .sell ? .fundPulseGreen : .red
+    }
+
+    private var selectionBackground: some View {
+        Rectangle()
+            .fill(
+                isSelected
+                    ? accentColor.opacity(colorScheme == .dark ? 0.16 : 0.10)
+                    : Color.clear
+            )
     }
 
     private var primaryValueText: String {
@@ -1680,17 +1707,19 @@ struct FundRowView: View {
                 HStack(spacing: 4) {
                     HStack(spacing: 1) {
                         Text(FundCodeFormatter.display(fund.code))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(codeTextColor)
                         if showsUpdateStar {
                             updateStar
                         }
                     }
                     Text(rowHoldingAmountText)
+                        .foregroundStyle(amountTextColor)
                     Text(compactMoney(rowConfirmedHoldingIncome))
                         .foregroundStyle(toneColor(for: rowConfirmedHoldingIncome))
                 }
                 .font(.system(size: 10, weight: .medium))
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 6)
@@ -1741,6 +1770,14 @@ struct FundRowView: View {
 
     private var updateStarColor: Color {
         Color(nsColor: StatusBarTone.menuBarColor(forRate: fund.todayRate))
+    }
+
+    private var codeTextColor: Color {
+        Color.secondary.opacity(colorScheme == .dark ? 0.72 : 0.58)
+    }
+
+    private var amountTextColor: Color {
+        Color.secondary.opacity(colorScheme == .dark ? 0.92 : 0.78)
     }
 
     private var updateStar: some View {
@@ -1934,13 +1971,14 @@ struct FundDetailView: View {
                 systemImage: "chart.line.uptrend.xyaxis",
                 title: "基金详情",
                 subtitle: FundCodeFormatter.display(fund.code),
+                subtitleWeight: .semibold,
                 tint: toneColor(for: fund.todayRate),
                 accessoryText: zdfRangeReminderText,
                 accessoryColor: .orange,
                 actionSystemImage: "list.bullet.rectangle",
                 actionTitle: "交易记录",
                 actionBadgeText: tradeRecordsBadgeText,
-                actionTint: .blue,
+                actionTint: Color(nsColor: .systemGray),
                 actionHelp: tradeRecordsEntrySubtitle,
                 onAction: {
                     onOpenTradeRecords(fund)
@@ -1996,6 +2034,7 @@ struct FundDetailView: View {
             }
             HStack(spacing: 7) {
                 Text(FundCodeFormatter.display(fund.code))
+                    .fontWeight(.semibold)
                 Text(fund.dateText)
             }
             .font(.system(size: 11, weight: .medium))
@@ -2112,9 +2151,6 @@ struct FundDetailView: View {
             metric("持有收益", signedNumberText(holdingIncome), tone: holdingIncome)
             metric("持有收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
             metric("持有天数", holdingDaysText)
-            metric("昨日收益", yesterdayIncomeText, tone: yesterdayIncome)
-            metric("昨日收益率", yesterdayRateText, tone: yesterdayRate)
-            metric("持仓占比", holdingRatioText)
         }
         .padding(12)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2290,13 +2326,7 @@ struct FundDetailView: View {
         let records = actualRecords.contains { $0.kind == .newFund }
             ? actualRecords
             : actualRecords + (inferredInitialTradeRecord(for: fund).map { [$0] } ?? [])
-        return records
-            .sorted {
-                if $0.createdAt != $1.createdAt {
-                    return $0.createdAt > $1.createdAt
-                }
-                return $0.tradeDate > $1.tradeDate
-            }
+        return records.sorted(by: tradeRecordTimeDescending)
     }
 
     private var pendingTradeRecords: [FundTradeRecord] {
@@ -2559,51 +2589,6 @@ struct FundDetailView: View {
         ]
     }
 
-    private var yesterdayRate: Double? {
-        supplement.yesterdayPoint?.equityReturn
-    }
-
-    private var yesterdayIncome: Double? {
-        guard let yesterdayPoint = supplement.yesterdayPoint,
-              let rate = yesterdayPoint.equityReturn,
-              yesterdayEligibleShares > 0
-        else {
-            return nil
-        }
-        let denominator = 100 + rate
-        guard denominator != 0 else { return 0 }
-        return yesterdayEligibleShares * yesterdayPoint.value * rate / denominator
-    }
-
-    private var yesterdayIncomeText: String {
-        guard let yesterdayIncome else { return "--" }
-        return signedNumberText(yesterdayIncome)
-    }
-
-    private var yesterdayRateText: String {
-        guard yesterdayEligibleShares > 0,
-              let yesterdayRate
-        else {
-            return "--"
-        }
-        return MoneyFormatter.percent(yesterdayRate, signed: true)
-    }
-
-    private var yesterdayEligibleShares: Double {
-        guard let yesterdayDateText else { return 0 }
-        return effectiveLots.reduce(0) { total, lot in
-            lot.incomeStartDate < yesterdayDateText ? total + lot.shares : total
-        }
-    }
-
-    private var yesterdayDateText: String? {
-        guard let timestamp = supplement.yesterdayPoint?.timestamp else {
-            return nil
-        }
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
-        return DateOnlyFormatter.string(from: date)
-    }
-
     private var topHoldingsTrailingText: String? {
         supplement.topHoldings.isEmpty ? nil : "\(supplement.topHoldings.count)只"
     }
@@ -2631,11 +2616,6 @@ struct FundDetailView: View {
             let date = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
             return calendar.startOfDay(for: date) >= cutoff
         }
-    }
-
-    private var holdingRatioText: String {
-        guard totalAmount > 0 else { return "0.00%" }
-        return MoneyFormatter.percent(currentTotal / totalAmount * 100)
     }
 
     private var holdingDaysText: String {
@@ -2724,6 +2704,7 @@ struct FundTradeRecordsPanelView: View {
     let onDelete: (FundTradeRecord) async -> Void
     let onClose: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var filter: TradeRecordFilter = .all
     @State private var deletingRecord: FundTradeRecord?
 
@@ -2732,7 +2713,8 @@ struct FundTradeRecordsPanelView: View {
             PanelHeader(
                 systemImage: "clock.arrow.circlepath",
                 title: "交易记录",
-                subtitle: FundCodeFormatter.display(fund.code),
+                subtitle: tradeRecordsHeaderSubtitle,
+                subtitleWeight: .semibold,
                 onClose: onClose
             )
 
@@ -2803,13 +2785,7 @@ struct FundTradeRecordsPanelView: View {
         let records = actualRecords.contains { $0.kind == .newFund }
             ? actualRecords
             : actualRecords + (inferredInitialTradeRecord(for: fund).map { [$0] } ?? [])
-        return records
-            .sorted {
-                if $0.createdAt != $1.createdAt {
-                    return $0.createdAt > $1.createdAt
-                }
-                return $0.tradeDate > $1.tradeDate
-            }
+        return records.sorted(by: tradeRecordTimeDescending)
     }
 
     private var filteredTradeRecords: [FundTradeRecord] {
@@ -2831,72 +2807,82 @@ struct FundTradeRecordsPanelView: View {
         filter == .all ? "暂无交易记录" : "暂无\(filter.title)记录"
     }
 
+    private var tradeRecordsHeaderSubtitle: String {
+        let code = FundCodeFormatter.display(fund.code)
+        let name = fund.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? code : "\(code) · \(name)"
+    }
+
     private func deleteTradeRecordConfirmationMessage(for record: FundTradeRecord) -> String {
         "确定删除 \(tradeDateTimeText(record)) 的\(record.kind.title)记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持有金额、持有份额和成本，且无法撤销。"
     }
 
     private func tradeRecordRow(_ record: FundTradeRecord) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(recordKindTitle(record.kind))
-                .font(.system(size: 11, weight: .semibold))
-                .lineLimit(1)
-                .foregroundStyle(tradeKindColor(record.kind))
-                .frame(width: 46, alignment: .leading)
-                .padding(.top, 1)
+        let kindColor = tradeKindColor(record.kind)
 
-            VStack(alignment: .leading, spacing: 7) {
-                Text(tradeDateTimeText(record))
-                    .font(.system(size: 12, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 8) {
+                HStack(spacing: 6) {
+                    recordKindBadge(record.kind)
 
-                Text(recordMetaText(record))
-                    .font(.system(size: 10, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-            }
+                    Text(tradeDateTimeText(record))
+                        .font(.system(size: 12, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+                .layoutPriority(1)
 
-            Spacer(minLength: 8)
+                Spacer(minLength: 4)
 
-            VStack(alignment: .trailing, spacing: 6) {
                 Text(tradeRecordAmountText(record))
                     .font(.system(size: 14, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(tradeKindColor(record.kind))
+                    .foregroundStyle(kindColor)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-
-                Text(record.status.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(tradeStatusColor(record.status))
-
-                Text(record.mode.title)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.tertiary)
-
-                HStack(spacing: 4) {
-                    if canEdit(record) {
-                        recordActionButton(systemName: "pencil", title: "编辑") {
-                            onEdit(record)
-                        }
-                    }
-                    if !isInferredInitialTradeRecord(record) {
-                        recordActionButton(systemName: "trash", title: "删除", color: .red) {
-                            deletingRecord = record
-                        }
-                    }
-                }
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
+                    .frame(minWidth: 96, alignment: .trailing)
             }
-            .frame(width: 92, alignment: .trailing)
+            .frame(height: 22, alignment: .center)
+
+            HStack(alignment: .center, spacing: 8) {
+                Text(recordConfirmationText(record))
+                    .font(.system(size: 9.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(height: 19, alignment: .center)
+
+                Spacer(minLength: 4)
+
+                recordStatusBadge(record.status)
+            }
+            .frame(height: 22, alignment: .center)
+
+            HStack(alignment: .center, spacing: 8) {
+                recordPriceShareLine(record, color: kindColor)
+                    .layoutPriority(1)
+
+                Spacer(minLength: 4)
+
+                recordActionStack(record)
+                    .frame(width: 52, alignment: .trailing)
+            }
+            .frame(height: 22, alignment: .center)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 12)
-        .frame(minHeight: 74)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 9))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(minHeight: 88)
+        .background {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(recordCardBackground(record.kind))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(kindColor.opacity(colorScheme == .dark ? 0.24 : 0.16), lineWidth: 0.8)
+        }
     }
 
     private func recordActionButton(
@@ -2910,7 +2896,7 @@ struct FundTradeRecordsPanelView: View {
             Image(systemName: systemName)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(color)
-                .frame(width: 22, height: 20)
+                .frame(width: 22, height: 22)
                 .background(color.opacity(backgroundOpacity), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .contentShape(Rectangle())
         }
@@ -2920,7 +2906,55 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func canEdit(_ record: FundTradeRecord) -> Bool {
-        record.kind == .buy || record.kind == .sell
+        !isInferredInitialTradeRecord(record)
+    }
+
+    private func recordActionStack(_ record: FundTradeRecord) -> some View {
+        HStack(spacing: 5) {
+            if canEdit(record) {
+                recordActionButton(systemName: "pencil", title: "编辑") {
+                    onEdit(record)
+                }
+            }
+            if !isInferredInitialTradeRecord(record) {
+                recordActionButton(systemName: "trash", title: "删除", color: .red, backgroundOpacity: 0.08) {
+                    deletingRecord = record
+                }
+            }
+        }
+    }
+
+    private func recordKindBadge(_ kind: FundTradeKind) -> some View {
+        let color = tradeKindColor(kind)
+        return Text(recordKindTitle(kind))
+            .font(.system(size: 10, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(height: 19)
+            .background(color.opacity(colorScheme == .dark ? 0.18 : 0.12), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(color.opacity(colorScheme == .dark ? 0.26 : 0.18), lineWidth: 0.6)
+            )
+    }
+
+    private func recordStatusBadge(_ status: FundTradeRecordStatus) -> some View {
+        let color = tradeStatusColor(status)
+        return Text(status.title)
+            .font(.system(size: 10, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(minWidth: 50)
+            .frame(height: 19)
+            .background(color.opacity(colorScheme == .dark ? 0.18 : 0.11), in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(color.opacity(colorScheme == .dark ? 0.26 : 0.18), lineWidth: 0.6)
+            )
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(2)
     }
 
     private func recordTag(_ title: String, color: Color) -> some View {
@@ -2945,18 +2979,57 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func tradeDateTimeText(_ record: FundTradeRecord) -> String {
-        "\(record.tradeDate) \(record.tradeTimeType.title)"
+        if record.kind == .newFund, record.mode == .amount {
+            return "首次录入"
+        }
+        return "\(record.tradeDate) \(record.tradeTimeType.title)"
     }
 
-    private func recordMetaText(_ record: FundTradeRecord) -> String {
-        var parts = ["确认 \(record.acceptedDate)"]
-        if let price = record.price {
-            parts.append("净值 \(numberText(price, places: 4))")
+    private func recordConfirmationText(_ record: FundTradeRecord) -> String {
+        return "确认 \(record.acceptedDate)"
+    }
+
+    @ViewBuilder
+    private func recordPriceShareLine(_ record: FundTradeRecord, color: Color) -> some View {
+        let priceText = record.price.map { numberText($0, places: 4) }
+        let sharesText = (record.confirmedShares ?? record.shares).map { "\(numberText($0, places: 2))份" }
+
+        if priceText == nil && sharesText == nil {
+            Text(record.kind == .newFund && record.mode == .amount ? "手工录入" : "待确认净值和份额")
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else {
+            HStack(spacing: 8) {
+                if let priceText {
+                    recordMetricText(
+                        label: record.kind == .newFund && record.mode == .amount ? "参考净值" : "净值",
+                        value: priceText,
+                        color: color
+                    )
+                }
+
+                if let sharesText {
+                    recordMetricText(label: "份额", value: sharesText, color: color)
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .allowsTightening(true)
         }
-        if let shares = record.confirmedShares ?? record.shares {
-            parts.append("\(numberText(shares, places: 2))份")
+    }
+
+    private func recordMetricText(label: String, value: String, color: Color) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary.opacity(colorScheme == .dark ? 0.82 : 0.70))
+            Text(value)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(color.opacity(colorScheme == .dark ? 0.95 : 0.82))
         }
-        return parts.joined(separator: "  ")
+        .monospacedDigit()
     }
 
     private func tradeRecordAmountText(_ record: FundTradeRecord) -> String {
@@ -2970,7 +3043,27 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func tradeKindColor(_ kind: FundTradeKind) -> Color {
-        kind == .sell ? .fundPulseGreen : .red
+        switch kind {
+        case .newFund:
+            Color(nsColor: .systemBlue)
+        case .buy:
+            Color(nsColor: .systemRed)
+        case .sell:
+            .fundPulseGreen
+        }
+    }
+
+    private func recordCardBackground(_ kind: FundTradeKind) -> LinearGradient {
+        let color = tradeKindColor(kind)
+        return LinearGradient(
+            colors: [
+                color.opacity(colorScheme == .dark ? 0.18 : 0.10),
+                color.opacity(colorScheme == .dark ? 0.10 : 0.055),
+                PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.82 : 0.76)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private func tradeStatusColor(_ status: FundTradeRecordStatus) -> Color {
@@ -3222,7 +3315,7 @@ private func todayIncomeAmount(_ value: Double) -> Text {
 
 private func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeRecord? {
     let shares = fund.migratedShares ?? 0
-    let amount = fund.migratedPrincipal ?? fund.pendingAmount
+    let amount = fund.positionMode == .amount ? fund.pendingAmount : (fund.migratedPrincipal ?? fund.pendingAmount)
     guard shares > 0 || (amount ?? 0) > 0 else {
         return nil
     }
@@ -3238,9 +3331,10 @@ private func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeReco
         name: fund.name,
         mode: fund.positionMode ?? .share,
         amount: amount,
-        shares: shares > 0 ? shares : nil,
-        confirmedShares: status == .confirmed && shares > 0 ? shares : nil,
-        price: fund.migratedCost,
+        shares: fund.positionMode == .amount ? nil : (shares > 0 ? shares : nil),
+        confirmedShares: fund.positionMode == .amount ? nil : (status == .confirmed && shares > 0 ? shares : nil),
+        price: fund.positionMode == .amount ? nil : fund.migratedCost,
+        profit: fund.positionMode == .amount ? fund.pendingProfit : nil,
         tradeDate: tradeDate,
         tradeTimeType: fund.positionTimeType ?? .before15,
         acceptedDate: acceptedDate,
@@ -3256,6 +3350,30 @@ private func inferredInitialTradeRecordID(for code: String) -> String {
 
 private func isInferredInitialTradeRecord(_ record: FundTradeRecord) -> Bool {
     record.id == inferredInitialTradeRecordID(for: record.code)
+}
+
+private func tradeRecordTimeDescending(_ lhs: FundTradeRecord, _ rhs: FundTradeRecord) -> Bool {
+    if lhs.tradeDate != rhs.tradeDate {
+        return lhs.tradeDate > rhs.tradeDate
+    }
+    if lhs.tradeTimeType != rhs.tradeTimeType {
+        return lhs.tradeTimeType.sortOrder > rhs.tradeTimeType.sortOrder
+    }
+    if lhs.createdAt != rhs.createdAt {
+        return lhs.createdAt > rhs.createdAt
+    }
+    return lhs.id > rhs.id
+}
+
+private extension PositionTimeType {
+    var sortOrder: Int {
+        switch self {
+        case .before15:
+            0
+        case .after15:
+            1
+        }
+    }
 }
 
 private let refreshTimeFormatter: DateFormatter = {
