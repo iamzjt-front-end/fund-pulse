@@ -14,6 +14,13 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(VersionComparator.isVersion("0.0.11", newerThan: "0.0.12"))
     }
 
+    func testFundCodeFormatterDisplaysCodeWithoutHashPrefix() {
+        XCTAssertEqual(FundCodeFormatter.display("024418"), "024418")
+        XCTAssertEqual(FundCodeFormatter.display("#024418"), "024418")
+        XCTAssertEqual(FundCodeFormatter.display("  #024418  "), "024418")
+        XCTAssertEqual(FundCodeFormatter.display(""), "--")
+    }
+
     func testDefaultAutoRefreshIntervalIsTenSeconds() {
         let settings = AppSettings()
 

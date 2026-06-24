@@ -273,7 +273,7 @@ struct PanelNativeDatePicker: NSViewRepresentable {
         elements.contains(.hourMinute) && !elements.contains(.yearMonthDay)
     }
 
-    final class Coordinator: NSObject {
+    final class Coordinator: NSObject, NSPopoverDelegate {
         var selection: Binding<Date>
         var elements: NSDatePicker.ElementFlags
         var isTimeOnly: Bool
@@ -334,8 +334,10 @@ struct PanelNativeDatePicker: NSViewRepresentable {
             popover.animates = false
             popover.contentSize = contentSize
             popover.contentViewController = controller
+            popover.delegate = self
             self.popover = popover
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+            PanelAuxiliaryPopoverRegistry.register(popover)
         }
 
         @MainActor
@@ -360,8 +362,10 @@ struct PanelNativeDatePicker: NSViewRepresentable {
             popover.animates = false
             popover.contentSize = contentSize
             popover.contentViewController = controller
+            popover.delegate = self
             self.popover = popover
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+            PanelAuxiliaryPopoverRegistry.register(popover)
         }
 
         @MainActor
@@ -378,6 +382,15 @@ struct PanelNativeDatePicker: NSViewRepresentable {
             button?.title = formatted(selection.wrappedValue)
         }
 
+        @MainActor
+        func popoverDidClose(_ notification: Notification) {
+            guard let popover = notification.object as? NSPopover else { return }
+            PanelAuxiliaryPopoverRegistry.unregister(popover)
+            if self.popover === popover {
+                self.popover = nil
+            }
+        }
+
         private func formatted(_ date: Date) -> String {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "zh_CN")
@@ -385,6 +398,60 @@ struct PanelNativeDatePicker: NSViewRepresentable {
             formatter.timeZone = TimeZone.current
             formatter.dateFormat = isTimeOnly ? "HH:mm" : "yyyy/M/d"
             return formatter.string(from: date)
+        }
+    }
+}
+
+@MainActor
+enum PanelAuxiliaryPopoverRegistry {
+    private final class WeakPopover {
+        weak var value: NSPopover?
+
+        init(_ value: NSPopover) {
+            self.value = value
+        }
+    }
+
+    private static var popovers: [WeakPopover] = []
+    private static var recentlyClosedUntil: Date?
+
+    static func register(_ popover: NSPopover) {
+        pruneClosedPopovers()
+        popovers.append(WeakPopover(popover))
+        recentlyClosedUntil = nil
+    }
+
+    static func unregister(_ popover: NSPopover) {
+        popovers.removeAll { $0.value == nil || $0.value === popover }
+        recentlyClosedUntil = Date().addingTimeInterval(0.25)
+    }
+
+    static func handlePanelMouseDown(at screenLocation: NSPoint) -> Bool {
+        pruneClosedPopovers()
+
+        if let recentlyClosedUntil, recentlyClosedUntil > Date() {
+            return true
+        }
+        recentlyClosedUntil = nil
+
+        let activePopovers = popovers.compactMap(\.value)
+        guard !activePopovers.isEmpty else { return false }
+
+        if activePopovers.contains(where: { popover in
+            popover.contentViewController?.view.window?.frame.contains(screenLocation) == true
+        }) {
+            return true
+        }
+
+        activePopovers.forEach { $0.close() }
+        recentlyClosedUntil = Date().addingTimeInterval(0.25)
+        return true
+    }
+
+    private static func pruneClosedPopovers() {
+        popovers.removeAll { popover in
+            guard let value = popover.value else { return true }
+            return !value.isShown
         }
     }
 }

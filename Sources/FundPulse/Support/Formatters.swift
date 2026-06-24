@@ -30,7 +30,7 @@ enum FundCodeFormatter {
     static func display(_ code: String) -> String {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "--" }
-        return trimmed.hasPrefix("#") ? trimmed : "#\(trimmed)"
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
     }
 }
 

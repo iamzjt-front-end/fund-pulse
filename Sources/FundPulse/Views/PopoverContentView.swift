@@ -181,9 +181,14 @@ struct PopoverContentView: View {
 
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("今日收益(元)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        Text("今日收益(元)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        if allConfirmedFundsUpdated {
+                            todayIncomeUpdatedTag
+                        }
+                    }
                     todayIncomeAmount(store.snapshot.todayIncome)
                         .monospacedDigit()
                         .lineLimit(1)
@@ -259,6 +264,25 @@ struct PopoverContentView: View {
             Divider()
                 .opacity(colorScheme == .dark ? 0.45 : 0.55)
         }
+    }
+
+    private var allConfirmedFundsUpdated: Bool {
+        let confirmedFunds = store.snapshot.funds.filter { !$0.status.isPendingDisplay }
+        return !confirmedFunds.isEmpty && confirmedFunds.allSatisfy(\.isUpdated)
+    }
+
+    private var todayIncomeUpdatedTag: some View {
+        Text("已更新")
+            .font(.system(size: 8, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 4)
+            .frame(height: 14)
+            .background(Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.orange.opacity(colorScheme == .dark ? 0.34 : 0.22), lineWidth: 0.6)
+            )
     }
 
     private var shouldShowAppUpdateRow: Bool {
@@ -1643,9 +1667,6 @@ struct FundRowView: View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 5) {
-                    if fund.isUpdated {
-                        tag("已更新", color: updatedTagColor)
-                    }
                     Text(fund.name)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.primary)
@@ -1657,6 +1678,9 @@ struct FundRowView: View {
                 }
 
                 HStack(spacing: 6) {
+                    if fund.isUpdated {
+                        tag("已更新", color: updatedTagColor)
+                    }
                     Text(FundCodeFormatter.display(fund.code))
                     Text(rowHoldingAmountText)
                     Text(compactMoney(rowConfirmedHoldingIncome))
@@ -1889,15 +1913,19 @@ struct FundDetailView: View {
         }
         .alert("删除基金", isPresented: $isDeleteConfirmationPresented) {
             Button("取消", role: .cancel) {}
-            Button("确认删除", role: .destructive) {
+            Button("删除基金", role: .destructive) {
                 Task {
                     await onDelete(fund)
                     onClose()
                 }
             }
         } message: {
-            Text("确定删除“\(fund.name)”吗？这会移除它的持仓记录。")
+            Text(deleteFundConfirmationMessage)
         }
+    }
+
+    private var deleteFundConfirmationMessage: String {
+        "确定删除“\(fund.name)”吗？这会同时删除该基金的持仓、待确认交易和全部交易记录，删除后无法撤销。"
     }
 
     private var fundTitle: some View {
@@ -2670,19 +2698,18 @@ struct FundTradeRecordsPanelView: View {
             .scrollIndicators(.hidden)
         }
         .background(PanelDesign.panelBackground)
-        .alert("删除交易记录", isPresented: deleteConfirmationBinding) {
+        .alert("删除交易记录", isPresented: deleteConfirmationBinding, presenting: deletingRecord) { record in
             Button("取消", role: .cancel) {
                 deletingRecord = nil
             }
-            Button("删除", role: .destructive) {
-                guard let record = deletingRecord else { return }
+            Button("删除记录", role: .destructive) {
                 Task {
                     await onDelete(record)
                     deletingRecord = nil
                 }
             }
-        } message: {
-            Text("删除后会重新计算这只基金的持有金额、持有份额和成本。")
+        } message: { record in
+            Text(deleteTradeRecordConfirmationMessage(for: record))
         }
     }
 
@@ -2743,6 +2770,10 @@ struct FundTradeRecordsPanelView: View {
 
     private var emptyTitle: String {
         filter == .all ? "暂无交易记录" : "暂无\(filter.title)记录"
+    }
+
+    private func deleteTradeRecordConfirmationMessage(for record: FundTradeRecord) -> String {
+        "确定删除 \(tradeDateTimeText(record)) 的\(record.kind.title)记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持有金额、持有份额和成本，且无法撤销。"
     }
 
     private func tradeRecordRow(_ record: FundTradeRecord) -> some View {
