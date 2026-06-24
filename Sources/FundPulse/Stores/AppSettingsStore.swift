@@ -59,6 +59,16 @@ final class AppSettingsStore {
         try? save()
     }
 
+    func setThresholdReminderInterval(_ interval: FundThresholdReminderInterval) {
+        settings.thresholdReminderInterval = interval
+        try? save()
+    }
+
+    func setAppearanceMode(_ mode: AppAppearanceMode) {
+        settings.appearanceMode = mode
+        try? save()
+    }
+
     var settingsFileURL: URL {
         dataDirectory.appending(path: "settings.json")
     }

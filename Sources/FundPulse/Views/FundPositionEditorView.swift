@@ -14,6 +14,7 @@ struct FundPositionEditorView: View {
     @State private var positionProfit: String
     @State private var shares: String
     @State private var cost: String
+    @State private var isSameDayNewFund: Bool
     @State private var positionDate: Date
     @State private var positionTimeType: PositionTimeType
     @State private var zdfRange: String
@@ -50,12 +51,21 @@ struct FundPositionEditorView: View {
             if let pendingAmount = fund?.pendingAmount {
                 return pendingAmount
             }
+            if let currentAmount = fund?.currentAmount {
+                return currentAmount
+            }
+            if let principal = fund?.migratedPrincipal {
+                return principal + (fund?.holdingIncome ?? 0)
+            }
             guard let netValue, let shares = fund?.migratedShares else { return nil }
             return shares * netValue
         }()
         let profit: Double? = {
             if let pendingProfit = fund?.pendingProfit {
                 return pendingProfit
+            }
+            if let holdingIncome = fund?.holdingIncome {
+                return holdingIncome
             }
             guard let netValue,
                   let shares = fund?.migratedShares,
@@ -71,6 +81,7 @@ struct FundPositionEditorView: View {
         _positionProfit = State(initialValue: profit.map { Self.text($0) } ?? "")
         _shares = State(initialValue: fund?.migratedShares.map { Self.text($0, places: 2) } ?? "")
         _cost = State(initialValue: fund?.migratedCost.map { Self.text($0, places: 4) } ?? "")
+        _isSameDayNewFund = State(initialValue: false)
         _positionDate = State(initialValue: date)
         _positionTimeType = State(initialValue: fund?.positionTimeType ?? TradingCalendar.defaultPositionTimeType())
         _zdfRange = State(initialValue: fund?.zdfRange.map { Self.text($0) } ?? "")
@@ -126,24 +137,21 @@ struct FundPositionEditorView: View {
                                 PanelTextInput("可精确 4 位小数", text: $cost)
                             }
                         }
-                    }
 
-                    PanelSection(title: "交易确认") {
-                        HStack(spacing: 10) {
-                            Text("持仓日期")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            PanelNativeDatePicker(selection: $positionDate, elements: [.yearMonthDay])
-                                .frame(width: 122, height: 24)
+                        if fund == nil {
+                            sameDayNewFundRow
+                            if shouldShowTradeTimeControls {
+                                field("交易时点") {
+                                    PanelSegmentedPicker(
+                                        values: Array(PositionTimeType.allCases),
+                                        selection: $positionTimeType,
+                                        title: { $0.title }
+                                    )
+                                }
+                            }
                         }
-                        PanelSegmentedPicker(
-                            values: Array(PositionTimeType.allCases),
-                            selection: $positionTimeType,
-                            title: { $0.title }
-                        )
-                        confirmNetValueTip
                     }
+                    .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
 
                     PanelSection(title: "提醒与备注") {
                         field("涨跌幅提醒") {
@@ -185,7 +193,16 @@ struct FundPositionEditorView: View {
         .onChange(of: code) { _, newValue in
             scheduleFundMetadataLookup(for: newValue)
         }
+        .onChange(of: isSameDayNewFund) { _, newValue in
+            guard newValue else { return }
+            positionDate = .now
+            positionTimeType = TradingCalendar.defaultPositionTimeType()
+        }
         .onAppear {
+            if isSameDayNewFund {
+                positionDate = .now
+                positionTimeType = TradingCalendar.defaultPositionTimeType()
+            }
             scheduleFundMetadataLookup(for: code)
         }
         .onDisappear {
@@ -293,11 +310,47 @@ struct FundPositionEditorView: View {
         )
     }
 
+    private var sameDayNewFundRow: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(PanelDesign.warningAccent)
+                Text("是否当日新增")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(PanelDesign.warningAccent)
+                Spacer()
+                Toggle("", isOn: $isSameDayNewFund)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
+
+            Text(isSameDayNewFund ? "开启后表示今天刚买入，需选择 15:00 前后；净值未确认前进入待确认。" : "关闭时按已有历史持仓补录，使用最新确认净值入持有，不进入待确认。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .background(PanelDesign.warningBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(PanelDesign.warningBorder, lineWidth: 1)
+        )
+    }
+
+    private var isTodayNewFund: Bool {
+        fund == nil && isSameDayNewFund
+    }
+
+    private var shouldShowTradeTimeControls: Bool {
+        isTodayNewFund
+    }
+
     private var canSubmit: Bool {
         !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (
             positionMode == .amount
                 ? (Self.number(positionAmount) ?? 0) > 0
-                : (Self.number(shares) ?? 0) > 0
+                : (Self.number(shares) ?? 0) > 0 && (Self.number(cost) ?? 0) > 0
         )
     }
 
@@ -314,6 +367,10 @@ struct FundPositionEditorView: View {
         guard !isSaving else { return }
         isSaving = true
         errorMessage = nil
+        let resolvedPositionDate = DateOnlyFormatter.string(from: isTodayNewFund ? .now : positionDate)
+        let resolvedPositionTimeType = isTodayNewFund
+            ? positionTimeType
+            : .before15
 
         let draft = FundPositionDraft(
             code: code,
@@ -323,11 +380,12 @@ struct FundPositionEditorView: View {
             positionProfit: Self.number(positionProfit) ?? 0,
             shares: Self.number(shares),
             cost: Self.number(cost),
-            positionDate: DateOnlyFormatter.string(from: positionDate),
-            positionTimeType: positionTimeType,
+            positionDate: resolvedPositionDate,
+            positionTimeType: resolvedPositionTimeType,
             zdfRange: Self.number(zdfRange),
             jzNotice: Self.number(jzNotice),
-            memo: memo
+            memo: memo,
+            requiresTradeConfirmation: isTodayNewFund
         )
 
         Task {

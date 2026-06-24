@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+@preconcurrency import UserNotifications
 
 private struct FocuslessSwitch: NSViewRepresentable {
     @Binding var isOn: Bool
@@ -50,13 +51,17 @@ struct SettingsView: View {
     let onCheckUpdate: (() async -> Void)?
     let onClose: (() -> Void)?
 
-    @State private var message: String?
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
     @State private var mainPanelHeightText: String
     @State private var operationReminderTimeText: String
     @State private var operationReminderDraftHour: Int
     @State private var operationReminderDraftMinute: Int
     @State private var isOperationReminderTimeSelectorPresented = false
+    @State private var isTestingReminder = false
+    @State private var testReminderStatusMessage: String?
+    @State private var canOpenNotificationSettings = false
+    @State private var displayedAppearanceMode: AppAppearanceMode
+    @Namespace private var appearanceModeSelectionNamespace
     @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
@@ -82,6 +87,7 @@ struct SettingsView: View {
         _operationReminderTimeText = State(initialValue: settingsStore.settings.operationReminderTimeText)
         _operationReminderDraftHour = State(initialValue: settingsStore.settings.operationReminderTimeMinutes / 60)
         _operationReminderDraftMinute = State(initialValue: settingsStore.settings.operationReminderTimeMinutes % 60)
+        _displayedAppearanceMode = State(initialValue: settingsStore.settings.appearanceMode)
     }
 
     var body: some View {
@@ -91,13 +97,17 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
+                    PanelSection(title: "外观") {
+                        appearanceModePicker
+                    }
+
                     PanelSection(title: "基金操作提醒") {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(alignment: .center, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("开启每日提醒")
+                                    Text("开启每日操作提醒")
                                         .font(.system(size: 12, weight: .semibold))
-                                    Text("到点发送系统通知，提醒检查估值并决定加仓或减仓。")
+                                    Text("在设定时间发送系统通知，提醒检查估值并决定是否加仓或减仓。")
                                         .font(.system(size: 10, weight: .medium))
                                         .foregroundStyle(.secondary)
                                 }
@@ -121,27 +131,113 @@ struct SettingsView: View {
                         }
                     }
 
-                    PanelSection(title: "自动刷新") {
-                        PanelSegmentedPicker(
-                            values: Array(AutoRefreshInterval.allCases),
-                            selection: Binding(
-                                get: { selectedAutoRefreshInterval },
-                                set: { interval in
-                                    selectedAutoRefreshInterval = interval
-                                    settingsStore.setAutoRefreshInterval(interval)
-                                    onSettingsChanged?()
-                                }
-                            ),
-                            title: { $0.title }
-                        )
+                    PanelSection(title: "涨跌/净值提醒") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("涨跌幅提醒、净值提醒在单只基金的基金设置里配置；这里仅控制命中后的重复通知间隔。")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
 
-                        Text(selectedAutoRefreshInterval.detail)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Text("重复提醒间隔")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    thresholdReminderIntervalMenu
+                                }
+
+                                Text(settingsStore.settings.thresholdReminderInterval.detail)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
                             .padding(9)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                             .overlay(PanelDesign.border(cornerRadius: 9))
+                        }
+                    }
+
+                    PanelSection(title: "通知测试") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 7) {
+                                HStack(alignment: .center, spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("测试系统通知")
+                                            .font(.system(size: 11, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                        Text("只验证当前通知权限，不代表某只基金提醒已命中。")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    testReminderButton
+                                        .frame(width: 108)
+                                }
+
+                                if let testReminderStatusMessage {
+                                    Text(testReminderStatusMessage)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundStyle(canOpenNotificationSettings ? .orange : .secondary)
+                                        .lineLimit(nil)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+
+                                if canOpenNotificationSettings {
+                                    Button {
+                                        openNotificationSettings()
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "gearshape")
+                                            Text("打开通知设置")
+                                        }
+                                        .font(.system(size: 10, weight: .semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(PanelDesign.accent)
+                                    .focusable(false)
+                                }
+                            }
+                            .padding(9)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay(PanelDesign.border(cornerRadius: 9))
+                        }
+                    }
+
+                    PanelSection(title: "自动刷新") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("间隔")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(selectedAutoRefreshInterval.title)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .monospacedDigit()
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 26)
+                                    .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                                    .overlay(PanelDesign.border(cornerRadius: 7))
+                            }
+
+                            Slider(
+                                value: autoRefreshIntervalSliderBinding,
+                                in: 0...Double(AutoRefreshInterval.allCases.count - 1),
+                                step: 1
+                            )
+                            .controlSize(.small)
+
+                            Text(selectedAutoRefreshInterval.detail)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .overlay(PanelDesign.border(cornerRadius: 9))
                     }
 
                     PanelSection(title: "主弹窗") {
@@ -167,17 +263,6 @@ struct SettingsView: View {
                         .overlay(PanelDesign.border(cornerRadius: 9))
                     }
 
-                    if let message {
-                        Text(message)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(3)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 8)
@@ -191,8 +276,15 @@ struct SettingsView: View {
         .background(PanelDesign.panelBackground)
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
+            displayedAppearanceMode = settingsStore.settings.appearanceMode
             syncMainPanelHeightText()
             syncOperationReminderTimeText()
+        }
+        .onChange(of: settingsStore.settings.appearanceMode) { _, mode in
+            displayedAppearanceMode = mode
+        }
+        .onChange(of: settingsStore.settings.autoRefreshInterval) { _, interval in
+            selectedAutoRefreshInterval = interval
         }
         .onChange(of: settingsStore.settings.mainPanelHeight) { _, _ in
             if !isMainPanelHeightFocused {
@@ -244,6 +336,19 @@ struct SettingsView: View {
             get: { settingsStore.settings.operationReminderEnabled },
             set: { isEnabled in
                 settingsStore.setOperationReminderEnabled(isEnabled)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    private var autoRefreshIntervalSliderBinding: Binding<Double> {
+        Binding(
+            get: { Double(selectedAutoRefreshInterval.sliderIndex) },
+            set: { index in
+                let interval = AutoRefreshInterval.interval(atSliderIndex: Int(index.rounded()))
+                guard interval != selectedAutoRefreshInterval else { return }
+                selectedAutoRefreshInterval = interval
+                settingsStore.setAutoRefreshInterval(interval)
                 onSettingsChanged?()
             }
         )
@@ -323,6 +428,118 @@ struct SettingsView: View {
             }
     }
 
+    private var thresholdReminderIntervalMenu: some View {
+        Menu {
+            ForEach(FundThresholdReminderInterval.allCases) { interval in
+                Button {
+                    settingsStore.setThresholdReminderInterval(interval)
+                    onSettingsChanged?()
+                } label: {
+                    if interval == settingsStore.settings.thresholdReminderInterval {
+                        Label(interval.title, systemImage: "checkmark")
+                    } else {
+                        Text(interval.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(settingsStore.settings.thresholdReminderInterval.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+    }
+
+    private var appearanceModePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(AppAppearanceMode.allCases) { mode in
+                let isSelected = mode == displayedAppearanceMode
+                Button {
+                    selectAppearanceMode(mode)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: mode.systemImage)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(mode.title)
+                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+                    .foregroundStyle(isSelected ? .primary : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PanelDesign.segmentSelectionBackground)
+                                .matchedGeometryEffect(
+                                    id: "appearanceModeSelection",
+                                    in: appearanceModeSelectionNamespace
+                                )
+                                .shadow(color: Color.black.opacity(0.16), radius: 5, x: 0, y: 2)
+                        }
+                    }
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(PanelDesign.segmentSelectionBorder, lineWidth: 0.8)
+                                .matchedGeometryEffect(
+                                    id: "appearanceModeSelectionBorder",
+                                    in: appearanceModeSelectionNamespace
+                                )
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+        }
+        .padding(2)
+        .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .animation(.spring(response: 0.22, dampingFraction: 0.86), value: displayedAppearanceMode)
+    }
+
+    private func selectAppearanceMode(_ mode: AppAppearanceMode) {
+        guard mode != displayedAppearanceMode else { return }
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            displayedAppearanceMode = mode
+        }
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 130_000_000)
+            guard displayedAppearanceMode == mode else { return }
+            settingsStore.setAppearanceMode(mode)
+            onSettingsChanged?()
+        }
+    }
+
+    private var testReminderButton: some View {
+        Button {
+            testReminderPermission()
+        } label: {
+            PanelButtonLabel(
+                title: isTestingReminder ? "检测中" : "测试",
+                systemImage: isTestingReminder ? "hourglass" : "bell.badge",
+                isEnabled: !isTestingReminder
+            )
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .disabled(isTestingReminder)
+    }
+
     private func setOperationReminderDraftToCurrentTime() {
         let components = Calendar.current.dateComponents([.hour, .minute], from: Date())
         operationReminderDraftHour = components.hour ?? 0
@@ -377,6 +594,75 @@ struct SettingsView: View {
 
     private func syncOperationReminderTimeText() {
         operationReminderTimeText = settingsStore.settings.operationReminderTimeText
+    }
+
+    private func testReminderPermission() {
+        guard !isTestingReminder else { return }
+        isTestingReminder = true
+        canOpenNotificationSettings = false
+        testReminderStatusMessage = "正在检测提醒权限..."
+
+        Task {
+            let result = await sendTestReminderNotification()
+            await MainActor.run {
+                testReminderStatusMessage = result.message
+                canOpenNotificationSettings = result.canOpenNotificationSettings
+                isTestingReminder = false
+            }
+        }
+    }
+
+    private func sendTestReminderNotification() async -> (message: String, canOpenNotificationSettings: Bool) {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .notDetermined:
+            do {
+                let granted = try await center.requestAuthorization(options: [.alert, .sound])
+                guard granted else {
+                    return ("未获得通知权限，无法发送测试提醒。", true)
+                }
+            } catch {
+                return ("请求通知权限失败：\(error.localizedDescription)", true)
+            }
+        case .denied:
+            return ("系统通知权限已关闭，请在 macOS 系统设置中允许 fund-pulse 通知。", true)
+        case .authorized, .provisional, .ephemeral:
+            break
+        @unknown default:
+            return ("当前系统通知权限状态未知，请检查 macOS 通知设置。", true)
+        }
+
+        let refreshedSettings = await center.notificationSettings()
+        if refreshedSettings.alertSetting == .disabled {
+            return ("通知权限已允许，但横幅/提醒显示被关闭，请检查 fund-pulse 的通知样式。", true)
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "fund-pulse 测试提醒"
+        content.body = "如果你看到这条通知，说明系统通知权限正常。"
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "fund-pulse.test-reminder.\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        )
+
+        do {
+            try await center.add(request)
+            return ("测试提醒已安排，1秒后弹出。若未看到横幅，请检查专注模式或通知样式。", false)
+        } catch {
+            return ("测试提醒发送失败：\(error.localizedDescription)", true)
+        }
+    }
+
+    private func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else {
+            return
+        }
+        NSWorkspace.shared.open(url)
     }
 
     @ViewBuilder

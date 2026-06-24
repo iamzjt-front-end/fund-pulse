@@ -18,6 +18,8 @@ enum MarketSessionState: Equatable {
 }
 
 enum TradingCalendar {
+    static let operationReminderScheduleLimit = 30
+
     private static let marketClosedRanges = [
         ("2026-01-01", "2026-01-03"),
         ("2026-02-15", "2026-02-23"),
@@ -65,6 +67,63 @@ enum TradingCalendar {
         let hour = calendar.component(.hour, from: now)
         let minute = calendar.component(.minute, from: now)
         let minutes = hour * 60 + minute
+        return marketSessionState(minutes: minutes, isTradingDay: true)
+    }
+
+    static func isMarketOpen(now: Date = .now) -> Bool {
+        marketSessionState(now: now) == .open
+    }
+
+    static func isMarketOpenReminderTime(minutes: Int) -> Bool {
+        marketSessionState(minutes: minutes, isTradingDay: true) == .open
+    }
+
+    static func nextMarketOpenReminderDates(
+        minutes: Int,
+        from now: Date = .now,
+        limit: Int = operationReminderScheduleLimit
+    ) -> [Date] {
+        guard limit > 0,
+              isMarketOpenReminderTime(minutes: minutes)
+        else {
+            return []
+        }
+
+        let calendar = chinaCalendar
+        var dates: [Date] = []
+        var day = calendar.startOfDay(for: now)
+        let hour = minutes / 60
+        let minute = minutes % 60
+
+        while dates.count < limit {
+            defer {
+                day = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+            }
+
+            guard isFundTradingDay(day),
+                  let reminderDate = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: day),
+                  reminderDate > now
+            else {
+                continue
+            }
+
+            dates.append(reminderDate)
+        }
+
+        return dates
+    }
+
+    static func notificationDateComponents(from date: Date) -> DateComponents {
+        let calendar = chinaCalendar
+        var components = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        return components
+    }
+
+    private static func marketSessionState(minutes: Int, isTradingDay: Bool) -> MarketSessionState {
+        guard isTradingDay else { return .closed }
+
         let morningOpen = 9 * 60 + 30
         let morningClose = 11 * 60 + 30
         let afternoonOpen = 13 * 60

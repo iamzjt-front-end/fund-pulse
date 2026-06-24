@@ -65,6 +65,8 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+codesign --force --deep --sign - "$APP_BUNDLE"
+
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
