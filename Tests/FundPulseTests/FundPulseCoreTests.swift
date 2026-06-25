@@ -35,23 +35,29 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(StatusBarTone.intensity(forRate: 2.00), .clear)
         XCTAssertEqual(StatusBarTone.intensity(forRate: 3.00), .strong)
         XCTAssertEqual(StatusBarTone.intensity(forRate: 4.00), .extreme)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 5.00), .extreme)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: 5.01), .maximum)
         XCTAssertEqual(StatusBarTone.intensity(forRate: -4.00), .extreme)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: -5.00), .extreme)
+        XCTAssertEqual(StatusBarTone.intensity(forRate: -5.01), .maximum)
     }
 
     #if canImport(AppKit)
     func testStatusBarToneMenuBarColorsUseFundBabyStyleDepth() throws {
         XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0)), "#8E8E93")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0.50)), "#FF8A80")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 1.50)), "#FF5A6A")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 2.50)), "#E63B4A")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 3.50)), "#B9152A")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 4.50)), "#6E0714")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0.50)), "#FF9F9A")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 1.50)), "#E1827D")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 2.50)), "#C46562")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 3.50)), "#A74847")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 4.50)), "#8A2B2D")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 5.50)), "#6E0714")
 
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -0.50)), "#7BD88F")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -1.50)), "#4BA66E")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -2.50)), "#2E8B57")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -3.50)), "#146B3A")
-        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -4.50)), "#073B24")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -0.50)), "#8EDDA2")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -1.50)), "#72BA87")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -2.50)), "#57986C")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -3.50)), "#3C7753")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -4.50)), "#23583B")
+        XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: -5.50)), "#073B24")
     }
     #endif
 
@@ -990,6 +996,12 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(stillPendingRecord.id, pendingRecord.id)
         XCTAssertEqual(stillPendingRecord.status, .pending)
         XCTAssertEqual(store.snapshot.funds.first?.migratedShares ?? 0, 100, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.totalAmount, 250, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.holdingIncome, 150, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.holdingIncomeRate, 150, accuracy: 0.0001)
+        let expectedTodayIncome = 100 * 2.5 * 5.16 / 105.16
+        XCTAssertEqual(store.snapshot.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.todayIncomeRate, 5.16, accuracy: 0.0001)
 
         now = try chinaDate("2026-06-23 09:30")
         await store.refreshQuotes()
@@ -2252,7 +2264,7 @@ final class FundPulseCoreTests: XCTestCase {
                     migratedShares: 100,
                     migratedCost: 2,
                     migratedPrincipal: 200,
-                    incomeStartDate: "2026-06-22"
+                    incomeStartDate: "2026-06-21"
                 )
             ],
             migration: nil
@@ -2371,7 +2383,7 @@ final class FundPulseCoreTests: XCTestCase {
                     migratedShares: shares,
                     migratedCost: cost,
                     migratedPrincipal: shares * cost,
-                    incomeStartDate: "2026-06-22"
+                    incomeStartDate: "2026-06-21"
                 )
             ],
             migration: nil
@@ -2665,6 +2677,118 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.funds[0].todayRate, 3.9439, accuracy: 0.0001)
         XCTAssertTrue(result.funds[0].isUpdated)
         XCTAssertEqual(result.funds[0].dateText, "06-18 15:00")
+    }
+
+    func testPortfolioCalculatorExcludesSameDayLotFromTodayIncomeAfterNavUpdated() throws {
+        let now = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-23 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    migratedShares: 200,
+                    migratedCost: 1.5,
+                    migratedPrincipal: 300,
+                    incomeStartDate: "2026-06-23",
+                    lots: [
+                        FundPositionLot(
+                            id: "old",
+                            shares: 100,
+                            cost: 1,
+                            incomeStartDate: "2026-06-23",
+                            positionDate: "2026-06-23",
+                            positionTimeType: .before15
+                        ),
+                        FundPositionLot(
+                            id: "today-buy",
+                            shares: 100,
+                            cost: 2,
+                            incomeStartDate: "2026-06-24",
+                            positionDate: "2026-06-24",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2.5,
+            estimatedNetValue: 2.5,
+            growthRate: 25,
+            estimateTime: "",
+            netValueDate: "2026-06-24"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": quote],
+            now: now
+        )
+
+        XCTAssertEqual(result.totalAmount, 500, accuracy: 0.0001)
+        XCTAssertEqual(result.holdingIncome, 200, accuracy: 0.0001)
+        XCTAssertEqual(result.holdingIncomeRate, 200.0 / 300.0 * 100, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, 50, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, 25, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].todayIncome, 50, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].currentAmount ?? 0, 500, accuracy: 0.0001)
+    }
+
+    func testFundDailyIncomeRowsIncludeSameDayLotOnlyInCumulativeIncome() throws {
+        let lots = [
+            FundPositionLot(
+                id: "old",
+                shares: 100,
+                cost: 1,
+                incomeStartDate: "2026-06-23",
+                positionDate: "2026-06-23",
+                positionTimeType: .before15
+            ),
+            FundPositionLot(
+                id: "today-buy",
+                shares: 100,
+                cost: 2,
+                incomeStartDate: "2026-06-24",
+                positionDate: "2026-06-24",
+                positionTimeType: .before15
+            )
+        ]
+        let points = [
+            FundNetValuePoint(timestamp: try timestamp("2026-06-23"), value: 2.0, equityReturn: nil),
+            FundNetValuePoint(timestamp: try timestamp("2026-06-24"), value: 2.5, equityReturn: nil),
+            FundNetValuePoint(timestamp: try timestamp("2026-06-25"), value: 2.6, equityReturn: nil)
+        ]
+
+        let rows = FundDailyIncomeCalculator.rows(lots: lots, points: points)
+
+        XCTAssertEqual(rows.map(\.dateText), ["2026-06-25", "2026-06-24", "2026-06-23"])
+        XCTAssertEqual(rows[0].dailyIncome, 20, accuracy: 0.0001)
+        XCTAssertEqual(rows[0].entryIncome, 0, accuracy: 0.0001)
+        XCTAssertEqual(rows[0].cumulativeIncome, 220, accuracy: 0.0001)
+        XCTAssertEqual(rows[0].cumulativeRate ?? 0, 220.0 / 300.0 * 100, accuracy: 0.0001)
+        XCTAssertEqual(rows[1].dailyIncome, 50, accuracy: 0.0001)
+        XCTAssertEqual(rows[1].entryIncome, 50, accuracy: 0.0001)
+        XCTAssertEqual(rows[1].cumulativeIncome, 200, accuracy: 0.0001)
+        XCTAssertEqual(rows[1].cumulativeRate ?? 0, 200.0 / 300.0 * 100, accuracy: 0.0001)
+        XCTAssertEqual(rows[2].dailyIncome, 0, accuracy: 0.0001)
+        XCTAssertEqual(rows[2].entryIncome, 100, accuracy: 0.0001)
+        XCTAssertEqual(rows[2].cumulativeIncome, 100, accuracy: 0.0001)
     }
 
     func testPortfolioCalculatorKeepsExistingLotsActiveWhenNewLotIsPending() throws {
@@ -3130,6 +3254,11 @@ final class FundPulseCoreTests: XCTestCase {
         formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return try XCTUnwrap(formatter.date(from: value))
+    }
+
+    private func timestamp(_ dateText: String) throws -> Int64 {
+        let date = try chinaDate("\(dateText) 00:00")
+        return Int64(date.timeIntervalSince1970 * 1000)
     }
 }
 

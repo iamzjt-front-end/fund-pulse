@@ -9,6 +9,7 @@ enum PortfolioCalculator {
         var costTotal = 0.0
         var currentTotal = 0.0
         var todayIncomeTotal = 0.0
+        var todayIncomeBaseTotal = 0.0
         var holdingIncomeTotal = 0.0
         var pendingCount = snapshot.pendingTrades?.count ?? 0
 
@@ -42,11 +43,15 @@ enum PortfolioCalculator {
             let status = effectiveStatus(totalShares: totalShares, hasManualHolding: hasManualHolding)
             let netValue = quote?.netValue ?? cost
             let dailyState = quote.map { dailyQuoteState(for: $0, now: now) } ?? .inactive
+            let dailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, now: now)
             let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
             let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
             let holdingIncome = calculatedHoldingIncome(lots: lots, quote: quote, netValue: holdingNetValue) + manualProfit
             let todayIncome = quote.map {
-                calculatedTodayIncome(confirmedShares: totalShares, netValue: netValue, quote: $0, dailyState: dailyState)
+                calculatedTodayIncome(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
+            } ?? 0
+            let todayIncomeBase = quote.map {
+                calculatedTodayIncomeBase(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
             } ?? 0
             let confirmedHoldingRate = fundCostTotal > 0 ? confirmedHoldingIncome / fundCostTotal * 100 : nil
             let holdingRate = fundCostTotal > 0 ? holdingIncome / fundCostTotal * 100 : nil
@@ -60,11 +65,12 @@ enum PortfolioCalculator {
             currentTotal += fundCurrentTotal
             holdingIncomeTotal += holdingIncome
             todayIncomeTotal += todayIncome
+            todayIncomeBaseTotal += todayIncomeBase
 
             if let quote {
                 next.name = quote.name.isEmpty ? fund.name : quote.name
                 next.dateText = shortDateText(quote: quote, fallback: fund.dateText, now: now)
-                next.todayRate = dailyState.isActive && totalShares > 0 ? quote.growthRate : 0
+                next.todayRate = dailyState.isActive && dailyIncomeShares > 0 ? quote.growthRate : 0
                 next.isUpdated = isQuoteUpdated(quote, now: now)
             }
             next.status = status
@@ -81,7 +87,7 @@ enum PortfolioCalculator {
             return next
         }
 
-        let todayIncomeRate = currentTotal > 0 ? todayIncomeTotal / currentTotal * 100 : 0
+        let todayIncomeRate = todayIncomeBaseTotal > 0 ? todayIncomeTotal / todayIncomeBaseTotal * 100 : 0
         let holdingIncomeRate = costTotal > 0 ? holdingIncomeTotal / costTotal * 100 : 0
 
         return PortfolioSnapshot(
@@ -161,6 +167,16 @@ enum PortfolioCalculator {
         )
     }
 
+    private static func sharesParticipatingInDailyIncome(lots: [FundPositionLot], now: Date) -> Double {
+        let today = DateOnlyFormatter.string(from: now)
+        return lots.reduce(0) { total, lot in
+            guard DateOnlyFormatter.parse(lot.incomeStartDate) != nil else {
+                return total + lot.shares
+            }
+            return lot.incomeStartDate < today ? total + lot.shares : total
+        }
+    }
+
     private static func shortDateText(quote: FundQuote, fallback: String, now: Date) -> String {
         if dailyQuoteState(for: quote, now: now) == .intradayEstimate, quote.estimateTime.count >= 16 {
             return String(quote.estimateTime.dropFirst(5).prefix(11))
@@ -204,6 +220,28 @@ enum PortfolioCalculator {
             let denominator = 100 + quote.growthRate
             guard denominator != 0 else { return 0 }
             return confirmedShares * netValue * quote.growthRate / denominator
+        case .inactive:
+            return 0
+        }
+    }
+
+    private static func calculatedTodayIncomeBase(
+        confirmedShares: Double,
+        netValue: Double,
+        quote: FundQuote,
+        dailyState: DailyQuoteState
+    ) -> Double {
+        guard confirmedShares > 0 else { return 0 }
+        switch dailyState {
+        case .intradayEstimate:
+            guard netValue > 0 else { return 0 }
+            return confirmedShares * netValue
+        case .officialUpdated:
+            let multiplier = 1 + quote.growthRate / 100
+            guard multiplier != 0 else { return 0 }
+            let previousNetValue = netValue / multiplier
+            guard previousNetValue > 0 else { return 0 }
+            return confirmedShares * previousNetValue
         case .inactive:
             return 0
         }

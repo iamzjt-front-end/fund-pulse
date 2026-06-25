@@ -182,7 +182,7 @@ struct PopoverContentView: View {
                 Button(action: onOpenPortfolioBreakdown) {
                     metricCard(
                         "总金额",
-                        MoneyFormatter.plainMoney(store.snapshot.totalAmount),
+                        headerMoneyText(store.snapshot.totalAmount),
                         footnote: pendingAmountSummaryText,
                         isTotal: true
                     )
@@ -193,27 +193,27 @@ struct PopoverContentView: View {
                 .help("查看持仓占比")
                 Button(action: onOpenHoldingIncomeRanking) {
                     metricCard(
-                        "持有收益",
-                        MoneyFormatter.money(store.snapshot.holdingIncome, signed: true),
-                        tone: store.snapshot.holdingIncome
+                        "累计收益",
+                        headerSignedMoneyText(store.snapshot.holdingIncome),
+                        tone: headerMetricTone(store.snapshot.holdingIncome)
                     )
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看持有收益排行")
+                .help("查看累计收益排行")
 
                 Button(action: onOpenHoldingRateRanking) {
                     metricCard(
-                        "持有收益率",
-                        MoneyFormatter.percent(store.snapshot.holdingIncomeRate, signed: true),
-                        tone: store.snapshot.holdingIncomeRate
+                        "累计收益率",
+                        headerPercentText(store.snapshot.holdingIncomeRate),
+                        tone: headerMetricTone(store.snapshot.holdingIncomeRate)
                     )
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看持有收益率排行")
+                .help("查看累计收益率排行")
             }
 
             HStack(alignment: .bottom) {
@@ -226,13 +226,13 @@ struct PopoverContentView: View {
                             if allConfirmedFundsUpdated {
                                 todayIncomeUpdatedTag
                             }
+                            disclosureIndicator
                         }
-                        todayIncomeAmount(store.snapshot.todayIncome)
+                        todayIncomeAmount(store.snapshot.todayIncome, isMasked: hidesHeaderAmounts)
                             .monospacedDigit()
                             .lineLimit(1)
                             .minimumScaleFactor(0.5)
-                            .foregroundStyle(toneColor(for: store.snapshot.todayIncome))
-                            .blur(radius: headerAmountBlurRadius)
+                            .foregroundStyle(headerMetricColor(store.snapshot.todayIncome))
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -245,14 +245,16 @@ struct PopoverContentView: View {
 
                 Button(action: onOpenTodayRateRanking) {
                     VStack(alignment: .trailing, spacing: 3) {
-                        Text("实时收益率")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                        Text(MoneyFormatter.percent(store.snapshot.todayIncomeRate, signed: true))
+                        HStack(spacing: 4) {
+                            Text("实时收益率")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            disclosureIndicator
+                        }
+                        Text(headerPercentText(store.snapshot.todayIncomeRate))
                             .font(.system(size: 16, weight: .semibold))
                             .monospacedDigit()
-                            .foregroundStyle(toneColor(for: store.snapshot.todayIncomeRate))
-                            .blur(radius: headerAmountBlurRadius)
+                            .foregroundStyle(headerMetricColor(store.snapshot.todayIncomeRate))
                     }
                     .padding(.bottom, 3)
                     .contentShape(Rectangle())
@@ -873,10 +875,6 @@ struct PopoverContentView: View {
         .accessibilityLabel(hidesHeaderAmounts ? "显示顶部金额" : "隐藏顶部金额")
     }
 
-    private var headerAmountBlurRadius: CGFloat {
-        hidesHeaderAmounts ? 5.5 : 0
-    }
-
     private var privacyToggleForeground: Color {
         hidesHeaderAmounts
             ? .orange
@@ -887,6 +885,33 @@ struct PopoverContentView: View {
         hidesHeaderAmounts
             ? Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12)
             : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05)
+    }
+
+    private var hiddenMoneyPlaceholder: String { "***" }
+    private var hiddenPercentPlaceholder: String { "***" }
+
+    private func headerMoneyText(_ value: Double) -> String {
+        hidesHeaderAmounts ? hiddenMoneyPlaceholder : MoneyFormatter.plainMoney(value)
+    }
+
+    private func headerSignedMoneyText(_ value: Double) -> String {
+        hidesHeaderAmounts ? hiddenMoneyPlaceholder : MoneyFormatter.money(value, signed: true)
+    }
+
+    private func headerPercentText(_ value: Double) -> String {
+        hidesHeaderAmounts ? hiddenPercentPlaceholder : MoneyFormatter.percent(value, signed: true)
+    }
+
+    private func headerMetricTone(_ value: Double) -> Double? {
+        hidesHeaderAmounts ? nil : value
+    }
+
+    private func headerMetricColor(_ value: Double) -> Color {
+        hidesHeaderAmounts ? hiddenAmountColor : toneColor(for: value)
+    }
+
+    private var hiddenAmountColor: Color {
+        Color.primary.opacity(colorScheme == .dark ? 0.84 : 0.78)
     }
 
     @ViewBuilder
@@ -1005,16 +1030,19 @@ struct PopoverContentView: View {
         isTotal: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                disclosureIndicator
+            }
             Text(value)
                 .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
-                .foregroundStyle(isTotal ? totalAmountAccentColor : (tone.map(toneColor(for:)) ?? Color.primary))
-                .blur(radius: headerAmountBlurRadius)
+                .foregroundStyle(metricCardValueColor(tone, isTotal: isTotal))
 
             if let footnote {
                 Text(footnote)
@@ -1022,8 +1050,7 @@ struct PopoverContentView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
-                    .foregroundStyle(pendingAmountFootnoteColor)
-                    .blur(radius: headerAmountBlurRadius)
+                    .foregroundStyle(hidesHeaderAmounts ? Color.secondary : pendingAmountFootnoteColor)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1033,6 +1060,20 @@ struct PopoverContentView: View {
         .overlay(metricCardBorder)
         .overlay(metricCardInnerHighlight)
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.12 : 0.035), radius: 8, x: 0, y: 4)
+    }
+
+    private func metricCardValueColor(_ tone: Double?, isTotal: Bool) -> Color {
+        if hidesHeaderAmounts {
+            return hiddenAmountColor
+        }
+        return isTotal ? totalAmountAccentColor : (tone.map(toneColor(for:)) ?? Color.primary)
+    }
+
+    private var disclosureIndicator: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.tertiary)
+            .frame(width: 12, height: 12)
     }
 
     private var toolbarPillBackground: Color {
@@ -1426,6 +1467,9 @@ struct PopoverContentView: View {
         }
 
         guard !parts.isEmpty else { return nil }
+        if hidesHeaderAmounts {
+            return "待确认 ***"
+        }
         return "待确认 \(parts.joined(separator: " / "))"
     }
 
@@ -1601,9 +1645,9 @@ private enum FundSortMode: String, CaseIterable, Identifiable {
         case .todayTotal:
             "今日总值"
         case .holdingIncome:
-            "持有收益"
+            "累计收益"
         case .holdingRate:
-            "持有收益率"
+            "累计收益率"
         case .name:
             "名称(A-Z)"
         }
@@ -2091,12 +2135,12 @@ private struct PortfolioTreemapTooltipWindowContent: View {
                 tooltipMetric("今日涨幅", MoneyFormatter.percent(item.fund.todayRate, signed: true), color: toneColor(for: item.fund.todayRate))
                 tooltipMetric("今日收益", MoneyFormatter.money(item.fund.todayIncome, signed: true), color: toneColor(for: item.fund.todayIncome))
                 tooltipMetric(
-                    "持有收益",
+                    "累计收益",
                     MoneyFormatter.money(PortfolioPanelDisplay.holdingIncome(for: item.fund), signed: true),
                     color: toneColor(for: PortfolioPanelDisplay.holdingIncome(for: item.fund))
                 )
                 tooltipMetric(
-                    "持有收益率",
+                    "累计收益率",
                     item.fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "--",
                     color: item.fund.holdingRate.map(toneColor(for:)) ?? .secondary
                 )
@@ -2416,9 +2460,9 @@ enum IncomeRankingKind {
         case .today:
             return "实时收益率排行"
         case .holding where metric == .amount:
-            return "持有收益排行"
+            return "累计收益排行"
         case .holding:
-            return "持有收益率排行"
+            return "累计收益率排行"
         }
     }
 
@@ -2427,7 +2471,7 @@ enum IncomeRankingKind {
         case .today:
             "暂无实时收益"
         case .holding:
-            "暂无持有收益"
+            "暂无累计收益"
         }
     }
 
@@ -3548,6 +3592,214 @@ private enum FundNetValueTrendRange: String, CaseIterable, Identifiable {
     }
 }
 
+private struct FundDailyIncomeDisplayRow: Identifiable {
+    let id: String
+    let dateText: String
+    let amount: Double
+}
+
+struct FundDailyIncomePanelView: View {
+    let store: PortfolioStore
+    private let initialFund: FundPosition
+    let onClose: () -> Void
+
+    @State private var supplement: FundDetailSupplement = .empty
+    @State private var isSupplementLoading = false
+    @State private var didLoadSupplement = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private let supplementService = FundQuoteService()
+
+    init(
+        store: PortfolioStore,
+        fund: FundPosition,
+        onClose: @escaping () -> Void
+    ) {
+        self.store = store
+        self.initialFund = fund
+        self.onClose = onClose
+    }
+
+    private var fund: FundPosition {
+        store.snapshot.funds.first { $0.code == initialFund.code } ?? initialFund
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                systemImage: "calendar.badge.clock",
+                title: "每日收益",
+                subtitle: FundCodeFormatter.display(fund.code),
+                subtitleWeight: .semibold,
+                tint: toneColor(for: latestDailyIncome),
+                accessoryText: rowsAccessoryText,
+                accessoryColor: .orange,
+                onClose: onClose
+            )
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    if isSupplementLoading && !didLoadSupplement {
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 360)
+                    } else if dailyIncomeRows.isEmpty {
+                        ContentUnavailableView("暂无每日收益", systemImage: "chart.bar.doc.horizontal")
+                            .frame(height: 360)
+                    } else {
+                        dailyIncomeTable
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 14)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .background(PanelDesign.panelBackground)
+        .task(id: fund.code) {
+            await loadSupplement()
+        }
+    }
+
+    private var dailyIncomeTable: some View {
+        VStack(spacing: 0) {
+            dailyIncomeTableHeader
+            ForEach(dailyIncomeDisplayRows) { row in
+                Divider()
+                    .opacity(0.45)
+                dailyIncomeRow(row)
+            }
+        }
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var dailyIncomeTableHeader: some View {
+        HStack(spacing: 12) {
+            tableHeaderText("日期", alignment: .leading)
+            tableHeaderText("日收益", alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+    }
+
+    private func dailyIncomeRow(_ row: FundDailyIncomeDisplayRow) -> some View {
+        HStack(spacing: 12) {
+            tableValueText(row.dateText, alignment: .leading)
+            tableValueText(MoneyFormatter.money(row.amount, signed: true), alignment: .trailing, tone: row.amount)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 38)
+    }
+
+    private func tableHeaderText(_ text: String, alignment: Alignment) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func tableValueText(
+        _ text: String,
+        alignment: Alignment,
+        tone: Double? = nil
+    ) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.64)
+            .foregroundStyle(tone.map(toneColor(for:)) ?? Color.primary)
+            .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private var rowsAccessoryText: String? {
+        dailyIncomeRows.isEmpty ? nil : "\(dailyIncomeRows.count)天"
+    }
+
+    private var latestDailyIncome: Double {
+        dailyIncomeRows.first?.dailyIncome ?? 0
+    }
+
+    private var dailyIncomeDisplayRows: [FundDailyIncomeDisplayRow] {
+        dailyIncomeRows.flatMap { row -> [FundDailyIncomeDisplayRow] in
+            guard isMeaningfulAmount(row.entryIncome) else {
+                return [
+                    FundDailyIncomeDisplayRow(
+                        id: row.id,
+                        dateText: row.dateText,
+                        amount: row.dailyIncome
+                    )
+                ]
+            }
+
+            let entryRow = FundDailyIncomeDisplayRow(
+                id: "\(row.id)-entry",
+                dateText: "\(row.dateText) 录入",
+                amount: row.entryIncome
+            )
+            guard isMeaningfulAmount(row.dailyIncome) else {
+                return [entryRow]
+            }
+
+            return [
+                FundDailyIncomeDisplayRow(
+                    id: row.id,
+                    dateText: row.dateText,
+                    amount: row.dailyIncome
+                ),
+                entryRow
+            ]
+        }
+    }
+
+    private func isMeaningfulAmount(_ value: Double) -> Bool {
+        abs(value) >= 0.005
+    }
+
+    private var dailyIncomeRows: [FundDailyIncomeRow] {
+        FundDailyIncomeCalculator.rows(lots: effectiveLots, points: sourceNetValuePoints)
+    }
+
+    private var sourceNetValuePoints: [FundNetValuePoint] {
+        supplement.history.isEmpty ? supplement.trend : supplement.history
+    }
+
+    private var effectiveLots: [FundPositionLot] {
+        if let lots = fund.lots, !lots.isEmpty {
+            return lots
+        }
+        guard let shares = fund.migratedShares,
+              shares > 0
+        else {
+            return []
+        }
+        return [
+            FundPositionLot(
+                id: "\(fund.code)-daily-income",
+                shares: shares,
+                cost: fund.migratedCost ?? 0,
+                incomeStartDate: fund.incomeStartDate ?? fund.positionDate ?? "",
+                positionDate: fund.positionDate ?? "",
+                positionTimeType: fund.positionTimeType ?? .before15
+            )
+        ]
+    }
+
+    @MainActor
+    private func loadSupplement() async {
+        guard !isSupplementLoading else { return }
+        isSupplementLoading = true
+        let next = await supplementService.fetchFundDetailSupplement(code: fund.code)
+        supplement = next
+        didLoadSupplement = true
+        isSupplementLoading = false
+    }
+}
+
 struct FundDetailView: View {
     let store: PortfolioStore
     private let initialFund: FundPosition
@@ -3558,6 +3810,7 @@ struct FundDetailView: View {
     let onSell: (FundPosition) -> Void
     let onEdit: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
+    let onOpenDailyIncome: (FundPosition) -> Void
     let onDelete: (FundPosition) async -> Void
     let onClose: () -> Void
 
@@ -3581,6 +3834,7 @@ struct FundDetailView: View {
         onSell: @escaping (FundPosition) -> Void,
         onEdit: @escaping (FundPosition) -> Void,
         onOpenTradeRecords: @escaping (FundPosition) -> Void,
+        onOpenDailyIncome: @escaping (FundPosition) -> Void,
         onDelete: @escaping (FundPosition) async -> Void,
         onClose: @escaping () -> Void
     ) {
@@ -3593,6 +3847,7 @@ struct FundDetailView: View {
         self.onSell = onSell
         self.onEdit = onEdit
         self.onOpenTradeRecords = onOpenTradeRecords
+        self.onOpenDailyIncome = onOpenDailyIncome
         self.onDelete = onDelete
         self.onClose = onClose
     }
@@ -3809,8 +4064,8 @@ struct FundDetailView: View {
             metric("持有金额", numberText(currentTotal, places: 2))
             metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
             metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
-            metric("持有收益", signedNumberText(holdingIncome), tone: holdingIncome)
-            metric("持有收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
+            dailyIncomeMetricButton("累计收益", signedNumberText(holdingIncome), tone: holdingIncome)
+            metric("累计收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
             metric("持有天数", holdingDaysText)
         }
         .padding(12)
@@ -4244,11 +4499,16 @@ struct FundDetailView: View {
         .frame(height: 38)
     }
 
-    private func metric(_ title: String, _ value: String, tone: Double? = nil) -> some View {
+    private func metric(_ title: String, _ value: String, tone: Double? = nil, isInteractive: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if isInteractive {
+                    detailDisclosureIndicator
+                }
+            }
             Text(value)
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
@@ -4257,6 +4517,24 @@ struct FundDetailView: View {
                 .foregroundStyle(tone.map(toneColor(for:)) ?? Color.primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func dailyIncomeMetricButton(_ title: String, _ value: String, tone: Double? = nil) -> some View {
+        Button {
+            onOpenDailyIncome(fund)
+        } label: {
+            metric(title, value, tone: tone, isInteractive: true)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .contentShape(Rectangle())
+        .help("查看每日收益")
+    }
+
+    private var detailDisclosureIndicator: some View {
+        Image(systemName: "chevron.right")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(.tertiary)
     }
 
     private func detailTag(_ title: String, color: Color) -> some View {
@@ -5159,50 +5437,55 @@ private struct FundIntradayRateChart: View {
         let points = renderedPoints
         let point = points[index]
         let position = pointPosition(for: point, in: size)
-        let tooltipWidth: CGFloat = 112
-        let tooltipHeight: CGFloat = 48
-        let tooltipX = min(
-            max(position.x + 12 + tooltipWidth / 2, tooltipWidth / 2),
-            max(size.width - tooltipWidth / 2, tooltipWidth / 2)
-        )
-        let tooltipY = min(max(position.y - 10, tooltipHeight / 2), max(size.height - tooltipHeight / 2, tooltipHeight / 2))
+        let xLabelX = min(max(position.x, 24), max(size.width - 24, 24))
+        let yLabelY = min(max(position.y, 9), max(size.height - 9, 9))
 
         return ZStack {
             Path { path in
                 path.move(to: CGPoint(x: position.x, y: 0))
                 path.addLine(to: CGPoint(x: position.x, y: size.height))
+                path.move(to: CGPoint(x: 0, y: position.y))
+                path.addLine(to: CGPoint(x: size.width, y: position.y))
             }
             .stroke(Color.secondary.opacity(0.42), style: StrokeStyle(lineWidth: 0.9, dash: [4, 3]))
 
             Circle()
                 .fill(lineColor)
-                .frame(width: 5, height: 5)
+                .frame(width: 6, height: 6)
+                .overlay(
+                    Circle()
+                        .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.9 : 0.96), lineWidth: 1.4)
+                )
                 .position(position)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(Self.timeFormatter.string(from: date(from: point.timestamp)))
-                    .font(.system(size: 11, weight: .medium))
-                Text("涨跌：\(MoneyFormatter.percent(point.rate, signed: true))")
-                    .font(.system(size: 11, weight: .semibold))
-                    .monospacedDigit()
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 8)
-            .frame(width: tooltipWidth, height: tooltipHeight, alignment: .leading)
-            .background(tooltipBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 0.7)
-            )
-            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.32 : 0.14), radius: 8, x: 0, y: 4)
-            .position(x: tooltipX, y: tooltipY)
+            hoverAxisLabel(MoneyFormatter.percent(point.rate, signed: true), width: 54)
+                .position(x: -31, y: yLabelY)
+
+            hoverAxisLabel(Self.timeFormatter.string(from: date(from: point.timestamp)), width: 42)
+                .position(x: xLabelX, y: size.height - 10)
         }
+        .allowsHitTesting(false)
     }
 
-    private var tooltipBackground: Color {
+    private func hoverAxisLabel(_ text: String, width: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .foregroundStyle(lineColor)
+            .frame(width: width, height: 18)
+            .background(hoverAxisLabelBackground, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(lineColor.opacity(colorScheme == .dark ? 0.28 : 0.20), lineWidth: 0.65)
+            )
+    }
+
+    private var hoverAxisLabelBackground: Color {
         colorScheme == .dark
-            ? Color(red: 31 / 255, green: 34 / 255, blue: 40 / 255).opacity(0.98)
-            : Color.white.opacity(0.98)
+            ? PanelDesign.cardBackground.opacity(0.92)
+            : Color.white.opacity(0.94)
     }
 
     private func pointPosition(for point: FundIntradayRatePoint, in size: CGSize) -> CGPoint {
@@ -5476,69 +5759,55 @@ private struct FundTrendMiniChart: View {
     private func hoverOverlay(for index: Int, in size: CGSize) -> some View {
         let point = points[index]
         let pointPosition = pointPosition(for: index, in: size)
-        let markerRows = tradeMarkerRows(for: index)
-        let tooltipWidth: CGFloat = markerRows.isEmpty ? 104 : 128
-        let tooltipHeight: CGFloat = markerRows.isEmpty ? 48 : CGFloat(54 + markerRows.count * 17)
-        let tooltipPosition = tooltipPosition(
-            avoiding: pointPosition,
-            in: size,
-            width: tooltipWidth,
-            height: tooltipHeight
-        )
+        let xLabelX = min(max(pointPosition.x, 24), max(size.width - 24, 24))
+        let yLabelY = min(max(pointPosition.y, 9), max(size.height - 9, 9))
 
         return ZStack {
             Path { path in
                 path.move(to: CGPoint(x: pointPosition.x, y: 0))
                 path.addLine(to: CGPoint(x: pointPosition.x, y: size.height))
+                path.move(to: CGPoint(x: 0, y: pointPosition.y))
+                path.addLine(to: CGPoint(x: size.width, y: pointPosition.y))
             }
             .stroke(Color.secondary.opacity(0.45), style: StrokeStyle(lineWidth: 0.9, dash: [4, 3]))
 
             Circle()
                 .fill(lineColor)
-                .frame(width: 5, height: 5)
+                .frame(width: 6, height: 6)
+                .overlay(
+                    Circle()
+                        .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.9 : 0.96), lineWidth: 1.4)
+                )
                 .position(pointPosition)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(fullDateText(point.timestamp))
-                    .font(.system(size: 11, weight: .medium))
-                Text("净值：\(numberText(point.value))")
-                    .font(.system(size: 11, weight: .semibold))
-                    .monospacedDigit()
-                if !markerRows.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        ForEach(markerRows) { row in
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(tradeMarkerColor(row.kind))
-                                    .frame(width: 5, height: 5)
-                                Text(row.text)
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .monospacedDigit()
-                                    .foregroundStyle(tradeMarkerColor(row.kind))
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 8)
-            .frame(width: tooltipWidth, height: tooltipHeight, alignment: .leading)
-            .background(tooltipBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 0.7)
-            )
-            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.32 : 0.14), radius: 8, x: 0, y: 4)
-            .position(tooltipPosition)
+            hoverAxisLabel(numberText(point.value), width: 54)
+                .position(x: -31, y: yLabelY)
+
+            hoverAxisLabel(dateText(point.timestamp), width: 42)
+                .position(x: xLabelX, y: size.height - 10)
         }
+        .allowsHitTesting(false)
     }
 
-    private var tooltipBackground: Color {
+    private func hoverAxisLabel(_ text: String, width: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .semibold))
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .foregroundStyle(lineColor)
+            .frame(width: width, height: 18)
+            .background(hoverAxisLabelBackground, in: Capsule())
+            .overlay(
+                Capsule()
+                    .stroke(lineColor.opacity(colorScheme == .dark ? 0.28 : 0.20), lineWidth: 0.65)
+            )
+    }
+
+    private var hoverAxisLabelBackground: Color {
         colorScheme == .dark
-            ? Color(red: 31 / 255, green: 34 / 255, blue: 40 / 255).opacity(0.98)
-            : Color.white.opacity(0.98)
+            ? PanelDesign.cardBackground.opacity(0.92)
+            : Color.white.opacity(0.94)
     }
 
     private func tradeMarkerView(_ marker: ResolvedFundTrendTradeMarker) -> some View {
@@ -5560,74 +5829,6 @@ private struct FundTrendMiniChart: View {
         case .sell:
             .fundPulseGreen
         }
-    }
-
-    private func tradeMarkerRows(for pointIndex: Int) -> [FundTrendTradeMarkerTooltipRow] {
-        let markers = resolvedTradeMarkers.filter { $0.pointIndex == pointIndex }
-        let buyMarkers = markers.filter { $0.kind == .buy }
-        let sellMarkers = markers.filter { $0.kind == .sell }
-        var rows: [FundTrendTradeMarkerTooltipRow] = []
-
-        if !buyMarkers.isEmpty {
-            rows.append(
-                FundTrendTradeMarkerTooltipRow(
-                    kind: .buy,
-                    text: tradeMarkerSummaryText(title: "买入", markers: buyMarkers)
-                )
-            )
-        }
-        if !sellMarkers.isEmpty {
-            rows.append(
-                FundTrendTradeMarkerTooltipRow(
-                    kind: .sell,
-                    text: tradeMarkerSummaryText(title: "卖出", markers: sellMarkers)
-                )
-            )
-        }
-
-        return rows
-    }
-
-    private func tradeMarkerSummaryText(title: String, markers: [ResolvedFundTrendTradeMarker]) -> String {
-        let countText = markers.count > 1 ? " \(markers.count)笔" : ""
-        let values = Array(Set(markers.map { numberText($0.value) })).sorted()
-        if values.count == 1, let value = values.first {
-            return "\(title)\(countText)：\(value)"
-        }
-        return "\(title)\(countText)"
-    }
-
-    private func tooltipPosition(avoiding point: CGPoint, in size: CGSize, width: CGFloat, height: CGFloat) -> CGPoint {
-        let gap: CGFloat = 14
-        let halfWidth = width / 2
-        let halfHeight = height / 2
-        let minX = halfWidth
-        let maxX = max(size.width - halfWidth, halfWidth)
-        let minY = halfHeight
-        let maxY = max(size.height - halfHeight, halfHeight)
-
-        let rightX = point.x + gap + halfWidth
-        let leftX = point.x - gap - halfWidth
-        let targetY = min(max(point.y, minY), maxY)
-
-        if rightX <= maxX {
-            return CGPoint(x: rightX, y: targetY)
-        }
-        if leftX >= minX {
-            return CGPoint(x: leftX, y: targetY)
-        }
-
-        let belowY = point.y + gap + halfHeight
-        let aboveY = point.y - gap - halfHeight
-        let targetX = min(max(point.x, minX), maxX)
-        if belowY <= maxY {
-            return CGPoint(x: targetX, y: belowY)
-        }
-        if aboveY >= minY {
-            return CGPoint(x: targetX, y: aboveY)
-        }
-
-        return CGPoint(x: targetX, y: targetY)
     }
 
     private func nearestIndex(for x: CGFloat, width: CGFloat) -> Int? {
@@ -5735,13 +5936,6 @@ private struct FundTrendMiniChart: View {
         Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
     }
 
-    private func fullDateText(_ timestamp: Int64) -> String {
-        let date = date(from: timestamp)
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
 }
 
 private struct ResolvedFundTrendTradeMarker: Identifiable {
@@ -5749,12 +5943,6 @@ private struct ResolvedFundTrendTradeMarker: Identifiable {
     var kind: FundTrendTradeMarkerKind
     var pointIndex: Int
     var value: Double
-}
-
-private struct FundTrendTradeMarkerTooltipRow: Identifiable {
-    var id: FundTrendTradeMarkerKind { kind }
-    var kind: FundTrendTradeMarkerKind
-    var text: String
 }
 
 let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.12)
@@ -5765,7 +5953,11 @@ private func toneColor(for value: Double) -> Color {
     return Color.secondary
 }
 
-private func todayIncomeAmount(_ value: Double) -> Text {
+private func todayIncomeAmount(_ value: Double, isMasked: Bool = false) -> Text {
+    if isMasked {
+        return Text("***")
+            .font(.system(size: 30, weight: .semibold))
+    }
     let sign = value > 0 ? "+" : value < 0 ? "-" : ""
     let amount = abs(value).formatted(.number.precision(.fractionLength(2)))
     return Text("\(sign)\(amount)")

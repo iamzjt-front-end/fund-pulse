@@ -274,7 +274,7 @@ enum QuoteSource: String, Codable, CaseIterable, Identifiable, Equatable {
         case .fundBabyAuto:
             "fundgz.1234567.com.cn + qt.gtimg.cn + fundf10.eastmoney.com，跟养基宝同一套组合接口"
         case .eastmoneyFundGZ:
-            "fundgz.1234567.com.cn + fundf10.eastmoney.com，官方净值用于持有收益"
+            "fundgz.1234567.com.cn + fundf10.eastmoney.com，官方净值用于累计收益"
         case .tencentOfficial:
             "qt.gtimg.cn/q=jj{基金代码}，只返回官方净值"
         }
