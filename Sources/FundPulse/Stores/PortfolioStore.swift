@@ -100,7 +100,13 @@ final class PortfolioStore {
             normalizePrematureInitialConfirmations()
             await processPendingTrades(quotes: quotes)
             await processPendingPositions(quotes: quotes)
-            snapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: nowProvider())
+            let now = nowProvider()
+            let calculatedSnapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: now)
+            snapshot = FundIntradayRateHistoryRecorder.applyingQuotes(
+                to: calculatedSnapshot,
+                quotes: quotes,
+                now: now
+            )
             syncInitialTradeRecordsFromFunds()
             try save(snapshot)
             loadState = .loaded

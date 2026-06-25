@@ -123,6 +123,10 @@ enum PopoverLayout {
     static let tradeEditorHeight: CGFloat = 660
     static let fundDetailHeight: CGFloat = 660
     static let tradeRecordsHeight: CGFloat = 520
+    static let portfolioBreakdownWidth: CGFloat = 392
+    static let portfolioBreakdownHeight: CGFloat = 600
+    static let todayIncomeRankingWidth: CGFloat = 392
+    static let todayIncomeRankingHeight: CGFloat = 600
     static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
     static let arrowHeight: CGFloat = 10
     static let arrowWidth: CGFloat = 22
@@ -137,6 +141,8 @@ enum PopoverLayout {
     static let tradeEditorSize = NSSize(width: editorWidth, height: tradeEditorHeight)
     static let fundDetailSize = NSSize(width: editorWidth, height: fundDetailHeight)
     static let tradeRecordsSize = NSSize(width: editorWidth, height: tradeRecordsHeight)
+    static let portfolioBreakdownSize = NSSize(width: portfolioBreakdownWidth, height: portfolioBreakdownHeight)
+    static let todayIncomeRankingSize = NSSize(width: todayIncomeRankingWidth, height: todayIncomeRankingHeight)
 
     static func clampedMainPanelHeight(_ height: CGFloat) -> CGFloat {
         CGFloat(AppSettings.clampedMainPanelHeight(Int(height.rounded())))
@@ -163,6 +169,8 @@ final class PopoverUIState {
 
 private enum ChildPanelKind {
     case settings
+    case portfolioBreakdown
+    case todayIncomeRanking
     case addFund
     case fundDetail(FundPosition)
     case tradeRecords(FundPosition)
@@ -175,7 +183,7 @@ private enum ChildPanelKind {
         switch self {
         case .fundDetail(let fund), .tradeRecords(let fund), .buyFund(let fund), .sellFund(let fund), .editTradeRecord(let fund, _), .editFund(let fund):
             fund.code
-        case .settings, .addFund:
+        case .settings, .portfolioBreakdown, .todayIncomeRanking, .addFund:
             nil
         }
     }
@@ -555,6 +563,12 @@ final class StatusBarController: NSObject {
             onOpenSettings: { [weak self] in
                 self?.showChildPanel(.settings)
             },
+            onOpenPortfolioBreakdown: { [weak self] in
+                self?.showChildPanel(.portfolioBreakdown)
+            },
+            onOpenTodayIncomeRanking: { [weak self] in
+                self?.showChildPanel(.todayIncomeRanking)
+            },
             onAddFund: { [weak self] in
                 self?.showChildPanel(.addFund)
             },
@@ -647,6 +661,24 @@ final class StatusBarController: NSObject {
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.settingsSize)
 
+        case .portfolioBreakdown:
+            let view = PortfolioAllocationPanelView(
+                store: store,
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioBreakdownSize)
+
+        case .todayIncomeRanking:
+            let view = TodayIncomeRankingPanelView(
+                store: store,
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.todayIncomeRankingSize)
+
         case .addFund:
             let view = FundPositionEditorView(
                 store: store,
@@ -665,6 +697,7 @@ final class StatusBarController: NSObject {
 
         case .fundDetail(let fund):
             let view = FundDetailView(
+                store: store,
                 fund: fund,
                 totalAmount: store.snapshot.totalAmount,
                 pendingTradeCount: store.snapshot.pendingTrades?.filter { $0.code == fund.code }.count ?? 0,
@@ -835,6 +868,10 @@ final class StatusBarController: NSObject {
         switch activeChildPanel {
         case .settings:
             size = PopoverLayout.settingsSize
+        case .portfolioBreakdown:
+            size = PopoverLayout.portfolioBreakdownSize
+        case .todayIncomeRanking:
+            size = PopoverLayout.todayIncomeRankingSize
         case .fundDetail:
             size = PopoverLayout.fundDetailSize
         case .tradeRecords:

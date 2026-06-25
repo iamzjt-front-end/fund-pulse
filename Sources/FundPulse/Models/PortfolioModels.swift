@@ -97,6 +97,8 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var jzNotice: Double? = nil
     var memo: String? = nil
     var lots: [FundPositionLot]? = nil
+    var intradayRateDate: String? = nil
+    var intradayRateHistory: [FundIntradayRatePoint]? = nil
 }
 
 struct FundPositionLot: Codable, Identifiable, Equatable {
@@ -106,6 +108,13 @@ struct FundPositionLot: Codable, Identifiable, Equatable {
     var incomeStartDate: String
     var positionDate: String
     var positionTimeType: PositionTimeType
+}
+
+struct FundIntradayRatePoint: Codable, Identifiable, Equatable {
+    var id: Int64 { timestamp }
+    var timestamp: Int64
+    var rate: Double
+    var estimateTime: String
 }
 
 enum FundTradeKind: String, Codable, Equatable {
