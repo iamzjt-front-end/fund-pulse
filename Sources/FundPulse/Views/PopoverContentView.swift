@@ -3503,7 +3503,47 @@ private enum FundDetailTrendTab: String, CaseIterable, Identifiable {
         case .intraday:
             "盘中预估实时涨跌"
         case .netValue:
-            "近90日净值业绩优势"
+            "净值业绩走势"
+        }
+    }
+}
+
+private enum FundNetValueTrendRange: String, CaseIterable, Identifiable {
+    case oneMonth
+    case threeMonths
+    case sixMonths
+    case oneYear
+    case threeYears
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .oneMonth:
+            "近1月"
+        case .threeMonths:
+            "近3月"
+        case .sixMonths:
+            "近6月"
+        case .oneYear:
+            "近1年"
+        case .threeYears:
+            "近3年"
+        }
+    }
+
+    var months: Int {
+        switch self {
+        case .oneMonth:
+            1
+        case .threeMonths:
+            3
+        case .sixMonths:
+            6
+        case .oneYear:
+            12
+        case .threeYears:
+            36
         }
     }
 }
@@ -3526,6 +3566,7 @@ struct FundDetailView: View {
     @State private var isSupplementLoading = false
     @State private var didLoadSupplement = false
     @State private var trendTab: FundDetailTrendTab = .intraday
+    @State private var netValueTrendRange: FundNetValueTrendRange = .threeMonths
     @Environment(\.colorScheme) private var colorScheme
 
     private let supplementService = FundQuoteService()
@@ -3816,20 +3857,23 @@ struct FundDetailView: View {
     }
 
     private var netValueTrendContent: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let trendPoints = netValueTrendPoints
+        return VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "近90日净值业绩优势",
-                trailing: supplement.trend.last.map { "最新净值 \(numberText($0.value, places: 4))" },
+                "净值业绩走势",
+                trailing: latestNetValuePoint.map { "最新净值 \(numberText($0.value, places: 4))" },
                 showsLoading: isSupplementLoading
             )
 
-            if supplement.trend.count >= 2 {
-                FundTrendMiniChart(points: supplement.trend)
+            if trendPoints.count >= 2 {
+                FundTrendMiniChart(points: trendPoints, tradeMarkers: netValueTradeMarkers)
                     .frame(height: 116)
             } else {
                 emptySupplementView(isSupplementLoading ? "走势加载中..." : "暂无走势数据")
                     .frame(height: 86)
             }
+
+            netValueTrendRangePicker
         }
     }
 
@@ -3973,6 +4017,87 @@ struct FundDetailView: View {
 
     private var pendingTradeRecords: [FundTradeRecord] {
         recentTradeRecords.filter { $0.status == .pending }
+    }
+
+    private var netValueSourcePoints: [FundNetValuePoint] {
+        let source = supplement.history.isEmpty ? supplement.trend : supplement.history
+        return source.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private var latestNetValuePoint: FundNetValuePoint? {
+        netValueSourcePoints.last
+    }
+
+    private var netValueTrendPoints: [FundNetValuePoint] {
+        let source = netValueSourcePoints
+        guard let latestTimestamp = source.last?.timestamp else { return [] }
+
+        let calendar = Calendar.current
+        let latestDate = Date(timeIntervalSince1970: TimeInterval(latestTimestamp) / 1000)
+        let latestDay = calendar.startOfDay(for: latestDate)
+        guard let cutoff = calendar.date(byAdding: .month, value: -netValueTrendRange.months, to: latestDay) else {
+            return source
+        }
+
+        return source.filter { point in
+            let pointDate = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
+            return calendar.startOfDay(for: pointDate) >= cutoff
+        }
+    }
+
+    private var netValueTrendRangePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(FundNetValueTrendRange.allCases) { value in
+                let isSelected = netValueTrendRange == value
+                Button {
+                    netValueTrendRange = value
+                } label: {
+                    Text(value.title)
+                        .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(isSelected ? netValueTrendRangeTint : Color.secondary.opacity(0.86))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 26)
+                        .background {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(isSelected ? netValueTrendRangeTint.opacity(colorScheme == .dark ? 0.22 : 0.15) : Color.clear)
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(isSelected ? netValueTrendRangeTint.opacity(0.18) : Color.clear, lineWidth: 0.6)
+                        }
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+        }
+        .padding(.top, 1)
+    }
+
+    private var netValueTrendRangeTint: Color {
+        toneColor(for: fund.todayRate)
+    }
+
+    private var netValueTradeMarkers: [FundTrendTradeMarker] {
+        recentTradeRecords.compactMap { record in
+            guard record.status == .confirmed else { return nil }
+
+            switch record.kind {
+            case .newFund, .buy:
+                return FundTrendTradeMarker(
+                    id: record.id,
+                    kind: .buy,
+                    dateText: record.acceptedDate,
+                    price: record.price
+                )
+            case .sell:
+                return FundTrendTradeMarker(
+                    id: record.id,
+                    kind: .sell,
+                    dateText: record.acceptedDate,
+                    price: record.price
+                )
+            }
+        }
     }
 
     private var pendingTradeSummaryTitle: String? {
@@ -5201,8 +5326,21 @@ private extension Array where Element == FundIntradayRatePoint {
     }
 }
 
+private enum FundTrendTradeMarkerKind {
+    case buy
+    case sell
+}
+
+private struct FundTrendTradeMarker: Identifiable, Equatable {
+    var id: String
+    var kind: FundTrendTradeMarkerKind
+    var dateText: String
+    var price: Double?
+}
+
 private struct FundTrendMiniChart: View {
     let points: [FundNetValuePoint]
+    let tradeMarkers: [FundTrendTradeMarker]
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
@@ -5219,6 +5357,10 @@ private struct FundTrendMiniChart: View {
                         chartAxes
                         linePath(in: proxy.size)
                             .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                        ForEach(resolvedTradeMarkers) { marker in
+                            tradeMarkerView(marker)
+                                .position(markerPosition(for: marker, in: proxy.size))
+                        }
                         if let hoveredIndex,
                            points.indices.contains(hoveredIndex) {
                             hoverOverlay(for: hoveredIndex, in: proxy.size)
@@ -5278,18 +5420,32 @@ private struct FundTrendMiniChart: View {
         toneColor(for: points.last?.equityReturn ?? 0)
     }
 
+    private var yValueBounds: (min: Double, max: Double) {
+        let values = points.map(\.value) + tradeMarkers.compactMap { marker in
+            guard let price = marker.price, price.isFinite else { return nil }
+            return price
+        }
+        guard let minValue = values.min(),
+              let maxValue = values.max()
+        else {
+            return (0, 1)
+        }
+
+        let range = max(maxValue - minValue, 0.0001)
+        let padding = max(range * 0.12, 0.01)
+        return (minValue - padding, maxValue + padding)
+    }
+
     private var yAxisLabels: some View {
-        let values = points.map(\.value)
-        let minValue = values.min() ?? 0
-        let maxValue = values.max() ?? 0
-        let middleValue = (minValue + maxValue) / 2
+        let bounds = yValueBounds
+        let middleValue = (bounds.min + bounds.max) / 2
 
         return VStack(alignment: .trailing, spacing: 0) {
-            Text(numberText(maxValue))
+            Text(numberText(bounds.max))
             Spacer()
             Text(numberText(middleValue))
             Spacer()
-            Text(numberText(minValue))
+            Text(numberText(bounds.min))
         }
         .font(.system(size: 9, weight: .medium))
         .monospacedDigit()
@@ -5297,16 +5453,38 @@ private struct FundTrendMiniChart: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
+    private var resolvedTradeMarkers: [ResolvedFundTrendTradeMarker] {
+        tradeMarkers.compactMap { marker in
+            guard let index = nearestPointIndex(for: marker.dateText) else { return nil }
+            let fallbackValue = points[index].value
+            let value: Double
+            if let price = marker.price, price.isFinite {
+                value = price
+            } else {
+                value = fallbackValue
+            }
+
+            return ResolvedFundTrendTradeMarker(
+                id: marker.id,
+                kind: marker.kind,
+                pointIndex: index,
+                value: value
+            )
+        }
+    }
+
     private func hoverOverlay(for index: Int, in size: CGSize) -> some View {
         let point = points[index]
         let pointPosition = pointPosition(for: index, in: size)
-        let tooltipWidth: CGFloat = 104
-        let tooltipHeight: CGFloat = 48
-        let tooltipX = min(
-            max(pointPosition.x + 12 + tooltipWidth / 2, tooltipWidth / 2),
-            max(size.width - tooltipWidth / 2, tooltipWidth / 2)
+        let markerRows = tradeMarkerRows(for: index)
+        let tooltipWidth: CGFloat = markerRows.isEmpty ? 104 : 128
+        let tooltipHeight: CGFloat = markerRows.isEmpty ? 48 : CGFloat(54 + markerRows.count * 17)
+        let tooltipPosition = tooltipPosition(
+            avoiding: pointPosition,
+            in: size,
+            width: tooltipWidth,
+            height: tooltipHeight
         )
-        let tooltipY = min(max(pointPosition.y - 8, tooltipHeight / 2), max(size.height - tooltipHeight / 2, tooltipHeight / 2))
 
         return ZStack {
             Path { path in
@@ -5326,6 +5504,23 @@ private struct FundTrendMiniChart: View {
                 Text("净值：\(numberText(point.value))")
                     .font(.system(size: 11, weight: .semibold))
                     .monospacedDigit()
+                if !markerRows.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(markerRows) { row in
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(tradeMarkerColor(row.kind))
+                                    .frame(width: 5, height: 5)
+                                Text(row.text)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(tradeMarkerColor(row.kind))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
+                }
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 8)
@@ -5336,7 +5531,7 @@ private struct FundTrendMiniChart: View {
                     .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 0.7)
             )
             .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.32 : 0.14), radius: 8, x: 0, y: 4)
-            .position(x: tooltipX, y: tooltipY)
+            .position(tooltipPosition)
         }
     }
 
@@ -5346,45 +5541,169 @@ private struct FundTrendMiniChart: View {
             : Color.white.opacity(0.98)
     }
 
+    private func tradeMarkerView(_ marker: ResolvedFundTrendTradeMarker) -> some View {
+        Circle()
+            .fill(tradeMarkerColor(marker.kind))
+            .frame(width: 7, height: 7)
+            .overlay(
+                Circle()
+                    .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.88 : 0.96), lineWidth: 1.4)
+            )
+            .shadow(color: tradeMarkerColor(marker.kind).opacity(colorScheme == .dark ? 0.38 : 0.26), radius: 3, x: 0, y: 1)
+            .accessibilityHidden(true)
+    }
+
+    private func tradeMarkerColor(_ kind: FundTrendTradeMarkerKind) -> Color {
+        switch kind {
+        case .buy:
+            toneColor(for: 1)
+        case .sell:
+            .fundPulseGreen
+        }
+    }
+
+    private func tradeMarkerRows(for pointIndex: Int) -> [FundTrendTradeMarkerTooltipRow] {
+        let markers = resolvedTradeMarkers.filter { $0.pointIndex == pointIndex }
+        let buyMarkers = markers.filter { $0.kind == .buy }
+        let sellMarkers = markers.filter { $0.kind == .sell }
+        var rows: [FundTrendTradeMarkerTooltipRow] = []
+
+        if !buyMarkers.isEmpty {
+            rows.append(
+                FundTrendTradeMarkerTooltipRow(
+                    kind: .buy,
+                    text: tradeMarkerSummaryText(title: "买入", markers: buyMarkers)
+                )
+            )
+        }
+        if !sellMarkers.isEmpty {
+            rows.append(
+                FundTrendTradeMarkerTooltipRow(
+                    kind: .sell,
+                    text: tradeMarkerSummaryText(title: "卖出", markers: sellMarkers)
+                )
+            )
+        }
+
+        return rows
+    }
+
+    private func tradeMarkerSummaryText(title: String, markers: [ResolvedFundTrendTradeMarker]) -> String {
+        let countText = markers.count > 1 ? " \(markers.count)笔" : ""
+        let values = Array(Set(markers.map { numberText($0.value) })).sorted()
+        if values.count == 1, let value = values.first {
+            return "\(title)\(countText)：\(value)"
+        }
+        return "\(title)\(countText)"
+    }
+
+    private func tooltipPosition(avoiding point: CGPoint, in size: CGSize, width: CGFloat, height: CGFloat) -> CGPoint {
+        let gap: CGFloat = 14
+        let halfWidth = width / 2
+        let halfHeight = height / 2
+        let minX = halfWidth
+        let maxX = max(size.width - halfWidth, halfWidth)
+        let minY = halfHeight
+        let maxY = max(size.height - halfHeight, halfHeight)
+
+        let rightX = point.x + gap + halfWidth
+        let leftX = point.x - gap - halfWidth
+        let targetY = min(max(point.y, minY), maxY)
+
+        if rightX <= maxX {
+            return CGPoint(x: rightX, y: targetY)
+        }
+        if leftX >= minX {
+            return CGPoint(x: leftX, y: targetY)
+        }
+
+        let belowY = point.y + gap + halfHeight
+        let aboveY = point.y - gap - halfHeight
+        let targetX = min(max(point.x, minX), maxX)
+        if belowY <= maxY {
+            return CGPoint(x: targetX, y: belowY)
+        }
+        if aboveY >= minY {
+            return CGPoint(x: targetX, y: aboveY)
+        }
+
+        return CGPoint(x: targetX, y: targetY)
+    }
+
     private func nearestIndex(for x: CGFloat, width: CGFloat) -> Int? {
         guard points.count > 1, width > 0 else { return nil }
         let ratio = min(max(x / width, 0), 1)
         return min(max(Int((ratio * CGFloat(points.count - 1)).rounded()), 0), points.count - 1)
     }
 
+    private func nearestPointIndex(for markerDateText: String) -> Int? {
+        guard !points.isEmpty,
+              let markerDate = DateOnlyFormatter.parse(markerDateText)
+        else {
+            return nil
+        }
+
+        if let exactIndex = points.indices.first(where: { dateOnlyText(points[$0].timestamp) == markerDateText }) {
+            return exactIndex
+        }
+
+        let firstDate = date(from: points[0].timestamp)
+        let lastDate = date(from: points[points.count - 1].timestamp)
+        guard markerDate >= firstDate && markerDate <= lastDate else {
+            return nil
+        }
+
+        return points.indices.min { lhs, rhs in
+            abs(points[lhs].timestamp - Int64(markerDate.timeIntervalSince1970 * 1000)) <
+                abs(points[rhs].timestamp - Int64(markerDate.timeIntervalSince1970 * 1000))
+        }
+    }
+
     private func pointPosition(for index: Int, in size: CGSize) -> CGPoint {
-        let values = points.map(\.value)
-        guard let minValue = values.min(),
-              let maxValue = values.max(),
-              points.indices.contains(index),
+        guard points.indices.contains(index),
               points.count > 1,
               size.width > 0,
               size.height > 0
         else {
             return .zero
         }
-        let range = max(maxValue - minValue, 0.0001)
         let x = CGFloat(index) / CGFloat(points.count - 1) * size.width
-        let y = (1 - CGFloat((points[index].value - minValue) / range)) * size.height
+        let y = yPosition(for: points[index].value, height: size.height)
         return CGPoint(x: x, y: y)
     }
 
+    private func markerPosition(for marker: ResolvedFundTrendTradeMarker, in size: CGSize) -> CGPoint {
+        guard points.count > 1,
+              size.width > 0,
+              size.height > 0
+        else {
+            return .zero
+        }
+
+        let x = CGFloat(marker.pointIndex) / CGFloat(points.count - 1) * size.width
+        let y = yPosition(for: marker.value, height: size.height)
+        return CGPoint(x: x, y: y)
+    }
+
+    private func yPosition(for value: Double, height: CGFloat) -> CGFloat {
+        let bounds = yValueBounds
+        let range = max(bounds.max - bounds.min, 0.0001)
+        let clampedValue = min(max(value, bounds.min), bounds.max)
+        return (1 - CGFloat((clampedValue - bounds.min) / range)) * height
+    }
+
     private func linePath(in size: CGSize) -> Path {
-        let values = points.map(\.value)
-        guard let minValue = values.min(),
-              let maxValue = values.max(),
-              points.count > 1,
+        guard points.count > 1,
               size.width > 0,
               size.height > 0
         else {
             return Path()
         }
 
-        let range = max(maxValue - minValue, 0.0001)
         var path = Path()
         for (index, point) in points.enumerated() {
             let x = CGFloat(index) / CGFloat(points.count - 1) * size.width
-            let y = (1 - CGFloat((point.value - minValue) / range)) * size.height
+            let y = yPosition(for: point.value, height: size.height)
             let cgPoint = CGPoint(x: x, y: y)
             if index == 0 {
                 path.move(to: cgPoint)
@@ -5408,13 +5727,34 @@ private struct FundTrendMiniChart: View {
         return formatter.string(from: date)
     }
 
+    private func dateOnlyText(_ timestamp: Int64) -> String {
+        DateOnlyFormatter.string(from: date(from: timestamp))
+    }
+
+    private func date(from timestamp: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+    }
+
     private func fullDateText(_ timestamp: Int64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+        let date = date(from: timestamp)
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
+}
+
+private struct ResolvedFundTrendTradeMarker: Identifiable {
+    var id: String
+    var kind: FundTrendTradeMarkerKind
+    var pointIndex: Int
+    var value: Double
+}
+
+private struct FundTrendTradeMarkerTooltipRow: Identifiable {
+    var id: FundTrendTradeMarkerKind { kind }
+    var kind: FundTrendTradeMarkerKind
+    var text: String
 }
 
 let panelBorderColor = Color(nsColor: .separatorColor).opacity(0.12)

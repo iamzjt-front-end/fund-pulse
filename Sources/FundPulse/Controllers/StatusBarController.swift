@@ -319,6 +319,7 @@ final class StatusBarController: NSObject {
     private var amountPrivacyObserver: NSObjectProtocol?
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
+    private var operationReminderConfigurationTask: Task<Void, Never>?
     private var isRefreshingQuotes = false
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
@@ -365,6 +366,8 @@ final class StatusBarController: NSObject {
     func invalidate() {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
+        operationReminderConfigurationTask?.cancel()
+        operationReminderConfigurationTask = nil
         removeEventMonitors()
         if let amountPrivacyObserver {
             NotificationCenter.default.removeObserver(amountPrivacyObserver)
@@ -1316,11 +1319,23 @@ final class StatusBarController: NSObject {
         let isEnabled = settingsStore.settings.operationReminderEnabled
         let reminderMinutes = settingsStore.settings.operationReminderTimeMinutes
 
-        center.getPendingNotificationRequests { requests in
-            let operationReminderIDs = requests
+        operationReminderConfigurationTask?.cancel()
+        operationReminderConfigurationTask = Task {
+            let pendingRequests = await center.pendingNotificationRequests()
+            guard !Task.isCancelled else { return }
+
+            let pendingOperationReminderIDs = pendingRequests
                 .map(\.identifier)
-                .filter { $0 == operationReminderNotificationID || $0.hasPrefix(operationReminderNotificationPrefix) }
-            center.removePendingNotificationRequests(withIdentifiers: operationReminderIDs)
+                .filter(Self.isOperationReminderNotificationID)
+            center.removePendingNotificationRequests(withIdentifiers: pendingOperationReminderIDs)
+
+            let deliveredNotifications = await center.deliveredNotifications()
+            guard !Task.isCancelled else { return }
+
+            let deliveredOperationReminderIDs = deliveredNotifications
+                .map(\.request.identifier)
+                .filter(Self.isOperationReminderNotificationID)
+            center.removeDeliveredNotifications(withIdentifiers: deliveredOperationReminderIDs)
 
             guard isEnabled else { return }
 
@@ -1328,29 +1343,35 @@ final class StatusBarController: NSObject {
             let reminderDates = TradingCalendar.nextMarketOpenReminderDates(minutes: clampedMinutes)
             guard !reminderDates.isEmpty else { return }
 
-            center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                guard granted else { return }
+            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else {
+                return
+            }
 
-                for reminderDate in reminderDates {
-                    let dateKey = DateOnlyFormatter.string(from: reminderDate)
-                    let content = UNMutableNotificationContent()
-                    content.title = "基金操作提醒"
-                    content.body = "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
-                    content.sound = .default
+            for reminderDate in reminderDates {
+                guard !Task.isCancelled else { return }
 
-                    let trigger = UNCalendarNotificationTrigger(
-                        dateMatching: TradingCalendar.notificationDateComponents(from: reminderDate),
-                        repeats: false
-                    )
-                    let request = UNNotificationRequest(
-                        identifier: "\(operationReminderNotificationPrefix)\(dateKey)",
-                        content: content,
-                        trigger: trigger
-                    )
-                    center.add(request)
-                }
+                let dateKey = DateOnlyFormatter.string(from: reminderDate)
+                let content = UNMutableNotificationContent()
+                content.title = "基金操作提醒"
+                content.body = "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
+                content.sound = .default
+
+                let trigger = UNCalendarNotificationTrigger(
+                    dateMatching: TradingCalendar.notificationDateComponents(from: reminderDate),
+                    repeats: false
+                )
+                let request = UNNotificationRequest(
+                    identifier: "\(operationReminderNotificationPrefix)\(dateKey)",
+                    content: content,
+                    trigger: trigger
+                )
+                try? await center.add(request)
             }
         }
+    }
+
+    private static func isOperationReminderNotificationID(_ identifier: String) -> Bool {
+        identifier == operationReminderNotificationID || identifier.hasPrefix(operationReminderNotificationPrefix)
     }
 
     private func sendFundThresholdRemindersIfNeeded() {

@@ -85,10 +85,9 @@ struct FundQuoteService {
         async let history = fetchNetValueHistorySafely(code: code)
         async let holdings = fetchTopStockHoldingsSafely(code: code)
         let (historyPoints, topHoldings) = await (history, holdings)
-        let trendPoints = Array(historyPoints.suffix(90))
-        let yesterdayPoint = Self.yesterdayNetValuePoint(from: trendPoints, now: now)
+        let yesterdayPoint = Self.yesterdayNetValuePoint(from: historyPoints, now: now)
         return FundDetailSupplement(
-            trend: trendPoints,
+            trend: historyPoints,
             history: historyPoints,
             topHoldings: topHoldings,
             yesterdayPoint: yesterdayPoint
