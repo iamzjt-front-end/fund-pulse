@@ -170,7 +170,7 @@ final class PopoverUIState {
 private enum ChildPanelKind {
     case settings
     case portfolioBreakdown
-    case todayIncomeRanking
+    case incomeRanking(IncomeRankingKind, IncomeRankingMetric)
     case addFund
     case fundDetail(FundPosition)
     case tradeRecords(FundPosition)
@@ -183,7 +183,7 @@ private enum ChildPanelKind {
         switch self {
         case .fundDetail(let fund), .tradeRecords(let fund), .buyFund(let fund), .sellFund(let fund), .editTradeRecord(let fund, _), .editFund(let fund):
             fund.code
-        case .settings, .portfolioBreakdown, .todayIncomeRanking, .addFund:
+        case .settings, .portfolioBreakdown, .incomeRanking, .addFund:
             nil
         }
     }
@@ -567,7 +567,16 @@ final class StatusBarController: NSObject {
                 self?.showChildPanel(.portfolioBreakdown)
             },
             onOpenTodayIncomeRanking: { [weak self] in
-                self?.showChildPanel(.todayIncomeRanking)
+                self?.showChildPanel(.incomeRanking(.today, .amount))
+            },
+            onOpenTodayRateRanking: { [weak self] in
+                self?.showChildPanel(.incomeRanking(.today, .rate))
+            },
+            onOpenHoldingIncomeRanking: { [weak self] in
+                self?.showChildPanel(.incomeRanking(.holding, .amount))
+            },
+            onOpenHoldingRateRanking: { [weak self] in
+                self?.showChildPanel(.incomeRanking(.holding, .rate))
             },
             onAddFund: { [weak self] in
                 self?.showChildPanel(.addFund)
@@ -670,9 +679,11 @@ final class StatusBarController: NSObject {
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioBreakdownSize)
 
-        case .todayIncomeRanking:
+        case .incomeRanking(let kind, let metric):
             let view = TodayIncomeRankingPanelView(
                 store: store,
+                kind: kind,
+                metric: metric,
                 onClose: { [weak self] in
                     self?.hideChildPanel()
                 }
@@ -870,7 +881,7 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.settingsSize
         case .portfolioBreakdown:
             size = PopoverLayout.portfolioBreakdownSize
-        case .todayIncomeRanking:
+        case .incomeRanking:
             size = PopoverLayout.todayIncomeRankingSize
         case .fundDetail:
             size = PopoverLayout.fundDetailSize
