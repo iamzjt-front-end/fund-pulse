@@ -50,6 +50,7 @@ enum StatusBarTone {
         case clear
         case strong
         case extreme
+        case maximum
     }
 
     static func intensity(forRate rate: Double) -> Intensity {
@@ -59,7 +60,8 @@ enum StatusBarTone {
         if magnitude < 2.00 { return .normal }
         if magnitude < 3.00 { return .clear }
         if magnitude < 4.00 { return .strong }
-        return .extreme
+        if magnitude <= 5.00 { return .extreme }
+        return .maximum
     }
 }
 
@@ -77,19 +79,21 @@ extension StatusBarTone {
         let palette: [Intensity: (red: CGFloat, green: CGFloat, blue: CGFloat)] = rate > 0
             ? [
                 .neutral: (142, 142, 147),
-                .subtle: (255, 138, 128),
-                .normal: (255, 90, 106),
-                .clear: (230, 59, 74),
-                .strong: (185, 21, 42),
-                .extreme: (110, 7, 20)
+                .subtle: (255, 159, 154),
+                .normal: (225, 130, 125),
+                .clear: (196, 101, 98),
+                .strong: (167, 72, 71),
+                .extreme: (138, 43, 45),
+                .maximum: (110, 7, 20)
             ]
             : [
                 .neutral: (142, 142, 147),
-                .subtle: (123, 216, 143),
-                .normal: (75, 166, 110),
-                .clear: (46, 139, 87),
-                .strong: (20, 107, 58),
-                .extreme: (7, 59, 36)
+                .subtle: (142, 221, 162),
+                .normal: (114, 186, 135),
+                .clear: (87, 152, 108),
+                .strong: (60, 119, 83),
+                .extreme: (35, 88, 59),
+                .maximum: (7, 59, 36)
             ]
         let color = palette[intensity(forRate: rate)] ?? (142, 142, 147)
         return NSColor(red: color.red / 255, green: color.green / 255, blue: color.blue / 255, alpha: 1)

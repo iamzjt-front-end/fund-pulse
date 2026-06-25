@@ -127,6 +127,8 @@ enum PopoverLayout {
     static let portfolioBreakdownHeight: CGFloat = 600
     static let todayIncomeRankingWidth: CGFloat = 392
     static let todayIncomeRankingHeight: CGFloat = 600
+    static let fundDailyIncomeWidth: CGFloat = 392
+    static let fundDailyIncomeHeight: CGFloat = 600
     static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
     static let arrowHeight: CGFloat = 10
     static let arrowWidth: CGFloat = 22
@@ -143,6 +145,7 @@ enum PopoverLayout {
     static let tradeRecordsSize = NSSize(width: editorWidth, height: tradeRecordsHeight)
     static let portfolioBreakdownSize = NSSize(width: portfolioBreakdownWidth, height: portfolioBreakdownHeight)
     static let todayIncomeRankingSize = NSSize(width: todayIncomeRankingWidth, height: todayIncomeRankingHeight)
+    static let fundDailyIncomeSize = NSSize(width: fundDailyIncomeWidth, height: fundDailyIncomeHeight)
 
     static func clampedMainPanelHeight(_ height: CGFloat) -> CGFloat {
         CGFloat(AppSettings.clampedMainPanelHeight(Int(height.rounded())))
@@ -173,6 +176,7 @@ private enum ChildPanelKind {
     case incomeRanking(IncomeRankingKind, IncomeRankingMetric)
     case addFund
     case fundDetail(FundPosition)
+    case fundDailyIncome(FundPosition)
     case tradeRecords(FundPosition)
     case buyFund(FundPosition)
     case sellFund(FundPosition)
@@ -181,7 +185,13 @@ private enum ChildPanelKind {
 
     var selectedFundCode: String? {
         switch self {
-        case .fundDetail(let fund), .tradeRecords(let fund), .buyFund(let fund), .sellFund(let fund), .editTradeRecord(let fund, _), .editFund(let fund):
+        case .fundDetail(let fund),
+             .fundDailyIncome(let fund),
+             .tradeRecords(let fund),
+             .buyFund(let fund),
+             .sellFund(let fund),
+             .editTradeRecord(let fund, _),
+             .editFund(let fund):
             fund.code
         case .settings, .portfolioBreakdown, .incomeRanking, .addFund:
             nil
@@ -728,6 +738,9 @@ final class StatusBarController: NSObject {
                 onOpenTradeRecords: { [weak self] fund in
                     self?.showChildPanel(.tradeRecords(fund))
                 },
+                onOpenDailyIncome: { [weak self] fund in
+                    self?.showChildPanel(.fundDailyIncome(fund))
+                },
                 onDelete: { [weak self] fund in
                     await self?.deleteFund(fund)
                 },
@@ -736,6 +749,16 @@ final class StatusBarController: NSObject {
                 }
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.fundDetailSize)
+
+        case .fundDailyIncome(let fund):
+            let view = FundDailyIncomePanelView(
+                store: store,
+                fund: fund,
+                onClose: { [weak self] in
+                    self?.showChildPanel(.fundDetail(fund))
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.fundDailyIncomeSize)
 
         case .tradeRecords(let fund):
             let view = FundTradeRecordsPanelView(
@@ -833,6 +856,8 @@ final class StatusBarController: NSObject {
     private func handleChildPanelCancel() {
         if case .tradeRecords(let fund) = activeChildPanel {
             showChildPanel(.fundDetail(fund))
+        } else if case .fundDailyIncome(let fund) = activeChildPanel {
+            showChildPanel(.fundDetail(fund))
         } else {
             hideChildPanel()
         }
@@ -888,6 +913,8 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.todayIncomeRankingSize
         case .fundDetail:
             size = PopoverLayout.fundDetailSize
+        case .fundDailyIncome:
+            size = PopoverLayout.fundDailyIncomeSize
         case .tradeRecords:
             size = PopoverLayout.tradeRecordsSize
         case .addFund, .editFund:

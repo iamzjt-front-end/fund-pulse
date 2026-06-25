@@ -126,7 +126,7 @@ struct FundPositionEditorView: View {
                             field("持有金额") {
                                 PanelTextInput("请输入持有总金额", text: $positionAmount, suffix: "元")
                             }
-                            field("持有收益") {
+                            field("累计收益") {
                                 PanelTextInput("可为负，默认为 0", text: $positionProfit, suffix: "元")
                             }
                         } else {
