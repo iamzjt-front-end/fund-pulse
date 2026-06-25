@@ -2936,6 +2936,193 @@ final class FundPulseCoreTests: XCTestCase {
         return quoteServiceWithMockResponses(responses)
     }
 
+    func testIntradayRateHistoryRecordsEveryOpenRefresh() throws {
+        let firstNow = try chinaDate("2026-06-24 09:35")
+        let secondNow = try chinaDate("2026-06-24 09:36")
+        let snapshot = PortfolioSnapshot(
+            updateTime: firstNow,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-23 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false
+                )
+            ],
+            migration: nil
+        )
+        let firstQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.03,
+            growthRate: 1.25,
+            estimateTime: "2026-06-24 09:35",
+            netValueDate: "2026-06-23"
+        )
+        let secondQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.04,
+            growthRate: 1.40,
+            estimateTime: "2026-06-24 09:36",
+            netValueDate: "2026-06-23"
+        )
+
+        let first = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": firstQuote],
+            now: firstNow
+        )
+        let second = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: first,
+            quotes: ["026210": secondQuote],
+            now: secondNow
+        )
+
+        let points = try XCTUnwrap(second.funds[0].intradayRateHistory)
+        XCTAssertEqual(second.funds[0].intradayRateDate, "2026-06-24")
+        XCTAssertEqual(points.map(\.rate), [1.25, 1.40])
+        XCTAssertEqual(points.map(\.estimateTime), ["2026-06-24 09:35", "2026-06-24 09:36"])
+    }
+
+    func testIntradayRateHistoryStopsOutsideOpenAndRestartsNextTradingDay() throws {
+        let sameDayPoint = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-06-24 10:58").timeIntervalSince1970 * 1000),
+            rate: 1.12,
+            estimateTime: "2026-06-24 10:58"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: try chinaDate("2026-06-24 10:58"),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-24 10:58",
+                    todayIncome: 0,
+                    todayRate: 1.12,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    intradayRateDate: "2026-06-24",
+                    intradayRateHistory: [sameDayPoint]
+                )
+            ],
+            migration: nil
+        )
+        let sameDayQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.04,
+            growthRate: 1.65,
+            estimateTime: "2026-06-24 11:30",
+            netValueDate: "2026-06-23"
+        )
+        let nextDayQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.05,
+            growthRate: 2.00,
+            estimateTime: "2026-06-25 09:31",
+            netValueDate: "2026-06-24"
+        )
+
+        let middayBreak = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": sameDayQuote],
+            now: try chinaDate("2026-06-24 12:00")
+        )
+        XCTAssertEqual(middayBreak.funds[0].intradayRateHistory?.count, 1)
+
+        let afterClose = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: middayBreak,
+            quotes: ["026210": sameDayQuote],
+            now: try chinaDate("2026-06-24 15:10")
+        )
+        XCTAssertEqual(afterClose.funds[0].intradayRateHistory?.count, 1)
+
+        let beforeOpenNextDay = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: afterClose,
+            quotes: ["026210": nextDayQuote],
+            now: try chinaDate("2026-06-25 08:50")
+        )
+        XCTAssertEqual(beforeOpenNextDay.funds[0].intradayRateDate, "2026-06-25")
+        XCTAssertTrue(beforeOpenNextDay.funds[0].intradayRateHistory?.isEmpty ?? true)
+
+        let openNextDay = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: beforeOpenNextDay,
+            quotes: ["026210": nextDayQuote],
+            now: try chinaDate("2026-06-25 09:31")
+        )
+        let points = try XCTUnwrap(openNextDay.funds[0].intradayRateHistory)
+        XCTAssertEqual(points.count, 1)
+        XCTAssertEqual(points[0].rate, 2.00)
+        XCTAssertEqual(openNextDay.funds[0].intradayRateDate, "2026-06-25")
+    }
+
+    func testIntradayRateHistoryIgnoresStaleEstimateDuringMarketOpen() throws {
+        let now = try chinaDate("2026-06-24 10:00")
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-23 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false
+                )
+            ],
+            migration: nil
+        )
+        let staleQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.01,
+            growthRate: 0.50,
+            estimateTime: "2026-06-23 14:30",
+            netValueDate: "2026-06-23"
+        )
+
+        let result = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": staleQuote],
+            now: now
+        )
+
+        XCTAssertEqual(result.funds[0].intradayRateDate, "2026-06-24")
+        XCTAssertTrue(result.funds[0].intradayRateHistory?.isEmpty ?? true)
+    }
+
     private func chinaDate(_ value: String) throws -> Date {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)

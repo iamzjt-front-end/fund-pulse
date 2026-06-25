@@ -9,6 +9,8 @@ struct MainPanelWindowView: View {
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
+    let onOpenPortfolioBreakdown: () -> Void
+    let onOpenTodayIncomeRanking: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -36,6 +38,8 @@ struct MainPanelWindowView: View {
                 selectedFundCode: selectedFundCode,
                 onRefresh: onRefresh,
                 onOpenSettings: onOpenSettings,
+                onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
+                onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
                 onAddFund: onAddFund,
                 onOpenFundDetail: onOpenFundDetail,
                 onOpenTradeRecords: onOpenTradeRecords,
@@ -91,6 +95,8 @@ struct PopoverContentView: View {
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
+    let onOpenPortfolioBreakdown: () -> Void
+    let onOpenTodayIncomeRanking: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -164,12 +170,18 @@ struct PopoverContentView: View {
             }
 
             HStack(spacing: 6) {
-                metricCard(
-                    "总金额",
-                    MoneyFormatter.plainMoney(store.snapshot.totalAmount),
-                    footnote: pendingAmountSummaryText,
-                    isTotal: true
-                )
+                Button(action: onOpenPortfolioBreakdown) {
+                    metricCard(
+                        "总金额",
+                        MoneyFormatter.plainMoney(store.snapshot.totalAmount),
+                        footnote: pendingAmountSummaryText,
+                        isTotal: true
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .frame(maxWidth: .infinity)
+                .help("查看持仓占比")
                 metricCard(
                     "持有收益",
                     MoneyFormatter.money(store.snapshot.holdingIncome, signed: true),
@@ -182,36 +194,42 @@ struct PopoverContentView: View {
                 )
             }
 
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Text("今日收益(元)")
+            Button(action: onOpenTodayIncomeRanking) {
+                HStack(alignment: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text("实时收益(元)")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            if allConfirmedFundsUpdated {
+                                todayIncomeUpdatedTag
+                            }
+                        }
+                        todayIncomeAmount(store.snapshot.todayIncome)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .foregroundStyle(toneColor(for: store.snapshot.todayIncome))
+                            .blur(radius: headerAmountBlurRadius)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text("实时收益率")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
-                        if allConfirmedFundsUpdated {
-                            todayIncomeUpdatedTag
-                        }
+                        Text(MoneyFormatter.percent(store.snapshot.todayIncomeRate, signed: true))
+                            .font(.system(size: 16, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(toneColor(for: store.snapshot.todayIncomeRate))
+                            .blur(radius: headerAmountBlurRadius)
                     }
-                    todayIncomeAmount(store.snapshot.todayIncome)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                        .foregroundStyle(toneColor(for: store.snapshot.todayIncome))
-                        .blur(radius: headerAmountBlurRadius)
+                    .padding(.bottom, 3)
                 }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text("今日收益率")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(MoneyFormatter.percent(store.snapshot.todayIncomeRate, signed: true))
-                        .font(.system(size: 16, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(toneColor(for: store.snapshot.todayIncomeRate))
-                        .blur(radius: headerAmountBlurRadius)
-                }
-                .padding(.bottom, 3)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("查看当日实时盈亏明细")
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -1576,6 +1594,1254 @@ private struct PendingTradeActivity: Identifiable {
     var fund: FundPosition?
 }
 
+private enum PortfolioPanelDisplay {
+    static let allocationPalette: [Color] = [
+        Color(red: 48 / 255, green: 120 / 255, blue: 214 / 255),
+        Color(red: 231 / 255, green: 126 / 255, blue: 48 / 255),
+        Color(red: 118 / 255, green: 92 / 255, blue: 196 / 255),
+        Color(red: 37 / 255, green: 164 / 255, blue: 149 / 255),
+        Color(red: 221 / 255, green: 87 / 255, blue: 133 / 255),
+        Color(red: 93 / 255, green: 142 / 255, blue: 65 / 255),
+        Color(red: 183 / 255, green: 95 / 255, blue: 40 / 255),
+        Color(red: 92 / 255, green: 120 / 255, blue: 145 / 255)
+    ]
+
+    static func holdingFunds(in snapshot: PortfolioSnapshot) -> [FundPosition] {
+        snapshot.funds.filter { fund in
+            fund.status == .holding && currentAmount(for: fund) > 0
+        }
+    }
+
+    static func currentAmount(for fund: FundPosition) -> Double {
+        if let currentAmount = fund.currentAmount {
+            return currentAmount
+        }
+        return principal(for: fund) + holdingIncome(for: fund)
+    }
+
+    static func principal(for fund: FundPosition) -> Double {
+        if let migratedPrincipal = fund.migratedPrincipal {
+            return migratedPrincipal
+        }
+        guard let shares = fund.migratedShares,
+              let cost = fund.migratedCost
+        else {
+            return 0
+        }
+        return shares * cost
+    }
+
+    static func holdingIncome(for fund: FundPosition) -> Double {
+        if let holdingIncome = fund.holdingIncome {
+            return holdingIncome
+        }
+        guard let holdingRate = fund.holdingRate else {
+            return 0
+        }
+        return principal(for: fund) * holdingRate / 100
+    }
+}
+
+private struct PortfolioAllocationItem: Identifiable {
+    let rank: Int
+    let fund: FundPosition
+    let amount: Double
+    let share: Double
+    let color: Color
+
+    var id: String { fund.code }
+}
+
+private struct PortfolioTreemapSlice: Identifiable {
+    let item: PortfolioAllocationItem
+    let rect: CGRect
+
+    var id: String { item.id }
+}
+
+private struct PortfolioTreemapHoverState {
+    let itemID: String
+    let location: CGPoint
+}
+
+private enum PortfolioTreemapLayout {
+    static func slices(for items: [PortfolioAllocationItem], in rect: CGRect) -> [PortfolioTreemapSlice] {
+        split(items.filter { $0.amount > 0 }, in: rect)
+    }
+
+    private static func split(_ items: [PortfolioAllocationItem], in rect: CGRect) -> [PortfolioTreemapSlice] {
+        guard !items.isEmpty, rect.width > 0, rect.height > 0 else { return [] }
+        guard items.count > 1 else {
+            return [PortfolioTreemapSlice(item: items[0], rect: inset(rect))]
+        }
+
+        let total = items.reduce(0) { $0 + $1.amount }
+        guard total > 0 else { return [] }
+
+        let splitIndex = balancedSplitIndex(for: items, total: total)
+        let leadingItems = Array(items.prefix(splitIndex))
+        let trailingItems = Array(items.dropFirst(splitIndex))
+        let leadingTotal = leadingItems.reduce(0) { $0 + $1.amount }
+        let leadingRatio = min(max(leadingTotal / total, 0.05), 0.95)
+
+        let leadingRect: CGRect
+        let trailingRect: CGRect
+        if rect.width >= rect.height {
+            let leadingWidth = rect.width * leadingRatio
+            leadingRect = CGRect(x: rect.minX, y: rect.minY, width: leadingWidth, height: rect.height)
+            trailingRect = CGRect(x: rect.minX + leadingWidth, y: rect.minY, width: rect.width - leadingWidth, height: rect.height)
+        } else {
+            let leadingHeight = rect.height * leadingRatio
+            leadingRect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: leadingHeight)
+            trailingRect = CGRect(x: rect.minX, y: rect.minY + leadingHeight, width: rect.width, height: rect.height - leadingHeight)
+        }
+
+        return split(leadingItems, in: leadingRect) + split(trailingItems, in: trailingRect)
+    }
+
+    private static func balancedSplitIndex(for items: [PortfolioAllocationItem], total: Double) -> Int {
+        guard items.count > 2 else { return 1 }
+
+        var runningTotal = 0.0
+        var bestIndex = 1
+        var bestDelta = Double.greatestFiniteMagnitude
+
+        for index in 1..<items.count {
+            runningTotal += items[index - 1].amount
+            let delta = abs(total / 2 - runningTotal)
+            if delta < bestDelta {
+                bestDelta = delta
+                bestIndex = index
+            }
+        }
+
+        return min(max(bestIndex, 1), items.count - 1)
+    }
+
+    private static func inset(_ rect: CGRect) -> CGRect {
+        let insetX = min(rect.width / 8, 1.5)
+        let insetY = min(rect.height / 8, 1.5)
+        return rect.insetBy(dx: insetX, dy: insetY)
+    }
+}
+
+private struct PortfolioTreemapChart: View {
+    let items: [PortfolioAllocationItem]
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hoverState: PortfolioTreemapHoverState?
+
+    var body: some View {
+        GeometryReader { proxy in
+            let slices = PortfolioTreemapLayout.slices(
+                for: items,
+                in: CGRect(origin: .zero, size: proxy.size)
+            )
+
+            ZStack(alignment: .topLeading) {
+                ForEach(slices) { slice in
+                    treemapBlock(slice, isHovered: hoverState?.itemID == slice.id)
+                        .frame(width: max(slice.rect.width, 0), height: max(slice.rect.height, 0))
+                        .position(x: slice.rect.midX, y: slice.rect.midY)
+                }
+
+                if let hoverState,
+                   let slice = slices.first(where: { $0.id == hoverState.itemID }) {
+                    PortfolioTreemapHoverWindowBridge(
+                        item: slice.item,
+                        location: hoverState.location,
+                        chartSize: proxy.size,
+                        colorScheme: colorScheme
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .allowsHitTesting(false)
+                } else {
+                    PortfolioTreemapHoverWindowBridge(
+                        item: nil,
+                        location: nil,
+                        chartSize: proxy.size,
+                        colorScheme: colorScheme
+                    )
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .allowsHitTesting(false)
+                }
+            }
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                switch phase {
+                case .active(let location):
+                    updateHoverState(for: slices.first { $0.rect.contains(location) }, location: location)
+                case .ended:
+                    updateHoverState(for: nil, location: nil)
+                }
+            }
+        }
+        .accessibilityLabel("持仓占比方块图")
+    }
+
+    private func updateHoverState(for slice: PortfolioTreemapSlice?, location: CGPoint?) {
+        guard let slice, let location else {
+            if hoverState != nil {
+                hoverState = nil
+            }
+            return
+        }
+
+        let movementThreshold: CGFloat = 10
+        if let hoverState,
+           hoverState.itemID == slice.id,
+           hypot(hoverState.location.x - location.x, hoverState.location.y - location.y) < movementThreshold {
+            return
+        }
+        hoverState = PortfolioTreemapHoverState(itemID: slice.id, location: location)
+    }
+
+    private func treemapBlock(_ slice: PortfolioTreemapSlice, isHovered: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(blockFill(for: slice.item))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        isHovered ? Color.white.opacity(0.86) : Color.white.opacity(colorScheme == .dark ? 0.10 : 0.36),
+                        lineWidth: isHovered ? 1.5 : 0.65
+                    )
+            )
+            .overlay(alignment: .topLeading) {
+                if slice.rect.width >= 76 && slice.rect.height >= 42 {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(slice.item.fund.name)
+                            .font(.system(size: 10, weight: .semibold))
+                            .lineLimit(1)
+                        Text(MoneyFormatter.percent(slice.item.share * 100))
+                            .font(.system(size: 10, weight: .bold))
+                            .monospacedDigit()
+                    }
+                    .foregroundStyle(.white)
+                    .shadow(color: Color.black.opacity(0.32), radius: 2, x: 0, y: 1)
+                    .padding(6)
+                }
+            }
+            .shadow(
+                color: isHovered ? slice.item.color.opacity(colorScheme == .dark ? 0.36 : 0.24) : .clear,
+                radius: isHovered ? 9 : 0,
+                x: 0,
+                y: isHovered ? 3 : 0
+            )
+    }
+
+    private func blockFill(for item: PortfolioAllocationItem) -> LinearGradient {
+        LinearGradient(
+            colors: [
+                item.color.opacity(colorScheme == .dark ? 0.96 : 0.90),
+                item.color.opacity(colorScheme == .dark ? 0.70 : 0.76)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+}
+
+private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
+    let item: PortfolioAllocationItem?
+    let location: CGPoint?
+    let chartSize: CGSize
+    let colorScheme: ColorScheme
+
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.update(
+            item: item,
+            location: location,
+            chartSize: chartSize,
+            colorScheme: colorScheme,
+            anchorView: view
+        )
+    }
+
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        coordinator.close()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator {
+        private var panel: NSPanel?
+        private var hostingView: NSHostingView<AnyView>?
+        private var lastItemID: String?
+        private var lastLocation: CGPoint?
+
+        private let contentSize = CGSize(width: 238, height: 156)
+        private let shadowMargin: CGFloat = 22
+        private let gap: CGFloat = 14
+
+        @MainActor
+        func update(
+            item: PortfolioAllocationItem?,
+            location: CGPoint?,
+            chartSize: CGSize,
+            colorScheme: ColorScheme,
+            anchorView: NSView
+        ) {
+            guard let item, let location, chartSize.width > 0, chartSize.height > 0 else {
+                close()
+                return
+            }
+
+            let movementThreshold: CGFloat = 6
+            if lastItemID == item.id,
+               let lastLocation,
+               hypot(lastLocation.x - location.x, lastLocation.y - location.y) < movementThreshold {
+                return
+            }
+
+            lastItemID = item.id
+            lastLocation = location
+
+            let panel = ensurePanel()
+            let content = PortfolioTreemapTooltipWindowContent(
+                item: item,
+                colorScheme: colorScheme
+            )
+            .padding(shadowMargin)
+            .frame(
+                width: contentSize.width + shadowMargin * 2,
+                height: contentSize.height + shadowMargin * 2
+            )
+
+            if let hostingView {
+                hostingView.rootView = AnyView(content)
+            } else {
+                let hostingView = NSHostingView(rootView: AnyView(content))
+                hostingView.frame = NSRect(
+                    origin: .zero,
+                    size: NSSize(
+                        width: contentSize.width + shadowMargin * 2,
+                        height: contentSize.height + shadowMargin * 2
+                    )
+                )
+                hostingView.autoresizingMask = [.width, .height]
+                panel.contentView = hostingView
+                self.hostingView = hostingView
+            }
+
+            guard let frame = frame(for: location, chartSize: chartSize, anchorView: anchorView) else {
+                close()
+                return
+            }
+            panel.setFrame(frame, display: true)
+            panel.orderFrontRegardless()
+        }
+
+        @MainActor
+        func close() {
+            panel?.orderOut(nil)
+            lastItemID = nil
+            lastLocation = nil
+        }
+
+        @MainActor
+        private func ensurePanel() -> NSPanel {
+            if let panel {
+                return panel
+            }
+
+            let windowSize = NSSize(
+                width: contentSize.width + shadowMargin * 2,
+                height: contentSize.height + shadowMargin * 2
+            )
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: windowSize),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.level = .popUpMenu
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+            self.panel = panel
+            return panel
+        }
+
+        @MainActor
+        private func frame(for location: CGPoint, chartSize: CGSize, anchorView: NSView) -> NSRect? {
+            let panelSize = NSSize(
+                width: contentSize.width + shadowMargin * 2,
+                height: contentSize.height + shadowMargin * 2
+            )
+            guard let screenPoint = screenPoint(for: location, in: anchorView) else {
+                return nil
+            }
+            let horizontalDirection: CGFloat = location.x > chartSize.width * 0.58 ? -1 : 1
+            let verticalDirection: CGFloat = location.y > chartSize.height * 0.55 ? -1 : 1
+            let center = CGPoint(
+                x: screenPoint.x + horizontalDirection * (contentSize.width / 2 + gap),
+                y: screenPoint.y - verticalDirection * (contentSize.height / 2 + gap)
+            )
+            var frame = NSRect(
+                x: center.x - panelSize.width / 2,
+                y: center.y - panelSize.height / 2,
+                width: panelSize.width,
+                height: panelSize.height
+            )
+
+            if let visibleFrame = screen(for: frame)?.visibleFrame {
+                let inset: CGFloat = 8
+                frame.origin.x = min(max(frame.origin.x, visibleFrame.minX + inset), visibleFrame.maxX - frame.width - inset)
+                frame.origin.y = min(max(frame.origin.y, visibleFrame.minY + inset), visibleFrame.maxY - frame.height - inset)
+            }
+            return frame
+        }
+
+        @MainActor
+        private func screenPoint(for location: CGPoint, in anchorView: NSView) -> CGPoint? {
+            guard let window = anchorView.window else {
+                return nil
+            }
+            let localPoint = NSPoint(x: location.x, y: anchorView.bounds.height - location.y)
+            let windowPoint = anchorView.convert(localPoint, to: nil)
+            return window.convertPoint(toScreen: windowPoint)
+        }
+
+        @MainActor
+        private func screen(for frame: NSRect) -> NSScreen? {
+            NSScreen.screens.first { $0.frame.intersects(frame) } ?? NSScreen.main
+        }
+    }
+}
+
+private struct PortfolioTreemapTooltipWindowContent: View {
+    let item: PortfolioAllocationItem
+    let colorScheme: ColorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(item.color)
+                    .frame(width: 7, height: 34)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.fund.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(FundCodeFormatter.display(item.fund.code))
+                        Text("第\(item.rank)大持仓")
+                    }
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8)
+                ],
+                alignment: .leading,
+                spacing: 7
+            ) {
+                tooltipMetric("持仓占比", MoneyFormatter.percent(item.share * 100), color: item.color)
+                tooltipMetric("持仓金额", MoneyFormatter.plainMoney(item.amount), color: .primary)
+                tooltipMetric("今日涨幅", MoneyFormatter.percent(item.fund.todayRate, signed: true), color: toneColor(for: item.fund.todayRate))
+                tooltipMetric("今日收益", MoneyFormatter.money(item.fund.todayIncome, signed: true), color: toneColor(for: item.fund.todayIncome))
+                tooltipMetric(
+                    "持有收益",
+                    MoneyFormatter.money(PortfolioPanelDisplay.holdingIncome(for: item.fund), signed: true),
+                    color: toneColor(for: PortfolioPanelDisplay.holdingIncome(for: item.fund))
+                )
+                tooltipMetric(
+                    "持有收益率",
+                    item.fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "--",
+                    color: item.fund.holdingRate.map(toneColor(for:)) ?? .secondary
+                )
+            }
+        }
+        .padding(11)
+        .frame(width: 238, height: 156, alignment: .topLeading)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(tooltipBaseColor)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(tooltipAccentOverlay)
+                )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(item.color.opacity(colorScheme == .dark ? 0.32 : 0.22), lineWidth: 0.8)
+        )
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.36 : 0.17), radius: 14, x: 0, y: 8)
+    }
+
+    private func tooltipMetric(_ title: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+        }
+    }
+
+    private var tooltipBaseColor: Color {
+        colorScheme == .dark
+            ? Color(red: 26 / 255, green: 29 / 255, blue: 35 / 255).opacity(0.99)
+            : Color(nsColor: .windowBackgroundColor).opacity(0.99)
+    }
+
+    private var tooltipAccentOverlay: LinearGradient {
+        LinearGradient(
+            colors: [
+                item.color.opacity(colorScheme == .dark ? 0.10 : 0.055),
+                item.color.opacity(colorScheme == .dark ? 0.05 : 0.025)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+}
+
+struct PortfolioAllocationPanelView: View {
+    let store: PortfolioStore
+    let onClose: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                systemImage: "square.grid.3x3.fill",
+                title: "持仓占比",
+                subtitle: allocationHeaderSubtitle,
+                subtitleWeight: .semibold,
+                tint: Color(nsColor: .systemBlue),
+                onClose: onClose
+            )
+
+            ScrollView {
+                if allocationItems.isEmpty {
+                    ContentUnavailableView("暂无持仓占比", systemImage: "chart.pie")
+                        .frame(height: 420)
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        allocationSummary
+                        allocationChartSection
+                        allocationBreakdownList
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 14)
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .background(PanelDesign.panelBackground)
+    }
+
+    private var allocationItems: [PortfolioAllocationItem] {
+        let funds = PortfolioPanelDisplay.holdingFunds(in: store.snapshot)
+            .sorted {
+                let lhsAmount = PortfolioPanelDisplay.currentAmount(for: $0)
+                let rhsAmount = PortfolioPanelDisplay.currentAmount(for: $1)
+                if lhsAmount != rhsAmount {
+                    return lhsAmount > rhsAmount
+                }
+                return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        let total = funds.reduce(0) { $0 + PortfolioPanelDisplay.currentAmount(for: $1) }
+        guard total > 0 else { return [] }
+
+        return funds.enumerated().map { index, fund in
+            let amount = PortfolioPanelDisplay.currentAmount(for: fund)
+            return PortfolioAllocationItem(
+                rank: index + 1,
+                fund: fund,
+                amount: amount,
+                share: amount / total,
+                color: PortfolioPanelDisplay.allocationPalette[index % PortfolioPanelDisplay.allocationPalette.count]
+            )
+        }
+    }
+
+    private var allocationTotal: Double {
+        allocationItems.reduce(0) { $0 + $1.amount }
+    }
+
+    private var allocationHeaderSubtitle: String {
+        guard !allocationItems.isEmpty else { return "暂无持仓基金" }
+        return "\(allocationItems.count)只基金 · \(MoneyFormatter.plainMoney(allocationTotal))"
+    }
+
+    private var largestAllocationText: String {
+        allocationItems.first.map { MoneyFormatter.percent($0.share * 100) } ?? "--"
+    }
+
+    private var allocationSummary: some View {
+        HStack(spacing: 0) {
+            allocationSummaryMetric("持仓总额", MoneyFormatter.plainMoney(allocationTotal), color: .primary)
+            summaryDivider
+            allocationSummaryMetric("基金数量", "\(allocationItems.count)只", color: .primary)
+            summaryDivider
+            allocationSummaryMetric("最大占比", largestAllocationText, color: allocationItems.first?.color ?? .secondary)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 58)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var allocationChartSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            panelSectionTitle("持仓方块图")
+            PortfolioTreemapChart(items: allocationItems)
+                .frame(height: 190)
+        }
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var allocationBreakdownList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            panelSectionTitle("占比明细")
+            VStack(spacing: 7) {
+                ForEach(allocationItems) { item in
+                    allocationRow(item)
+                }
+            }
+        }
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private func allocationSummaryMetric(_ title: String, _ value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.70)
+                .foregroundStyle(color)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var summaryDivider: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22))
+            .frame(width: 1, height: 32)
+            .padding(.horizontal, 10)
+    }
+
+    private func allocationRow(_ item: PortfolioAllocationItem) -> some View {
+        HStack(spacing: 10) {
+            rankBadge(item.rank, color: item.color)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Text(item.fund.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Text(FundCodeFormatter.display(item.fund.code))
+                        .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+
+                allocationBar(item)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(MoneyFormatter.percent(item.share * 100))
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(item.color)
+                Text(MoneyFormatter.plainMoney(item.amount))
+                    .font(.system(size: 10, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
+            .frame(width: 90, alignment: .trailing)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(item.color.opacity(colorScheme == .dark ? 0.10 : 0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func allocationBar(_ item: PortfolioAllocationItem) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.055))
+                Capsule()
+                    .fill(item.color.opacity(colorScheme == .dark ? 0.86 : 0.74))
+                    .frame(width: max(proxy.size.width * item.share, 3))
+            }
+        }
+        .frame(height: 6)
+    }
+
+    private func rankBadge(_ rank: Int, color: Color) -> some View {
+        Text("\(rank)")
+            .font(.system(size: 10, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .frame(width: 24, height: 24)
+            .background(color.opacity(colorScheme == .dark ? 0.16 : 0.10), in: Circle())
+            .overlay(Circle().stroke(color.opacity(colorScheme == .dark ? 0.30 : 0.20), lineWidth: 0.7))
+    }
+
+    private func panelSectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.primary)
+    }
+}
+
+private struct TodayIncomeRankItem: Identifiable {
+    let rank: Int
+    let fund: FundPosition
+
+    var id: String { fund.code }
+}
+
+private enum TodayIncomeRankingMode: String, CaseIterable, Identifiable {
+    case gain
+    case loss
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .gain:
+            "涨幅榜"
+        case .loss:
+            "跌幅榜"
+        }
+    }
+
+    var emptyTitle: String {
+        switch self {
+        case .gain:
+            "暂无上涨基金"
+        case .loss:
+            "暂无下跌基金"
+        }
+    }
+
+    var summaryTitle: String {
+        switch self {
+        case .gain:
+            "上涨合计"
+        case .loss:
+            "下跌合计"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .gain:
+            Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255)
+        case .loss:
+            Color(red: 4 / 255, green: 120 / 255, blue: 87 / 255)
+        }
+    }
+}
+
+private struct TodayIncomeRankPalette {
+    let foreground: Color
+    let deep: Color
+    let background: Color
+    let border: Color
+}
+
+private struct TodayIncomeRankMedalPalette {
+    let foreground: Color
+    let deep: Color
+    let light: Color
+    let border: Color
+}
+
+struct TodayIncomeRankingPanelView: View {
+    let store: PortfolioStore
+    let onClose: () -> Void
+
+    @State private var rankingMode: TodayIncomeRankingMode = .gain
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(
+                systemImage: "list.number",
+                title: "实时收益排行",
+                subtitle: rankingHeaderSubtitle,
+                subtitleWeight: .semibold,
+                tint: toneColor(for: store.snapshot.todayIncome),
+                accessoryText: updatedHeaderTagText,
+                accessoryColor: .orange,
+                onClose: onClose
+            )
+
+            ScrollView {
+                if rankableFunds.isEmpty {
+                    ContentUnavailableView("暂无实时收益", systemImage: "chart.line.uptrend.xyaxis")
+                        .frame(height: 420)
+                } else {
+                    LazyVStack(spacing: 10) {
+                        rankingSummary
+                        rankingModePicker
+                        if rankingItems.isEmpty {
+                            ContentUnavailableView(rankingMode.emptyTitle, systemImage: rankingMode == .gain ? "arrow.up.right" : "arrow.down.right")
+                                .frame(height: 260)
+                        } else {
+                            ForEach(rankingItems) { item in
+                                rankingRow(item)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 14)
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .background(PanelDesign.panelBackground)
+    }
+
+    private var rankableFunds: [FundPosition] {
+        store.snapshot.funds
+            .filter { !$0.status.isPendingDisplay && ($0.isIncomeActive ?? true) }
+    }
+
+    private var rankingItems: [TodayIncomeRankItem] {
+        let funds = rankableFunds
+            .filter { fund in
+                switch rankingMode {
+                case .gain:
+                    fund.todayIncome > 0
+                case .loss:
+                    fund.todayIncome < 0
+                }
+            }
+            .sorted { lhs, rhs in
+                if lhs.todayIncome != rhs.todayIncome {
+                    return rankingMode == .gain ? lhs.todayIncome > rhs.todayIncome : lhs.todayIncome < rhs.todayIncome
+                }
+                if lhs.todayRate != rhs.todayRate {
+                    return rankingMode == .gain ? lhs.todayRate > rhs.todayRate : lhs.todayRate < rhs.todayRate
+                }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+
+        return funds.enumerated().map { index, fund in
+            TodayIncomeRankItem(rank: index + 1, fund: fund)
+        }
+    }
+
+    private var updatedFundsCount: Int {
+        rankingItems.filter { $0.fund.isUpdated }.count
+    }
+
+    private var rankingHeaderSubtitle: String {
+        guard !rankableFunds.isEmpty else { return "暂无持仓基金" }
+        return "\(rankableFunds.count)只基金 · \(MoneyFormatter.money(store.snapshot.todayIncome, signed: true))"
+    }
+
+    private var updatedHeaderTagText: String? {
+        let updatedCount = rankableFunds.filter { $0.isUpdated }.count
+        guard updatedCount > 0 else { return nil }
+        if updatedCount == rankableFunds.count {
+            return "全部已更新"
+        }
+        return "\(updatedCount)只已更新"
+    }
+
+    private var rankingModePicker: some View {
+        PanelSegmentedPicker(
+            values: TodayIncomeRankingMode.allCases,
+            selection: $rankingMode,
+            title: \.title,
+            tint: rankingMode.tint
+        )
+    }
+
+    private var gainFunds: [FundPosition] {
+        rankableFunds.filter { $0.todayIncome > 0 }
+    }
+
+    private var lossFunds: [FundPosition] {
+        rankableFunds.filter { $0.todayIncome < 0 }
+    }
+
+    private var gainIncomeTotal: Double {
+        gainFunds.reduce(0) { $0 + $1.todayIncome }
+    }
+
+    private var lossIncomeTotal: Double {
+        lossFunds.reduce(0) { $0 + $1.todayIncome }
+    }
+
+    private var rankingSummary: some View {
+        HStack(spacing: 0) {
+            rankingSummaryMetric(
+                "合计",
+                MoneyFormatter.money(store.snapshot.todayIncome, signed: true),
+                tone: store.snapshot.todayIncome,
+                footnote: "\(rankableFunds.count)只"
+            )
+            summaryDivider
+            rankingSummaryMetric(
+                "涨",
+                MoneyFormatter.money(gainIncomeTotal, signed: true),
+                tone: gainIncomeTotal,
+                footnote: "\(gainFunds.count)只"
+            )
+            summaryDivider
+            rankingSummaryMetric(
+                "跌",
+                MoneyFormatter.money(lossIncomeTotal, signed: true),
+                tone: lossIncomeTotal,
+                footnote: "\(lossFunds.count)只"
+            )
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 58)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var summaryDivider: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22))
+            .frame(width: 1, height: 32)
+            .padding(.horizontal, 10)
+    }
+
+    private func rankingSummaryMetric(_ title: String, _ value: String, tone: Double?, footnote: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(footnote)
+                    .font(.system(size: 8, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tone.map(toneColor(for:)) ?? Color.secondary)
+                    .padding(.horizontal, 4)
+                    .frame(height: 13)
+                    .background((tone.map(toneColor(for:)) ?? Color.secondary).opacity(colorScheme == .dark ? 0.14 : 0.08), in: Capsule())
+            }
+            .lineLimit(1)
+
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .foregroundStyle(tone.map(toneColor(for:)) ?? Color.primary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func rankingRow(_ item: TodayIncomeRankItem) -> some View {
+        let isTopRank = item.rank <= 3
+        let palette = rankPalette(for: item)
+        return HStack(spacing: 10) {
+            rankBadge(for: item)
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text(item.fund.name)
+                        .font(.system(size: isTopRank ? 12.5 : 12, weight: .semibold))
+                        .lineLimit(1)
+                    if item.fund.isUpdated {
+                        updatedTag
+                    }
+                }
+
+                HStack(spacing: 7) {
+                    Text(FundCodeFormatter.display(item.fund.code))
+                        .fontWeight(.semibold)
+                    Text(item.fund.dateText)
+                }
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 5) {
+                Text(MoneyFormatter.money(item.fund.todayIncome, signed: true))
+                    .font(.system(size: 13, weight: .semibold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.70)
+                    .foregroundStyle(palette.foreground)
+                Text(MoneyFormatter.percent(item.fund.todayRate, signed: true))
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(palette.foreground)
+                    .padding(.horizontal, 6)
+                    .frame(height: 19)
+                    .background(palette.foreground.opacity(colorScheme == .dark ? 0.18 : 0.10), in: Capsule())
+            }
+            .frame(width: 92, alignment: .trailing)
+        }
+        .padding(.horizontal, isTopRank ? 12 : 10)
+        .frame(minHeight: isTopRank ? 70 : 62)
+        .background(rowBackground(for: item), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(rowBorder(for: item))
+        .shadow(
+            color: item.rank <= 3 ? palette.foreground.opacity(colorScheme == .dark ? 0.22 : 0.14) : .clear,
+            radius: item.rank <= 3 ? 8 : 0,
+            x: 0,
+            y: item.rank <= 3 ? 3 : 0
+        )
+    }
+
+    private func rankBadge(for item: TodayIncomeRankItem) -> some View {
+        let rank = item.rank
+        let palette = rankPalette(for: item)
+        if rank <= 3 {
+            let medal = medalPalette(for: rank)
+            return AnyView(
+                VStack(spacing: 1) {
+                    Image(systemName: "medal.fill")
+                        .font(.system(size: 10, weight: .black))
+                    Text("\(rank)")
+                        .font(.system(size: 15, weight: .heavy))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(Color.white)
+                .shadow(color: medal.deep.opacity(0.30), radius: 1.5, x: 0, y: 0.8)
+                .frame(width: 38, height: 38)
+                .background(
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        medal.light.opacity(colorScheme == .dark ? 0.78 : 0.96),
+                                        medal.foreground.opacity(colorScheme == .dark ? 0.88 : 0.94),
+                                        medal.deep.opacity(colorScheme == .dark ? 0.82 : 0.90)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                        Circle()
+                            .stroke(Color.white.opacity(colorScheme == .dark ? 0.12 : 0.54), lineWidth: 1.0)
+                            .padding(2.5)
+                    }
+                )
+                .overlay(Circle().stroke(medal.border.opacity(colorScheme == .dark ? 0.52 : 0.72), lineWidth: 0.9))
+                .shadow(color: medal.deep.opacity(colorScheme == .dark ? 0.24 : 0.16), radius: 6, x: 0, y: 2)
+            )
+        }
+
+        return AnyView(
+            Text("\(rank)")
+                .font(.system(size: 10, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(palette.foreground)
+                .frame(width: 28, height: 28)
+                .background(circleBackground(for: palette), in: Circle())
+                .overlay(Circle().stroke(borderColor(for: palette, isTopRank: false), lineWidth: 0.75))
+        )
+    }
+
+    private var updatedTag: some View {
+        Text("已更新")
+            .font(.system(size: 8, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(.orange)
+            .padding(.horizontal, 4)
+            .frame(height: 14)
+            .background(Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(Color.orange.opacity(colorScheme == .dark ? 0.34 : 0.22), lineWidth: 0.6)
+            )
+    }
+
+    private func rowBackground(for item: TodayIncomeRankItem) -> some ShapeStyle {
+        let palette = rankPalette(for: item)
+        if item.rank <= 3 {
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [
+                        cardBackgroundColor(for: palette, isTopRank: true),
+                        palette.foreground.opacity(colorScheme == .dark ? 0.18 : 0.095),
+                        PanelDesign.cardBackground
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        }
+        return AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    cardBackgroundColor(for: palette, isTopRank: false),
+                    PanelDesign.cardBackground
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+    }
+
+    private func rowBorder(for item: TodayIncomeRankItem) -> some View {
+        let palette = rankPalette(for: item)
+        return RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(
+                borderColor(for: palette, isTopRank: item.rank <= 3),
+                lineWidth: item.rank <= 3 ? 1.05 : 0.75
+            )
+    }
+
+    private func rankPalette(for item: TodayIncomeRankItem) -> TodayIncomeRankPalette {
+        let isLoss = rankingMode == .loss
+        switch item.rank {
+        case 1:
+            return isLoss
+                ? TodayIncomeRankPalette(
+                    foreground: Color(red: 4 / 255, green: 120 / 255, blue: 87 / 255),
+                    deep: Color(red: 3 / 255, green: 84 / 255, blue: 63 / 255),
+                    background: Color(red: 220 / 255, green: 252 / 255, blue: 231 / 255),
+                    border: Color(red: 52 / 255, green: 211 / 255, blue: 153 / 255)
+                )
+                : TodayIncomeRankPalette(
+                    foreground: Color(red: 166 / 255, green: 31 / 255, blue: 23 / 255),
+                    deep: Color(red: 122 / 255, green: 28 / 255, blue: 20 / 255),
+                    background: Color(red: 255 / 255, green: 224 / 255, blue: 219 / 255),
+                    border: Color(red: 240 / 255, green: 68 / 255, blue: 56 / 255)
+                )
+        case 2:
+            return isLoss
+                ? TodayIncomeRankPalette(
+                    foreground: Color(red: 5 / 255, green: 150 / 255, blue: 105 / 255),
+                    deep: Color(red: 4 / 255, green: 120 / 255, blue: 87 / 255),
+                    background: Color(red: 229 / 255, green: 253 / 255, blue: 237 / 255),
+                    border: Color(red: 110 / 255, green: 231 / 255, blue: 183 / 255)
+                )
+                : TodayIncomeRankPalette(
+                    foreground: Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255),
+                    deep: Color(red: 166 / 255, green: 31 / 255, blue: 23 / 255),
+                    background: Color(red: 255 / 255, green: 234 / 255, blue: 228 / 255),
+                    border: Color(red: 249 / 255, green: 112 / 255, blue: 102 / 255)
+                )
+        case 3:
+            return isLoss
+                ? TodayIncomeRankPalette(
+                    foreground: Color(red: 18 / 255, green: 183 / 255, blue: 106 / 255),
+                    deep: Color(red: 5 / 255, green: 150 / 255, blue: 105 / 255),
+                    background: Color(red: 237 / 255, green: 253 / 255, blue: 243 / 255),
+                    border: Color(red: 167 / 255, green: 243 / 255, blue: 208 / 255)
+                )
+                : TodayIncomeRankPalette(
+                    foreground: Color(red: 229 / 255, green: 72 / 255, blue: 77 / 255),
+                    deep: Color(red: 201 / 255, green: 42 / 255, blue: 42 / 255),
+                    background: Color(red: 255 / 255, green: 241 / 255, blue: 236 / 255),
+                    border: Color(red: 253 / 255, green: 162 / 255, blue: 155 / 255)
+                )
+        default:
+            return isLoss
+                ? TodayIncomeRankPalette(
+                    foreground: Color(red: 34 / 255, green: 197 / 255, blue: 94 / 255),
+                    deep: Color(red: 18 / 255, green: 183 / 255, blue: 106 / 255),
+                    background: Color(red: 240 / 255, green: 253 / 255, blue: 244 / 255),
+                    border: Color(red: 187 / 255, green: 247 / 255, blue: 208 / 255)
+                )
+                : TodayIncomeRankPalette(
+                    foreground: Color(red: 239 / 255, green: 96 / 255, blue: 87 / 255),
+                    deep: Color(red: 229 / 255, green: 72 / 255, blue: 77 / 255),
+                    background: Color(red: 255 / 255, green: 245 / 255, blue: 243 / 255),
+                    border: Color(red: 254 / 255, green: 205 / 255, blue: 202 / 255)
+                )
+        }
+    }
+
+    private func cardBackgroundColor(for palette: TodayIncomeRankPalette, isTopRank: Bool) -> Color {
+        if colorScheme == .dark {
+            return palette.foreground.opacity(isTopRank ? 0.28 : 0.16)
+        }
+        return isTopRank ? palette.background : palette.background.opacity(0.86)
+    }
+
+    private func circleBackground(for palette: TodayIncomeRankPalette) -> Color {
+        colorScheme == .dark ? palette.foreground.opacity(0.20) : palette.background
+    }
+
+    private func borderColor(for palette: TodayIncomeRankPalette, isTopRank: Bool) -> Color {
+        if colorScheme == .dark {
+            return palette.foreground.opacity(isTopRank ? 0.54 : 0.32)
+        }
+        return isTopRank ? palette.border.opacity(0.88) : palette.border.opacity(0.72)
+    }
+
+    private func medalPalette(for rank: Int) -> TodayIncomeRankMedalPalette {
+        switch rank {
+        case 1:
+            return TodayIncomeRankMedalPalette(
+                foreground: Color(red: 228 / 255, green: 163 / 255, blue: 45 / 255),
+                deep: Color(red: 169 / 255, green: 101 / 255, blue: 20 / 255),
+                light: Color(red: 255 / 255, green: 223 / 255, blue: 112 / 255),
+                border: Color(red: 217 / 255, green: 157 / 255, blue: 45 / 255)
+            )
+        case 2:
+            return TodayIncomeRankMedalPalette(
+                foreground: Color(red: 147 / 255, green: 158 / 255, blue: 171 / 255),
+                deep: Color(red: 96 / 255, green: 110 / 255, blue: 128 / 255),
+                light: Color(red: 234 / 255, green: 238 / 255, blue: 243 / 255),
+                border: Color(red: 157 / 255, green: 168 / 255, blue: 183 / 255)
+            )
+        case 3:
+            return TodayIncomeRankMedalPalette(
+                foreground: Color(red: 190 / 255, green: 111 / 255, blue: 52 / 255),
+                deep: Color(red: 139 / 255, green: 73 / 255, blue: 36 / 255),
+                light: Color(red: 242 / 255, green: 181 / 255, blue: 118 / 255),
+                border: Color(red: 192 / 255, green: 112 / 255, blue: 56 / 255)
+            )
+        default:
+            return TodayIncomeRankMedalPalette(
+                foreground: .secondary,
+                deep: .secondary,
+                light: .secondary,
+                border: .secondary
+            )
+        }
+    }
+}
+
 private struct PendingTradeActivityRow: View {
     let activity: PendingTradeActivity
     let isSelected: Bool
@@ -1705,21 +2971,34 @@ struct FundRowView: View {
                 }
 
                 HStack(spacing: 4) {
-                    HStack(spacing: 1) {
+                    HStack(spacing: 3) {
+                        if showsUpdateStar {
+                            updatedInlineTag
+                        }
                         Text(FundCodeFormatter.display(fund.code))
                             .fontWeight(.semibold)
                             .foregroundStyle(codeTextColor)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         if showsUpdateStar {
                             updateStar
                         }
                     }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(2)
                     Text(rowHoldingAmountText)
                         .foregroundStyle(amountTextColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .padding(.leading, showsUpdateStar ? 5 : 2)
                     Text(compactMoney(rowConfirmedHoldingIncome))
                         .foregroundStyle(toneColor(for: rowConfirmedHoldingIncome))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
                 }
                 .font(.system(size: 10, weight: .medium))
                 .monospacedDigit()
+                .lineLimit(1)
             }
 
             Spacer(minLength: 6)
@@ -1772,6 +3051,10 @@ struct FundRowView: View {
         Color(nsColor: StatusBarTone.menuBarColor(forRate: fund.todayRate))
     }
 
+    private var updatedTagColor: Color {
+        Color(red: 239 / 255, green: 168 / 255, blue: 36 / 255)
+    }
+
     private var codeTextColor: Color {
         Color.secondary.opacity(colorScheme == .dark ? 0.72 : 0.58)
     }
@@ -1787,6 +3070,22 @@ struct FundRowView: View {
             .frame(width: 11, height: 14, alignment: .center)
             .shadow(color: updateStarColor.opacity(colorScheme == .dark ? 0.28 : 0.18), radius: 2, x: 0, y: 1)
             .accessibilityLabel("净值已更新")
+    }
+
+    private var updatedInlineTag: some View {
+        Text("已更新")
+            .font(.system(size: 8, weight: .semibold))
+            .lineLimit(1)
+            .foregroundStyle(updatedTagColor)
+            .padding(.horizontal, 4)
+            .frame(height: 14)
+            .background(updatedTagColor.opacity(colorScheme == .dark ? 0.20 : 0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .stroke(updatedTagColor.opacity(colorScheme == .dark ? 0.38 : 0.26), lineWidth: 0.6)
+            )
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel("已更新")
     }
 
     private var showsUpdateStar: Bool {
@@ -1945,8 +3244,25 @@ private struct UpdatedFundStarShape: Shape {
     }
 }
 
+private enum FundDetailTrendTab: String, CaseIterable, Identifiable {
+    case intraday
+    case netValue
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .intraday:
+            "盘中预估实时涨跌"
+        case .netValue:
+            "近90日净值业绩优势"
+        }
+    }
+}
+
 struct FundDetailView: View {
-    let fund: FundPosition
+    let store: PortfolioStore
+    private let initialFund: FundPosition
     let totalAmount: Double
     let pendingTradeCount: Int
     let tradeRecords: [FundTradeRecord]
@@ -1961,9 +3277,53 @@ struct FundDetailView: View {
     @State private var supplement: FundDetailSupplement = .empty
     @State private var isSupplementLoading = false
     @State private var didLoadSupplement = false
+    @State private var trendTab: FundDetailTrendTab = .intraday
     @Environment(\.colorScheme) private var colorScheme
 
     private let supplementService = FundQuoteService()
+
+    init(
+        store: PortfolioStore,
+        fund: FundPosition,
+        totalAmount: Double,
+        pendingTradeCount: Int,
+        tradeRecords: [FundTradeRecord],
+        onBuy: @escaping (FundPosition) -> Void,
+        onSell: @escaping (FundPosition) -> Void,
+        onEdit: @escaping (FundPosition) -> Void,
+        onOpenTradeRecords: @escaping (FundPosition) -> Void,
+        onDelete: @escaping (FundPosition) async -> Void,
+        onClose: @escaping () -> Void
+    ) {
+        self.store = store
+        self.initialFund = fund
+        self.totalAmount = totalAmount
+        self.pendingTradeCount = pendingTradeCount
+        self.tradeRecords = tradeRecords
+        self.onBuy = onBuy
+        self.onSell = onSell
+        self.onEdit = onEdit
+        self.onOpenTradeRecords = onOpenTradeRecords
+        self.onDelete = onDelete
+        self.onClose = onClose
+    }
+
+    private var fund: FundPosition {
+        store.snapshot.funds.first { $0.code == initialFund.code } ?? initialFund
+    }
+
+    private var detailUpdateStarColor: Color {
+        Color(nsColor: StatusBarTone.menuBarColor(forRate: fund.todayRate))
+    }
+
+    private var detailUpdateStar: some View {
+        UpdatedFundStarShape()
+            .fill(detailUpdateStarColor)
+            .frame(width: 14.5, height: 14.5)
+            .frame(width: 17, height: 18, alignment: .center)
+            .shadow(color: detailUpdateStarColor.opacity(colorScheme == .dark ? 0.30 : 0.20), radius: 2.5, x: 0, y: 1)
+            .accessibilityLabel("净值已更新")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2031,6 +3391,10 @@ struct FundDetailView: View {
                 Text(fund.name)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
+                if fund.isUpdated {
+                    detailUpdateStar
+                        .fixedSize()
+                }
             }
             HStack(spacing: 7) {
                 Text(FundCodeFormatter.display(fund.code))
@@ -2159,9 +3523,48 @@ struct FundDetailView: View {
 
     private var trendSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            PanelSegmentedPicker(
+                values: FundDetailTrendTab.allCases,
+                selection: $trendTab,
+                title: \.title,
+                tint: toneColor(for: fund.todayRate)
+            )
+
+            switch trendTab {
+            case .intraday:
+                intradayTrendContent
+            case .netValue:
+                netValueTrendContent
+            }
+        }
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private var intradayTrendContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "近90日净值走势",
-                trailing: supplement.trend.last.map { "最新净值 \(numberText($0.value, places: 4))" }
+                "盘中预估实时涨跌",
+                trailing: intradayTrendTrailingText
+            )
+
+            if intradayRatePoints.isEmpty {
+                emptySupplementView(intradayTrendEmptyText)
+                    .frame(height: 116)
+            } else {
+                FundIntradayRateChart(points: intradayRatePoints)
+                    .frame(height: 138)
+            }
+        }
+    }
+
+    private var netValueTrendContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader(
+                "近90日净值业绩优势",
+                trailing: supplement.trend.last.map { "最新净值 \(numberText($0.value, places: 4))" },
+                showsLoading: isSupplementLoading
             )
 
             if supplement.trend.count >= 2 {
@@ -2172,14 +3575,11 @@ struct FundDetailView: View {
                     .frame(height: 86)
             }
         }
-        .padding(12)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 10))
     }
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionHeader("历史净值", trailing: historyTrailingText)
+            sectionHeader("历史净值", trailing: historyTrailingText, showsLoading: isSupplementLoading)
 
             if historyRows.isEmpty {
                 emptySupplementView(isSupplementLoading ? "净值加载中..." : "暂无历史净值")
@@ -2213,7 +3613,7 @@ struct FundDetailView: View {
 
     private var topHoldingsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("前10重仓股", trailing: topHoldingsTrailingText)
+            sectionHeader("前10重仓股", trailing: topHoldingsTrailingText, showsLoading: isSupplementLoading)
 
             if supplement.topHoldings.isEmpty {
                 emptySupplementView(isSupplementLoading ? "重仓加载中..." : "暂无重仓数据")
@@ -2294,11 +3694,11 @@ struct FundDetailView: View {
         .background(PanelDesign.panelBackground)
     }
 
-    private func sectionHeader(_ title: String, trailing: String? = nil) -> some View {
+    private func sectionHeader(_ title: String, trailing: String? = nil, showsLoading: Bool = false) -> some View {
         HStack(spacing: 8) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-            if isSupplementLoading {
+            if showsLoading {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.65)
@@ -2591,6 +3991,26 @@ struct FundDetailView: View {
 
     private var topHoldingsTrailingText: String? {
         supplement.topHoldings.isEmpty ? nil : "\(supplement.topHoldings.count)只"
+    }
+
+    private var intradayRatePoints: [FundIntradayRatePoint] {
+        FundIntradayRateHistoryRecorder.activePoints(for: fund)
+    }
+
+    private var intradayTrendTrailingText: String? {
+        guard let lastPoint = intradayRatePoints.last else { return nil }
+        return "\(MoneyFormatter.percent(lastPoint.rate, signed: true)) · \(dateText(lastPoint.timestamp, format: "HH:mm"))"
+    }
+
+    private var intradayTrendEmptyText: String {
+        switch TradingCalendar.marketSessionState() {
+        case .open:
+            "等待下一次盘中估值刷新"
+        case .middayBreak:
+            "午休中，盘中曲线暂停更新"
+        case .closed:
+            "休市中，盘中曲线停止更新"
+        }
     }
 
     private var zdfRangeReminderText: String? {
@@ -3079,6 +4499,311 @@ struct FundTradeRecordsPanelView: View {
 
     private func numberText(_ value: Double, places: Int) -> String {
         value.formatted(.number.precision(.fractionLength(places)))
+    }
+}
+
+private struct FundIntradayRateChart: View {
+    let points: [FundIntradayRatePoint]
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hoveredIndex: Int?
+
+    private static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = chinaTimeZone
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                yAxisLabels
+                    .frame(width: 46, height: 102)
+
+                GeometryReader { proxy in
+                    ZStack {
+                        gridLines(in: proxy.size)
+                            .stroke(gridColor, lineWidth: 0.7)
+                        zeroLine(in: proxy.size)
+                            .stroke(zeroLineColor, style: StrokeStyle(lineWidth: 0.9, dash: [6, 5]))
+                        chartBorder(in: proxy.size)
+                            .stroke(borderColor, lineWidth: 0.75)
+
+                        if sortedPoints.count >= 2 {
+                            areaPath(in: proxy.size)
+                                .fill(areaFill)
+                            linePath(in: proxy.size)
+                                .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
+                        } else if let point = sortedPoints.first {
+                            Circle()
+                                .fill(lineColor)
+                                .frame(width: 6, height: 6)
+                                .position(pointPosition(for: point, in: proxy.size))
+                        }
+
+                        if let hoveredIndex,
+                           sortedPoints.indices.contains(hoveredIndex) {
+                            hoverOverlay(for: hoveredIndex, in: proxy.size)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        switch phase {
+                        case .active(let location):
+                            hoveredIndex = nearestIndex(for: location.x, width: proxy.size.width)
+                        case .ended:
+                            hoveredIndex = nil
+                        }
+                    }
+                }
+                .frame(height: 102)
+            }
+
+            xAxisLabels
+        }
+        .accessibilityLabel("盘中预估实时涨跌走势图")
+    }
+
+    private var sortedPoints: [FundIntradayRatePoint] {
+        points.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private var rateScale: Double {
+        let maxAbs = sortedPoints.map { abs($0.rate) }.max() ?? 0
+        return max(ceil(maxAbs * 100) / 100, 0.50)
+    }
+
+    private var lineColor: Color {
+        toneColor(for: sortedPoints.last?.rate ?? 0)
+    }
+
+    private var areaFill: LinearGradient {
+        LinearGradient(
+            colors: [
+                lineColor.opacity(colorScheme == .dark ? 0.26 : 0.18),
+                lineColor.opacity(colorScheme == .dark ? 0.08 : 0.035)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var gridColor: Color {
+        Color.secondary.opacity(colorScheme == .dark ? 0.18 : 0.14)
+    }
+
+    private var zeroLineColor: Color {
+        Color.secondary.opacity(colorScheme == .dark ? 0.38 : 0.32)
+    }
+
+    private var borderColor: Color {
+        Color.secondary.opacity(colorScheme == .dark ? 0.22 : 0.16)
+    }
+
+    private var yAxisLabels: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            Text(MoneyFormatter.percent(rateScale, signed: true))
+            Spacer()
+            Text(MoneyFormatter.percent(-rateScale, signed: true))
+        }
+        .font(.system(size: 9, weight: .medium))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    private var xAxisLabels: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Spacer()
+                .frame(width: 52)
+            Text("09:30")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("11:30/13:00")
+                .frame(maxWidth: .infinity, alignment: .center)
+            Text("15:00")
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .font(.system(size: 9, weight: .medium))
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+    }
+
+    private func gridLines(in size: CGSize) -> Path {
+        Path { path in
+            for ratio in [CGFloat(0), 0.25, 0.5, 0.75, 1] {
+                let x = size.width * ratio
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: size.height))
+            }
+
+            for ratio in [CGFloat(0), 1] {
+                let y = size.height * ratio
+                path.move(to: CGPoint(x: 0, y: y))
+                path.addLine(to: CGPoint(x: size.width, y: y))
+            }
+        }
+    }
+
+    private func zeroLine(in size: CGSize) -> Path {
+        Path { path in
+            let y = yPosition(for: 0, height: size.height)
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
+        }
+    }
+
+    private func chartBorder(in size: CGSize) -> Path {
+        Path { path in
+            path.addRect(CGRect(origin: .zero, size: size))
+        }
+    }
+
+    private func linePath(in size: CGSize) -> Path {
+        Path { path in
+            for (index, point) in sortedPoints.enumerated() {
+                let position = pointPosition(for: point, in: size)
+                if index == 0 {
+                    path.move(to: position)
+                } else {
+                    path.addLine(to: position)
+                }
+            }
+        }
+    }
+
+    private func areaPath(in size: CGSize) -> Path {
+        Path { path in
+            guard let first = sortedPoints.first,
+                  let last = sortedPoints.last
+            else {
+                return
+            }
+
+            for (index, point) in sortedPoints.enumerated() {
+                let position = pointPosition(for: point, in: size)
+                if index == 0 {
+                    path.move(to: position)
+                } else {
+                    path.addLine(to: position)
+                }
+            }
+
+            let zeroY = yPosition(for: 0, height: size.height)
+            path.addLine(to: CGPoint(x: xPosition(for: last, width: size.width), y: zeroY))
+            path.addLine(to: CGPoint(x: xPosition(for: first, width: size.width), y: zeroY))
+            path.closeSubpath()
+        }
+    }
+
+    private func hoverOverlay(for index: Int, in size: CGSize) -> some View {
+        let point = sortedPoints[index]
+        let position = pointPosition(for: point, in: size)
+        let tooltipWidth: CGFloat = 112
+        let tooltipHeight: CGFloat = 48
+        let tooltipX = min(
+            max(position.x + 12 + tooltipWidth / 2, tooltipWidth / 2),
+            max(size.width - tooltipWidth / 2, tooltipWidth / 2)
+        )
+        let tooltipY = min(max(position.y - 10, tooltipHeight / 2), max(size.height - tooltipHeight / 2, tooltipHeight / 2))
+
+        return ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: position.x, y: 0))
+                path.addLine(to: CGPoint(x: position.x, y: size.height))
+            }
+            .stroke(Color.secondary.opacity(0.42), style: StrokeStyle(lineWidth: 0.9, dash: [4, 3]))
+
+            Circle()
+                .fill(lineColor)
+                .frame(width: 5, height: 5)
+                .position(position)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(Self.timeFormatter.string(from: date(from: point.timestamp)))
+                    .font(.system(size: 11, weight: .medium))
+                Text("涨跌：\(MoneyFormatter.percent(point.rate, signed: true))")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .frame(width: tooltipWidth, height: tooltipHeight, alignment: .leading)
+            .background(tooltipBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.30 : 0.22), lineWidth: 0.7)
+            )
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.32 : 0.14), radius: 8, x: 0, y: 4)
+            .position(x: tooltipX, y: tooltipY)
+        }
+    }
+
+    private var tooltipBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 31 / 255, green: 34 / 255, blue: 40 / 255).opacity(0.98)
+            : Color.white.opacity(0.98)
+    }
+
+    private func pointPosition(for point: FundIntradayRatePoint, in size: CGSize) -> CGPoint {
+        CGPoint(
+            x: xPosition(for: point, width: size.width),
+            y: yPosition(for: point.rate, height: size.height)
+        )
+    }
+
+    private func xPosition(for point: FundIntradayRatePoint, width: CGFloat) -> CGFloat {
+        sessionProgress(for: point.timestamp) * width
+    }
+
+    private func yPosition(for rate: Double, height: CGFloat) -> CGFloat {
+        guard rateScale > 0 else { return height / 2 }
+        let clampedRate = min(max(rate, -rateScale), rateScale)
+        return CGFloat((rateScale - clampedRate) / (rateScale * 2)) * height
+    }
+
+    private func sessionProgress(for timestamp: Int64) -> CGFloat {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = Self.chinaTimeZone
+
+        let date = date(from: timestamp)
+        let components = calendar.dateComponents([.hour, .minute, .second], from: date)
+        let minute = Double((components.hour ?? 0) * 60 + (components.minute ?? 0)) + Double(components.second ?? 0) / 60
+
+        let morningOpen = 9.0 * 60 + 30
+        let morningClose = 11.0 * 60 + 30
+        let afternoonOpen = 13.0 * 60
+        let afternoonClose = 15.0 * 60
+        let activeMinutes = (morningClose - morningOpen) + (afternoonClose - afternoonOpen)
+
+        if minute <= morningOpen {
+            return 0
+        }
+        if minute <= morningClose {
+            return CGFloat((minute - morningOpen) / activeMinutes)
+        }
+        if minute < afternoonOpen {
+            return 0.5
+        }
+        if minute <= afternoonClose {
+            return CGFloat((morningClose - morningOpen + minute - afternoonOpen) / activeMinutes)
+        }
+        return 1
+    }
+
+    private func nearestIndex(for x: CGFloat, width: CGFloat) -> Int? {
+        guard !sortedPoints.isEmpty, width > 0 else { return nil }
+        return sortedPoints.indices.min { lhs, rhs in
+            abs(xPosition(for: sortedPoints[lhs], width: width) - x) < abs(xPosition(for: sortedPoints[rhs], width: width) - x)
+        }
+    }
+
+    private func date(from timestamp: Int64) -> Date {
+        Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
     }
 }
 
