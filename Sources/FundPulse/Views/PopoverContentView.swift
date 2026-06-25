@@ -11,6 +11,9 @@ struct MainPanelWindowView: View {
     let onOpenSettings: () -> Void
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
+    let onOpenTodayRateRanking: () -> Void
+    let onOpenHoldingIncomeRanking: () -> Void
+    let onOpenHoldingRateRanking: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -40,6 +43,9 @@ struct MainPanelWindowView: View {
                 onOpenSettings: onOpenSettings,
                 onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
                 onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
+                onOpenTodayRateRanking: onOpenTodayRateRanking,
+                onOpenHoldingIncomeRanking: onOpenHoldingIncomeRanking,
+                onOpenHoldingRateRanking: onOpenHoldingRateRanking,
                 onAddFund: onAddFund,
                 onOpenFundDetail: onOpenFundDetail,
                 onOpenTradeRecords: onOpenTradeRecords,
@@ -97,6 +103,9 @@ struct PopoverContentView: View {
     let onOpenSettings: () -> Void
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
+    let onOpenTodayRateRanking: () -> Void
+    let onOpenHoldingIncomeRanking: () -> Void
+    let onOpenHoldingRateRanking: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -182,20 +191,33 @@ struct PopoverContentView: View {
                 .focusable(false)
                 .frame(maxWidth: .infinity)
                 .help("查看持仓占比")
-                metricCard(
-                    "持有收益",
-                    MoneyFormatter.money(store.snapshot.holdingIncome, signed: true),
-                    tone: store.snapshot.holdingIncome
-                )
-                metricCard(
-                    "持有收益率",
-                    MoneyFormatter.percent(store.snapshot.holdingIncomeRate, signed: true),
-                    tone: store.snapshot.holdingIncomeRate
-                )
+                Button(action: onOpenHoldingIncomeRanking) {
+                    metricCard(
+                        "持有收益",
+                        MoneyFormatter.money(store.snapshot.holdingIncome, signed: true),
+                        tone: store.snapshot.holdingIncome
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .frame(maxWidth: .infinity)
+                .help("查看持有收益排行")
+
+                Button(action: onOpenHoldingRateRanking) {
+                    metricCard(
+                        "持有收益率",
+                        MoneyFormatter.percent(store.snapshot.holdingIncomeRate, signed: true),
+                        tone: store.snapshot.holdingIncomeRate
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .frame(maxWidth: .infinity)
+                .help("查看持有收益率排行")
             }
 
-            Button(action: onOpenTodayIncomeRanking) {
-                HStack(alignment: .bottom) {
+            HStack(alignment: .bottom) {
+                Button(action: onOpenTodayIncomeRanking) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 5) {
                             Text("实时收益(元)")
@@ -212,7 +234,16 @@ struct PopoverContentView: View {
                             .foregroundStyle(toneColor(for: store.snapshot.todayIncome))
                             .blur(radius: headerAmountBlurRadius)
                     }
-                    Spacer()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("查看实时收益排行")
+
+                Spacer()
+
+                Button(action: onOpenTodayRateRanking) {
                     VStack(alignment: .trailing, spacing: 3) {
                         Text("实时收益率")
                             .font(.system(size: 10, weight: .semibold))
@@ -224,12 +255,12 @@ struct PopoverContentView: View {
                             .blur(radius: headerAmountBlurRadius)
                     }
                     .padding(.bottom, 3)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("查看实时收益率排行")
             }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .help("查看当日实时盈亏明细")
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -2374,6 +2405,91 @@ private enum TodayIncomeRankingMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum IncomeRankingKind {
+    case today
+    case holding
+
+    func title(for metric: IncomeRankingMetric) -> String {
+        switch self {
+        case .today where metric == .amount:
+            return "实时收益排行"
+        case .today:
+            return "实时收益率排行"
+        case .holding where metric == .amount:
+            return "持有收益排行"
+        case .holding:
+            return "持有收益率排行"
+        }
+    }
+
+    var unavailableTitle: String {
+        switch self {
+        case .today:
+            "暂无实时收益"
+        case .holding:
+            "暂无持有收益"
+        }
+    }
+
+    var unavailableSystemImage: String {
+        switch self {
+        case .today:
+            "chart.line.uptrend.xyaxis"
+        case .holding:
+            "chart.bar.xaxis"
+        }
+    }
+
+    func gainTitle(for metric: IncomeRankingMetric) -> String {
+        metric == .amount ? "收益榜" : "涨幅榜"
+    }
+
+    func lossTitle(for metric: IncomeRankingMetric) -> String {
+        metric == .amount ? "亏损榜" : "跌幅榜"
+    }
+
+    var gainEmptyTitle: String {
+        switch self {
+        case .today:
+            "暂无上涨基金"
+        case .holding:
+            "暂无盈利基金"
+        }
+    }
+
+    var lossEmptyTitle: String {
+        switch self {
+        case .today:
+            "暂无下跌基金"
+        case .holding:
+            "暂无亏损基金"
+        }
+    }
+
+    var gainSummaryTitle: String {
+        switch self {
+        case .today:
+            "涨"
+        case .holding:
+            "盈"
+        }
+    }
+
+    var lossSummaryTitle: String {
+        switch self {
+        case .today:
+            "跌"
+        case .holding:
+            "亏"
+        }
+    }
+}
+
+enum IncomeRankingMetric {
+    case amount
+    case rate
+}
+
 private struct TodayIncomeRankPalette {
     let foreground: Color
     let deep: Color
@@ -2390,6 +2506,8 @@ private struct TodayIncomeRankMedalPalette {
 
 struct TodayIncomeRankingPanelView: View {
     let store: PortfolioStore
+    let kind: IncomeRankingKind
+    let metric: IncomeRankingMetric
     let onClose: () -> Void
 
     @State private var rankingMode: TodayIncomeRankingMode = .gain
@@ -2399,10 +2517,10 @@ struct TodayIncomeRankingPanelView: View {
         VStack(spacing: 0) {
             PanelHeader(
                 systemImage: "list.number",
-                title: "实时收益排行",
+                title: kind.title(for: metric),
                 subtitle: rankingHeaderSubtitle,
                 subtitleWeight: .semibold,
-                tint: toneColor(for: store.snapshot.todayIncome),
+                tint: toneColor(for: totalValue),
                 accessoryText: updatedHeaderTagText,
                 accessoryColor: .orange,
                 onClose: onClose
@@ -2410,14 +2528,14 @@ struct TodayIncomeRankingPanelView: View {
 
             ScrollView {
                 if rankableFunds.isEmpty {
-                    ContentUnavailableView("暂无实时收益", systemImage: "chart.line.uptrend.xyaxis")
+                    ContentUnavailableView(kind.unavailableTitle, systemImage: kind.unavailableSystemImage)
                         .frame(height: 420)
                 } else {
                     LazyVStack(spacing: 10) {
                         rankingSummary
                         rankingModePicker
                         if rankingItems.isEmpty {
-                            ContentUnavailableView(rankingMode.emptyTitle, systemImage: rankingMode == .gain ? "arrow.up.right" : "arrow.down.right")
+                            ContentUnavailableView(emptyTitle(for: rankingMode), systemImage: rankingMode == .gain ? "arrow.up.right" : "arrow.down.right")
                                 .frame(height: 260)
                         } else {
                             ForEach(rankingItems) { item in
@@ -2435,8 +2553,14 @@ struct TodayIncomeRankingPanelView: View {
     }
 
     private var rankableFunds: [FundPosition] {
-        store.snapshot.funds
-            .filter { !$0.status.isPendingDisplay && ($0.isIncomeActive ?? true) }
+        store.snapshot.funds.filter { fund in
+            switch kind {
+            case .today:
+                !fund.status.isPendingDisplay && (fund.isIncomeActive ?? true)
+            case .holding:
+                fund.status == .holding && (fund.isIncomeActive ?? true)
+            }
+        }
     }
 
     private var rankingItems: [TodayIncomeRankItem] {
@@ -2444,17 +2568,21 @@ struct TodayIncomeRankingPanelView: View {
             .filter { fund in
                 switch rankingMode {
                 case .gain:
-                    fund.todayIncome > 0
+                    rankingValue(for: fund) > 0
                 case .loss:
-                    fund.todayIncome < 0
+                    rankingValue(for: fund) < 0
                 }
             }
             .sorted { lhs, rhs in
-                if lhs.todayIncome != rhs.todayIncome {
-                    return rankingMode == .gain ? lhs.todayIncome > rhs.todayIncome : lhs.todayIncome < rhs.todayIncome
+                let lhsValue = rankingValue(for: lhs)
+                let rhsValue = rankingValue(for: rhs)
+                if lhsValue != rhsValue {
+                    return rankingMode == .gain ? lhsValue > rhsValue : lhsValue < rhsValue
                 }
-                if lhs.todayRate != rhs.todayRate {
-                    return rankingMode == .gain ? lhs.todayRate > rhs.todayRate : lhs.todayRate < rhs.todayRate
+                let lhsTieValue = tieBreakValue(for: lhs)
+                let rhsTieValue = tieBreakValue(for: rhs)
+                if lhsTieValue != rhsTieValue {
+                    return rankingMode == .gain ? lhsTieValue > rhsTieValue : lhsTieValue < rhsTieValue
                 }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
@@ -2470,7 +2598,7 @@ struct TodayIncomeRankingPanelView: View {
 
     private var rankingHeaderSubtitle: String {
         guard !rankableFunds.isEmpty else { return "暂无持仓基金" }
-        return "\(rankableFunds.count)只基金 · \(MoneyFormatter.money(store.snapshot.todayIncome, signed: true))"
+        return "\(rankableFunds.count)只基金 · \(summaryValueText(totalValue))"
     }
 
     private var updatedHeaderTagText: String? {
@@ -2486,47 +2614,130 @@ struct TodayIncomeRankingPanelView: View {
         PanelSegmentedPicker(
             values: TodayIncomeRankingMode.allCases,
             selection: $rankingMode,
-            title: \.title,
+            title: { title(for: $0) },
             tint: rankingMode.tint
         )
     }
 
     private var gainFunds: [FundPosition] {
-        rankableFunds.filter { $0.todayIncome > 0 }
+        rankableFunds.filter { rankingValue(for: $0) > 0 }
     }
 
     private var lossFunds: [FundPosition] {
-        rankableFunds.filter { $0.todayIncome < 0 }
+        rankableFunds.filter { rankingValue(for: $0) < 0 }
     }
 
-    private var gainIncomeTotal: Double {
-        gainFunds.reduce(0) { $0 + $1.todayIncome }
+    private var gainSummaryValue: Double {
+        summaryGroupValue(for: gainFunds)
     }
 
-    private var lossIncomeTotal: Double {
-        lossFunds.reduce(0) { $0 + $1.todayIncome }
+    private var lossSummaryValue: Double {
+        summaryGroupValue(for: lossFunds)
+    }
+
+    private var totalValue: Double {
+        switch kind {
+        case .today where metric == .amount:
+            store.snapshot.todayIncome
+        case .today:
+            store.snapshot.todayIncomeRate
+        case .holding where metric == .amount:
+            store.snapshot.holdingIncome
+        case .holding:
+            store.snapshot.holdingIncomeRate
+        }
+    }
+
+    private func rankingValue(for fund: FundPosition) -> Double {
+        switch metric {
+        case .amount:
+            income(for: fund)
+        case .rate:
+            rate(for: fund)
+        }
+    }
+
+    private func tieBreakValue(for fund: FundPosition) -> Double {
+        switch metric {
+        case .amount:
+            rate(for: fund)
+        case .rate:
+            income(for: fund)
+        }
+    }
+
+    private func income(for fund: FundPosition) -> Double {
+        switch kind {
+        case .today:
+            return fund.todayIncome
+        case .holding:
+            if let holdingIncome = fund.holdingIncome {
+                return holdingIncome
+            }
+            guard let holdingRate = fund.holdingRate else { return 0 }
+            return principal(for: fund) * holdingRate / 100
+        }
+    }
+
+    private func rate(for fund: FundPosition) -> Double {
+        switch kind {
+        case .today:
+            fund.todayRate
+        case .holding:
+            fund.holdingRate ?? 0
+        }
+    }
+
+    private func principal(for fund: FundPosition) -> Double {
+        if let migratedPrincipal = fund.migratedPrincipal {
+            return migratedPrincipal
+        }
+        guard let shares = fund.migratedShares,
+              let cost = fund.migratedCost
+        else {
+            return 0
+        }
+        return shares * cost
+    }
+
+    private func title(for mode: TodayIncomeRankingMode) -> String {
+        switch mode {
+        case .gain:
+            kind.gainTitle(for: metric)
+        case .loss:
+            kind.lossTitle(for: metric)
+        }
+    }
+
+    private func emptyTitle(for mode: TodayIncomeRankingMode) -> String {
+        switch mode {
+        case .gain:
+            kind.gainEmptyTitle
+        case .loss:
+            kind.lossEmptyTitle
+        }
     }
 
     private var rankingSummary: some View {
         HStack(spacing: 0) {
             rankingSummaryMetric(
                 "合计",
-                MoneyFormatter.money(store.snapshot.todayIncome, signed: true),
-                tone: store.snapshot.todayIncome,
+                summaryValueText(totalValue),
+                tone: totalValue,
                 footnote: "\(rankableFunds.count)只"
             )
             summaryDivider
             rankingSummaryMetric(
-                "涨",
-                MoneyFormatter.money(gainIncomeTotal, signed: true),
-                tone: gainIncomeTotal,
+                kind.gainSummaryTitle,
+                summaryValueText(gainSummaryValue),
+                tone: gainSummaryValue,
                 footnote: "\(gainFunds.count)只"
             )
             summaryDivider
             rankingSummaryMetric(
-                "跌",
-                MoneyFormatter.money(lossIncomeTotal, signed: true),
-                tone: lossIncomeTotal,
+                kind.lossSummaryTitle,
+                summaryValueText(lossSummaryValue),
+                tone: lossSummaryValue,
                 footnote: "\(lossFunds.count)只"
             )
         }
@@ -2534,6 +2745,25 @@ struct TodayIncomeRankingPanelView: View {
         .frame(height: 58)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private func summaryGroupValue(for funds: [FundPosition]) -> Double {
+        guard !funds.isEmpty else { return 0 }
+        switch metric {
+        case .amount:
+            return funds.reduce(0) { $0 + income(for: $1) }
+        case .rate:
+            return funds.reduce(0) { $0 + rate(for: $1) } / Double(funds.count)
+        }
+    }
+
+    private func summaryValueText(_ value: Double) -> String {
+        switch metric {
+        case .amount:
+            MoneyFormatter.money(value, signed: true)
+        case .rate:
+            MoneyFormatter.percent(value, signed: true)
+        }
     }
 
     private var summaryDivider: some View {
@@ -2599,13 +2829,13 @@ struct TodayIncomeRankingPanelView: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 5) {
-                Text(MoneyFormatter.money(item.fund.todayIncome, signed: true))
+                Text(primaryValueText(for: item.fund))
                     .font(.system(size: 13, weight: .semibold))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.70)
                     .foregroundStyle(palette.foreground)
-                Text(MoneyFormatter.percent(item.fund.todayRate, signed: true))
+                Text(secondaryValueText(for: item.fund))
                     .font(.system(size: 11, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(palette.foreground)
@@ -2625,6 +2855,24 @@ struct TodayIncomeRankingPanelView: View {
             x: 0,
             y: item.rank <= 3 ? 3 : 0
         )
+    }
+
+    private func primaryValueText(for fund: FundPosition) -> String {
+        switch metric {
+        case .amount:
+            MoneyFormatter.money(income(for: fund), signed: true)
+        case .rate:
+            MoneyFormatter.percent(rate(for: fund), signed: true)
+        }
+    }
+
+    private func secondaryValueText(for fund: FundPosition) -> String {
+        switch metric {
+        case .amount:
+            MoneyFormatter.percent(rate(for: fund), signed: true)
+        case .rate:
+            MoneyFormatter.money(income(for: fund), signed: true)
+        }
     }
 
     private func rankBadge(for item: TodayIncomeRankItem) -> some View {
@@ -3333,8 +3581,6 @@ struct FundDetailView: View {
                 subtitle: FundCodeFormatter.display(fund.code),
                 subtitleWeight: .semibold,
                 tint: toneColor(for: fund.todayRate),
-                accessoryText: zdfRangeReminderText,
-                accessoryColor: .orange,
                 actionSystemImage: "list.bullet.rectangle",
                 actionTitle: "交易记录",
                 actionBadgeText: tradeRecordsBadgeText,
@@ -3355,7 +3601,6 @@ struct FundDetailView: View {
                     trendSection
                     historySection
                     topHoldingsSection
-                    extraPills
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 12)
@@ -3400,6 +3645,7 @@ struct FundDetailView: View {
                 Text(FundCodeFormatter.display(fund.code))
                     .fontWeight(.semibold)
                 Text(fund.dateText)
+                fundTitleReminderTags
             }
             .font(.system(size: 11, weight: .medium))
             .monospacedDigit()
@@ -3409,6 +3655,16 @@ struct FundDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private var fundTitleReminderTags: some View {
+        if let zdfRangeReminderText {
+            titleReminderTag(zdfRangeReminderText, color: .orange)
+        }
+        if let netValueReminderText {
+            titleReminderTag(netValueReminderText, color: .blue)
+        }
     }
 
     private var todayRateHero: some View {
@@ -3549,11 +3805,11 @@ struct FundDetailView: View {
                 trailing: intradayTrendTrailingText
             )
 
-            if intradayRatePoints.isEmpty {
+            if visibleIntradayRatePoints.isEmpty {
                 emptySupplementView(intradayTrendEmptyText)
                     .frame(height: 116)
             } else {
-                FundIntradayRateChart(points: intradayRatePoints)
+                FundIntradayRateChart(points: visibleIntradayRatePoints)
                     .frame(height: 138)
             }
         }
@@ -3633,20 +3889,6 @@ struct FundDetailView: View {
         .padding(12)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private var extraPills: some View {
-        if (pendingTradeCount > 0 && pendingTradeRecords.isEmpty) || fund.jzNotice != nil {
-            HStack(spacing: 6) {
-                if pendingTradeCount > 0 && pendingTradeRecords.isEmpty {
-                    detailPill("待确认交易 \(pendingTradeCount)笔")
-                }
-                if let jzNotice = fund.jzNotice {
-                    detailPill("净值提醒 \(numberText(jzNotice, places: 4))")
-                }
-            }
-        }
     }
 
     private var actionBar: some View {
@@ -3921,16 +4163,18 @@ struct FundDetailView: View {
         )
     }
 
-    private func detailPill(_ text: String) -> some View {
+    private func titleReminderTag(_ text: String, color: Color) -> some View {
         Text(text)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .frame(height: 22)
-            .background(PanelDesign.selectorBackground, in: Capsule())
+            .font(.system(size: 9, weight: .semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .frame(height: 18)
+            .background(color.opacity(colorScheme == .dark ? 0.16 : 0.10), in: Capsule())
             .overlay(
                 Capsule()
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 0.5)
+                    .stroke(color.opacity(colorScheme == .dark ? 0.34 : 0.22), lineWidth: 0.6)
             )
     }
 
@@ -3997,8 +4241,25 @@ struct FundDetailView: View {
         FundIntradayRateHistoryRecorder.activePoints(for: fund)
     }
 
+    private var visibleIntradayRatePoints: [FundIntradayRatePoint] {
+        if !intradayRatePoints.isEmpty {
+            return intradayRatePoints
+        }
+
+        switch TradingCalendar.marketSessionState() {
+        case .open:
+            return intradayCurrentValueFallbackPoints
+        case .middayBreak, .closed:
+            guard fund.intradayRateDate == FundIntradayRateHistoryRecorder.tradingDayString(from: .now) else {
+                return intradayCurrentValueFallbackPoints
+            }
+            let storedPoints = (fund.intradayRateHistory ?? []).sorted { $0.timestamp < $1.timestamp }
+            return storedPoints.isEmpty ? intradayCurrentValueFallbackPoints : storedPoints
+        }
+    }
+
     private var intradayTrendTrailingText: String? {
-        guard let lastPoint = intradayRatePoints.last else { return nil }
+        guard let lastPoint = visibleIntradayRatePoints.last else { return nil }
         return "\(MoneyFormatter.percent(lastPoint.rate, signed: true)) · \(dateText(lastPoint.timestamp, format: "HH:mm"))"
     }
 
@@ -4013,8 +4274,35 @@ struct FundDetailView: View {
         }
     }
 
+    private var intradayCurrentValueFallbackPoints: [FundIntradayRatePoint] {
+        guard fund.todayRate.isFinite,
+              fund.todayRate != 0
+        else {
+            return []
+        }
+
+        return [
+            FundIntradayRatePoint(
+                timestamp: intradayFallbackTimestamp,
+                rate: fund.todayRate,
+                estimateTime: fund.dateText
+            )
+        ]
+    }
+
+    private var intradayFallbackTimestamp: Int64 {
+        if let parsedDate = parseFundDateText(fund.dateText) {
+            return Int64((parsedDate.timeIntervalSince1970 * 1000).rounded())
+        }
+        return Int64((Date().timeIntervalSince1970 * 1000).rounded())
+    }
+
     private var zdfRangeReminderText: String? {
         fund.zdfRange.map { "涨跌幅提醒 \(MoneyFormatter.percent($0, signed: false))" }
+    }
+
+    private var netValueReminderText: String? {
+        fund.jzNotice.map { "净值提醒 \(numberText($0, places: 4))" }
     }
 
     private var historyTrailingText: String? {
@@ -4074,6 +4362,24 @@ struct FundDetailView: View {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = format
         return formatter.string(from: date)
+    }
+
+    private func parseFundDateText(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 11 else { return nil }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+
+        let year = calendar.component(.year, from: .now)
+        let fullText = "\(year)-\(trimmed)"
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: fullText)
     }
 
     @MainActor
@@ -4508,6 +4814,7 @@ private struct FundIntradayRateChart: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
 
+    private static let maxRenderedPointCount = 140
     private static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
 
     private static let timeFormatter: DateFormatter = {
@@ -4519,10 +4826,10 @@ private struct FundIntradayRateChart: View {
     }()
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 3) {
             HStack(alignment: .top, spacing: 6) {
                 yAxisLabels
-                    .frame(width: 46, height: 102)
+                    .frame(width: 36, height: 108)
 
                 GeometryReader { proxy in
                     ZStack {
@@ -4533,12 +4840,12 @@ private struct FundIntradayRateChart: View {
                         chartBorder(in: proxy.size)
                             .stroke(borderColor, lineWidth: 0.75)
 
-                        if sortedPoints.count >= 2 {
+                        if renderedPoints.count >= 2 {
                             areaPath(in: proxy.size)
                                 .fill(areaFill)
                             linePath(in: proxy.size)
                                 .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-                        } else if let point = sortedPoints.first {
+                        } else if let point = renderedPoints.first {
                             Circle()
                                 .fill(lineColor)
                                 .frame(width: 6, height: 6)
@@ -4546,7 +4853,7 @@ private struct FundIntradayRateChart: View {
                         }
 
                         if let hoveredIndex,
-                           sortedPoints.indices.contains(hoveredIndex) {
+                           renderedPoints.indices.contains(hoveredIndex) {
                             hoverOverlay(for: hoveredIndex, in: proxy.size)
                         }
                     }
@@ -4560,7 +4867,7 @@ private struct FundIntradayRateChart: View {
                         }
                     }
                 }
-                .frame(height: 102)
+                .frame(height: 108)
             }
 
             xAxisLabels
@@ -4572,9 +4879,30 @@ private struct FundIntradayRateChart: View {
         points.sorted { $0.timestamp < $1.timestamp }
     }
 
-    private var rateScale: Double {
-        let maxAbs = sortedPoints.map { abs($0.rate) }.max() ?? 0
-        return max(ceil(maxAbs * 100) / 100, 0.50)
+    private var renderedPoints: [FundIntradayRatePoint] {
+        downsample(sortedPoints, maxCount: Self.maxRenderedPointCount)
+    }
+
+    private var yAxisBounds: (min: Double, max: Double) {
+        let rates = sortedPoints.map(\.rate)
+        let rawMin = min(rates.min() ?? 0, 0)
+        let rawMax = max(rates.max() ?? 0, 0)
+        var minValue = floor(rawMin)
+        var maxValue = ceil(rawMax)
+
+        if minValue >= rawMin, rawMin < 0 {
+            minValue -= 1
+        }
+        if maxValue <= rawMax, rawMax > 0 {
+            maxValue += 1
+        }
+
+        if minValue == maxValue {
+            minValue -= 0.5
+            maxValue += 0.5
+        }
+
+        return (minValue, maxValue)
     }
 
     private var lineColor: Color {
@@ -4605,10 +4933,11 @@ private struct FundIntradayRateChart: View {
     }
 
     private var yAxisLabels: some View {
-        VStack(alignment: .trailing, spacing: 0) {
-            Text(MoneyFormatter.percent(rateScale, signed: true))
+        let bounds = yAxisBounds
+        return VStack(alignment: .trailing, spacing: 0) {
+            Text(MoneyFormatter.percent(bounds.max, signed: true))
             Spacer()
-            Text(MoneyFormatter.percent(-rateScale, signed: true))
+            Text(MoneyFormatter.percent(bounds.min, signed: true))
         }
         .font(.system(size: 9, weight: .medium))
         .monospacedDigit()
@@ -4619,7 +4948,7 @@ private struct FundIntradayRateChart: View {
     private var xAxisLabels: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Spacer()
-                .frame(width: 52)
+                .frame(width: 42)
             Text("09:30")
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text("11:30/13:00")
@@ -4663,8 +4992,9 @@ private struct FundIntradayRateChart: View {
     }
 
     private func linePath(in size: CGSize) -> Path {
-        Path { path in
-            for (index, point) in sortedPoints.enumerated() {
+        let points = renderedPoints
+        return Path { path in
+            for (index, point) in points.enumerated() {
                 let position = pointPosition(for: point, in: size)
                 if index == 0 {
                     path.move(to: position)
@@ -4676,14 +5006,15 @@ private struct FundIntradayRateChart: View {
     }
 
     private func areaPath(in size: CGSize) -> Path {
-        Path { path in
-            guard let first = sortedPoints.first,
-                  let last = sortedPoints.last
+        let points = renderedPoints
+        return Path { path in
+            guard let first = points.first,
+                  let last = points.last
             else {
                 return
             }
 
-            for (index, point) in sortedPoints.enumerated() {
+            for (index, point) in points.enumerated() {
                 let position = pointPosition(for: point, in: size)
                 if index == 0 {
                     path.move(to: position)
@@ -4700,7 +5031,8 @@ private struct FundIntradayRateChart: View {
     }
 
     private func hoverOverlay(for index: Int, in size: CGSize) -> some View {
-        let point = sortedPoints[index]
+        let points = renderedPoints
+        let point = points[index]
         let position = pointPosition(for: point, in: size)
         let tooltipWidth: CGFloat = 112
         let tooltipHeight: CGFloat = 48
@@ -4760,9 +5092,11 @@ private struct FundIntradayRateChart: View {
     }
 
     private func yPosition(for rate: Double, height: CGFloat) -> CGFloat {
-        guard rateScale > 0 else { return height / 2 }
-        let clampedRate = min(max(rate, -rateScale), rateScale)
-        return CGFloat((rateScale - clampedRate) / (rateScale * 2)) * height
+        let bounds = yAxisBounds
+        let range = bounds.max - bounds.min
+        guard range > 0 else { return height / 2 }
+        let clampedRate = min(max(rate, bounds.min), bounds.max)
+        return CGFloat((bounds.max - clampedRate) / range) * height
     }
 
     private func sessionProgress(for timestamp: Int64) -> CGFloat {
@@ -4796,14 +5130,74 @@ private struct FundIntradayRateChart: View {
     }
 
     private func nearestIndex(for x: CGFloat, width: CGFloat) -> Int? {
-        guard !sortedPoints.isEmpty, width > 0 else { return nil }
-        return sortedPoints.indices.min { lhs, rhs in
-            abs(xPosition(for: sortedPoints[lhs], width: width) - x) < abs(xPosition(for: sortedPoints[rhs], width: width) - x)
+        let points = renderedPoints
+        guard !points.isEmpty, width > 0 else { return nil }
+        return points.indices.min { lhs, rhs in
+            abs(xPosition(for: points[lhs], width: width) - x) < abs(xPosition(for: points[rhs], width: width) - x)
         }
+    }
+
+    private func downsample(_ source: [FundIntradayRatePoint], maxCount: Int) -> [FundIntradayRatePoint] {
+        guard source.count > maxCount,
+              let first = source.first,
+              let last = source.last
+        else {
+            return source
+        }
+
+        let middlePoints = Array(source.dropFirst().dropLast())
+        guard !middlePoints.isEmpty else {
+            return source
+        }
+
+        let bucketCount = max((maxCount - 2) / 2, 1)
+        let bucketSize = Double(middlePoints.count) / Double(bucketCount)
+        var result = [first]
+        result.reserveCapacity(maxCount)
+
+        for bucketIndex in 0..<bucketCount {
+            let startIndex = Int(floor(Double(bucketIndex) * bucketSize))
+            let endIndex = min(Int(floor(Double(bucketIndex + 1) * bucketSize)), middlePoints.count)
+            guard startIndex < endIndex else { continue }
+
+            let bucket = middlePoints[startIndex..<endIndex]
+            guard let minPoint = bucket.min(by: { $0.rate < $1.rate }),
+                  let maxPoint = bucket.max(by: { $0.rate < $1.rate })
+            else {
+                continue
+            }
+
+            if minPoint.timestamp <= maxPoint.timestamp {
+                result.append(minPoint)
+                if minPoint != maxPoint {
+                    result.append(maxPoint)
+                }
+            } else {
+                result.append(maxPoint)
+                if minPoint != maxPoint {
+                    result.append(minPoint)
+                }
+            }
+        }
+
+        result.append(last)
+        return result
+            .sorted { $0.timestamp < $1.timestamp }
+            .removingAdjacentDuplicates()
     }
 
     private func date(from timestamp: Int64) -> Date {
         Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
+    }
+}
+
+private extension Array where Element == FundIntradayRatePoint {
+    func removingAdjacentDuplicates() -> [FundIntradayRatePoint] {
+        reduce(into: []) { partialResult, point in
+            if partialResult.last != point {
+                partialResult.append(point)
+            }
+        }
     }
 }
 

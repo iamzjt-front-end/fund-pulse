@@ -1,7 +1,7 @@
 {
   "name": "fund-pulse",
   "productName": "fund-pulse",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
   "description": "基金持仓收益 macOS 状态栏工具，Swift 原生实现，数据源来自东方财富/天天基金等",
   "scripts": {
