@@ -26,6 +26,24 @@ enum MoneyFormatter {
     }
 }
 
+enum MenuBarStatusFormatter {
+    static func text(amount: Double, rate: Double, mode: MenuBarContentMode) -> String {
+        switch mode {
+        case .amount:
+            signedAmount(amount)
+        case .rate:
+            MoneyFormatter.percent(rate, signed: true)
+        case .both:
+            "\(signedAmount(amount)) | \(MoneyFormatter.percent(rate, signed: true))"
+        }
+    }
+
+    private static func signedAmount(_ value: Double) -> String {
+        let sign = value > 0 ? "+" : value < 0 ? "-" : ""
+        return "\(sign)\(abs(value).formatted(.number.precision(.fractionLength(2))))"
+    }
+}
+
 enum FundCodeFormatter {
     static func display(_ code: String) -> String {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)

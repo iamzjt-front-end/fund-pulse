@@ -256,6 +256,7 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
                                     lineWidth: 0.6
                                 )
                         }
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .focusable(false)

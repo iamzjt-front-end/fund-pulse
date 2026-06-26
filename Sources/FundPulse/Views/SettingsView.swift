@@ -61,7 +61,11 @@ struct SettingsView: View {
     @State private var testReminderStatusMessage: String?
     @State private var canOpenNotificationSettings = false
     @State private var displayedAppearanceMode: AppAppearanceMode
+    @State private var displayedMenuBarContentMode: MenuBarContentMode
+    @State private var displayedMenuBarDisplayMode: MenuBarDisplayMode
     @Namespace private var appearanceModeSelectionNamespace
+    @Namespace private var menuBarContentModeSelectionNamespace
+    @Namespace private var menuBarDisplayModeSelectionNamespace
     @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
@@ -88,6 +92,8 @@ struct SettingsView: View {
         _operationReminderDraftHour = State(initialValue: settingsStore.settings.operationReminderTimeMinutes / 60)
         _operationReminderDraftMinute = State(initialValue: settingsStore.settings.operationReminderTimeMinutes % 60)
         _displayedAppearanceMode = State(initialValue: settingsStore.settings.appearanceMode)
+        _displayedMenuBarContentMode = State(initialValue: settingsStore.settings.menuBarContentMode)
+        _displayedMenuBarDisplayMode = State(initialValue: settingsStore.settings.menuBarDisplayMode)
     }
 
     var body: some View {
@@ -99,6 +105,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     PanelSection(title: "外观") {
                         appearanceModePicker
+                    }
+
+                    PanelSection(title: "菜单栏") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            menuBarContentModeRow
+                            menuBarDisplayModeRow
+                        }
                     }
 
                     PanelSection(title: "基金操作提醒") {
@@ -277,11 +290,19 @@ struct SettingsView: View {
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
             displayedAppearanceMode = settingsStore.settings.appearanceMode
+            displayedMenuBarContentMode = settingsStore.settings.menuBarContentMode
+            displayedMenuBarDisplayMode = settingsStore.settings.menuBarDisplayMode
             syncMainPanelHeightText()
             syncOperationReminderTimeText()
         }
         .onChange(of: settingsStore.settings.appearanceMode) { _, mode in
             displayedAppearanceMode = mode
+        }
+        .onChange(of: settingsStore.settings.menuBarContentMode) { _, mode in
+            displayedMenuBarContentMode = mode
+        }
+        .onChange(of: settingsStore.settings.menuBarDisplayMode) { _, mode in
+            displayedMenuBarDisplayMode = mode
         }
         .onChange(of: settingsStore.settings.autoRefreshInterval) { _, interval in
             selectedAutoRefreshInterval = interval
@@ -461,6 +482,148 @@ struct SettingsView: View {
         .focusable(false)
     }
 
+    private var menuBarContentModeRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("显示内容")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            menuBarContentModePicker
+
+            Text(settingsStore.settings.menuBarContentMode.detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var menuBarContentModePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(MenuBarContentMode.allCases) { mode in
+                let isSelected = mode == displayedMenuBarContentMode
+                Button {
+                    selectMenuBarContentMode(mode)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: menuBarContentModeSystemImage(mode))
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(mode.title)
+                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+                    .foregroundStyle(isSelected ? .primary : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PanelDesign.segmentSelectionBackground)
+                                .matchedGeometryEffect(
+                                    id: "menuBarContentModeSelection",
+                                    in: menuBarContentModeSelectionNamespace
+                                )
+                                .shadow(color: Color.black.opacity(0.16), radius: 5, x: 0, y: 2)
+                        }
+                    }
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(PanelDesign.segmentSelectionBorder, lineWidth: 0.8)
+                                .matchedGeometryEffect(
+                                    id: "menuBarContentModeSelectionBorder",
+                                    in: menuBarContentModeSelectionNamespace
+                                )
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+        }
+        .padding(2)
+        .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .animation(.spring(response: 0.22, dampingFraction: 0.86), value: displayedMenuBarContentMode)
+    }
+
+    private var menuBarDisplayModeRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("涨跌颜色")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            menuBarDisplayModePicker
+
+            Text(settingsStore.settings.menuBarDisplayMode.detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var menuBarDisplayModePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(MenuBarDisplayMode.allCases) { mode in
+                let isSelected = mode == displayedMenuBarDisplayMode
+                Button {
+                    selectMenuBarDisplayMode(mode)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: menuBarDisplayModeSystemImage(mode))
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(mode.title)
+                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+                    .foregroundStyle(isSelected ? .primary : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PanelDesign.segmentSelectionBackground)
+                                .matchedGeometryEffect(
+                                    id: "menuBarDisplayModeSelection",
+                                    in: menuBarDisplayModeSelectionNamespace
+                                )
+                                .shadow(color: Color.black.opacity(0.16), radius: 5, x: 0, y: 2)
+                        }
+                    }
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(PanelDesign.segmentSelectionBorder, lineWidth: 0.8)
+                                .matchedGeometryEffect(
+                                    id: "menuBarDisplayModeSelectionBorder",
+                                    in: menuBarDisplayModeSelectionNamespace
+                                )
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+        }
+        .padding(2)
+        .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .animation(.spring(response: 0.22, dampingFraction: 0.86), value: displayedMenuBarDisplayMode)
+    }
+
     private var appearanceModePicker: some View {
         HStack(spacing: 4) {
             ForEach(AppAppearanceMode.allCases) { mode in
@@ -500,6 +663,7 @@ struct SettingsView: View {
                                 )
                         }
                     }
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
@@ -522,6 +686,44 @@ struct SettingsView: View {
             guard displayedAppearanceMode == mode else { return }
             settingsStore.setAppearanceMode(mode)
             onSettingsChanged?()
+        }
+    }
+
+    private func selectMenuBarContentMode(_ mode: MenuBarContentMode) {
+        guard mode != displayedMenuBarContentMode else { return }
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            displayedMenuBarContentMode = mode
+        }
+        settingsStore.setMenuBarContentMode(mode)
+        onSettingsChanged?()
+    }
+
+    private func selectMenuBarDisplayMode(_ mode: MenuBarDisplayMode) {
+        guard mode != displayedMenuBarDisplayMode else { return }
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            displayedMenuBarDisplayMode = mode
+        }
+        settingsStore.setMenuBarDisplayMode(mode)
+        onSettingsChanged?()
+    }
+
+    private func menuBarContentModeSystemImage(_ mode: MenuBarContentMode) -> String {
+        switch mode {
+        case .amount:
+            "yensign.circle"
+        case .rate:
+            "percent"
+        case .both:
+            "rectangle.split.2x1"
+        }
+    }
+
+    private func menuBarDisplayModeSystemImage(_ mode: MenuBarDisplayMode) -> String {
+        switch mode {
+        case .color:
+            "paintpalette"
+        case .sign:
+            "circle"
         }
     }
 

@@ -39,6 +39,11 @@ final class AppSettingsStore {
         try? save()
     }
 
+    func setMenuBarContentMode(_ mode: MenuBarContentMode) {
+        settings.menuBarContentMode = mode
+        try? save()
+    }
+
     func setAutoRefreshInterval(_ interval: AutoRefreshInterval) {
         settings.autoRefreshInterval = interval
         try? save()

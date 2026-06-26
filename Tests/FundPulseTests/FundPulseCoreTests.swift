@@ -42,6 +42,25 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(StatusBarTone.intensity(forRate: -5.01), .maximum)
     }
 
+    func testMenuBarStatusFormatterUsesConfiguredContentMode() {
+        XCTAssertEqual(
+            MenuBarStatusFormatter.text(amount: 12.3, rate: 1.23, mode: .amount),
+            "+12.30"
+        )
+        XCTAssertEqual(
+            MenuBarStatusFormatter.text(amount: 12.3, rate: 1.23, mode: .rate),
+            "+1.23%"
+        )
+        XCTAssertEqual(
+            MenuBarStatusFormatter.text(amount: 12.3, rate: 1.23, mode: .both),
+            "+12.30 | +1.23%"
+        )
+        XCTAssertEqual(
+            MenuBarStatusFormatter.text(amount: -8, rate: -0.56, mode: .both),
+            "-8.00 | -0.56%"
+        )
+    }
+
     #if canImport(AppKit)
     func testStatusBarToneMenuBarColorsUseFundBabyStyleDepth() throws {
         XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0)), "#8E8E93")
@@ -72,6 +91,11 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 0), .twoSeconds)
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 1), .fiveSeconds)
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 2), .tenSeconds)
+        XCTAssertEqual(settings.menuBarDisplayMode, .color)
+        XCTAssertTrue(settings.menuBarDisplayMode.usesGrowthColor)
+        XCTAssertEqual(MenuBarDisplayMode.allCases.map(\.title), ["红绿", "单色"])
+        XCTAssertEqual(settings.menuBarContentMode, .amount)
+        XCTAssertEqual(MenuBarContentMode.allCases.map(\.title), ["金额", "百分比", "都显示"])
         XCTAssertEqual(settings.mainPanelHeight, AppSettings.defaultMainPanelHeight)
         XCTAssertTrue(settings.operationReminderEnabled)
         XCTAssertEqual(settings.operationReminderTimeMinutes, 14 * 60 + 30)
@@ -226,6 +250,7 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(store.settings.settingsSchemaVersion, AppSettings.currentSchemaVersion)
         XCTAssertEqual(store.settings.menuBarDisplayMode, .sign)
+        XCTAssertEqual(store.settings.menuBarContentMode, .amount)
         XCTAssertEqual(store.settings.autoRefreshInterval, .thirtySeconds)
         XCTAssertEqual(store.settings.mainPanelHeight, AppSettings.defaultMainPanelHeight)
         XCTAssertTrue(store.settings.operationReminderEnabled)
@@ -237,6 +262,7 @@ final class FundPulseCoreTests: XCTestCase {
         let savedSettings = try JSONDecoder().decode(AppSettings.self, from: savedData)
         XCTAssertEqual(savedSettings.settingsSchemaVersion, AppSettings.currentSchemaVersion)
         XCTAssertEqual(savedSettings.menuBarDisplayMode, .sign)
+        XCTAssertEqual(savedSettings.menuBarContentMode, .amount)
         XCTAssertEqual(savedSettings.autoRefreshInterval, .thirtySeconds)
         XCTAssertEqual(savedSettings.mainPanelHeight, AppSettings.defaultMainPanelHeight)
         XCTAssertTrue(savedSettings.operationReminderEnabled)
@@ -272,6 +298,11 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.thresholdReminderInterval, .twoHours)
         store.setAppearanceMode(.dark)
         XCTAssertEqual(store.settings.appearanceMode, .dark)
+        store.setMenuBarContentMode(.both)
+        XCTAssertEqual(store.settings.menuBarContentMode, .both)
+        store.setMenuBarDisplayMode(.sign)
+        XCTAssertEqual(store.settings.menuBarDisplayMode, .sign)
+        XCTAssertFalse(store.settings.menuBarDisplayMode.usesGrowthColor)
     }
 
     func testEastmoneySourceUsesF10OfficialNetValueWhenFundGZOfficialIsStale() async throws {
