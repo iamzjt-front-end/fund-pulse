@@ -12,6 +12,15 @@ enum FundIntradayRateHistoryRecorder {
         return formatter
     }()
 
+    private static let estimateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = chinaTimeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+
     static func applyingQuotes(
         to snapshot: PortfolioSnapshot,
         quotes: [String: FundQuote],
@@ -19,30 +28,31 @@ enum FundIntradayRateHistoryRecorder {
     ) -> PortfolioSnapshot {
         var next = snapshot
         let tradingDay = tradingDayString(from: now)
-        let isMarketOpen = TradingCalendar.marketSessionState(now: now) == .open
         let requestTimestamp = Int64((now.timeIntervalSince1970 * 1000).rounded())
 
         next.funds = snapshot.funds.map { fund in
             var updatedFund = resetIfNeeded(fund, tradingDay: tradingDay)
 
-            guard isMarketOpen,
-                  let quote = quotes[fund.code],
+            guard let quote = quotes[fund.code],
                   quote.growthRate.isFinite,
-                  quoteHasCurrentIntradayEstimate(quote, tradingDay: tradingDay)
+                  quoteHasCurrentIntradayEstimate(quote, tradingDay: tradingDay),
+                  let pointTimestamp = quoteEstimateTimestamp(quote),
+                  pointTimestamp <= requestTimestamp,
+                  shouldRecord(quote: quote, pointTimestamp: pointTimestamp, for: updatedFund)
             else {
                 return updatedFund
             }
 
             var points = updatedFund.intradayRateHistory ?? []
-            points.append(
-                FundIntradayRatePoint(
-                    timestamp: requestTimestamp,
-                    rate: quote.growthRate,
-                    estimateTime: quote.estimateTime
-                )
+            let point = FundIntradayRatePoint(
+                timestamp: pointTimestamp,
+                rate: quote.growthRate,
+                estimateTime: quote.estimateTime
             )
+            points.removeAll { $0.estimateTime == point.estimateTime }
+            points.append(point)
             updatedFund.intradayRateDate = tradingDay
-            updatedFund.intradayRateHistory = points
+            updatedFund.intradayRateHistory = points.sorted { $0.timestamp < $1.timestamp }
             return updatedFund
         }
 
@@ -71,5 +81,35 @@ enum FundIntradayRateHistoryRecorder {
 
     private static func quoteHasCurrentIntradayEstimate(_ quote: FundQuote, tradingDay: String) -> Bool {
         quote.estimateTime.count >= 10 && String(quote.estimateTime.prefix(10)) == tradingDay
+    }
+
+    private static func quoteEstimateTimestamp(_ quote: FundQuote) -> Int64? {
+        guard let date = estimateTimeFormatter.date(from: quote.estimateTime) else {
+            return nil
+        }
+        return Int64((date.timeIntervalSince1970 * 1000).rounded())
+    }
+
+    private static func shouldRecord(
+        quote: FundQuote,
+        pointTimestamp: Int64,
+        for fund: FundPosition
+    ) -> Bool {
+        let points = fund.intradayRateHistory ?? []
+        if points.contains(where: { $0.estimateTime == quote.estimateTime }) {
+            return true
+        }
+
+        guard let latestRecordedEstimateTimestamp = points.compactMap(recordedEstimateTimestamp).max() else {
+            return true
+        }
+        return pointTimestamp > latestRecordedEstimateTimestamp
+    }
+
+    private static func recordedEstimateTimestamp(_ point: FundIntradayRatePoint) -> Int64? {
+        if let date = estimateTimeFormatter.date(from: point.estimateTime) {
+            return Int64((date.timeIntervalSince1970 * 1000).rounded())
+        }
+        return point.timestamp
     }
 }

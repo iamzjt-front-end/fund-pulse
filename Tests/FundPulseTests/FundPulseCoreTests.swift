@@ -3152,7 +3152,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.estimateTime), ["2026-06-24 09:35", "2026-06-24 09:36"])
     }
 
-    func testIntradayRateHistoryStopsOutsideOpenAndRestartsNextTradingDay() throws {
+    func testIntradayRateHistoryRecordsLatestEstimateOutsideOpenAndRestartsNextTradingDay() throws {
         let sameDayPoint = FundIntradayRatePoint(
             timestamp: Int64(try chinaDate("2026-06-24 10:58").timeIntervalSince1970 * 1000),
             rate: 1.12,
@@ -3206,14 +3206,19 @@ final class FundPulseCoreTests: XCTestCase {
             quotes: ["026210": sameDayQuote],
             now: try chinaDate("2026-06-24 12:00")
         )
-        XCTAssertEqual(middayBreak.funds[0].intradayRateHistory?.count, 1)
+        let middayPoints = try XCTUnwrap(middayBreak.funds[0].intradayRateHistory)
+        XCTAssertEqual(middayPoints.map(\.rate), [1.12, 1.65])
+        XCTAssertEqual(
+            middayPoints.last?.timestamp,
+            Int64(try chinaDate("2026-06-24 11:30").timeIntervalSince1970 * 1000)
+        )
 
         let afterClose = FundIntradayRateHistoryRecorder.applyingQuotes(
             to: middayBreak,
             quotes: ["026210": sameDayQuote],
             now: try chinaDate("2026-06-24 15:10")
         )
-        XCTAssertEqual(afterClose.funds[0].intradayRateHistory?.count, 1)
+        XCTAssertEqual(afterClose.funds[0].intradayRateHistory?.count, 2)
 
         let beforeOpenNextDay = FundIntradayRateHistoryRecorder.applyingQuotes(
             to: afterClose,
