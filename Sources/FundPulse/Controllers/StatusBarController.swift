@@ -363,6 +363,7 @@ final class StatusBarController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
+        store.setQuoteSource(settingsStore.settings.quoteSource)
         fundThresholdReminderLastSentAt = Self.loadFundThresholdReminderLastSentAt()
         configureStatusItem()
         configureAmountPrivacyObserver()
@@ -1327,6 +1328,7 @@ final class StatusBarController: NSObject {
     }
 
     private func handleSettingsChanged() {
+        store.setQuoteSource(settingsStore.settings.quoteSource)
         updateStatusTitle()
         refreshVisiblePanels(animatedAppearance: true)
         configureAutoRefreshTimer()
@@ -1339,7 +1341,7 @@ final class StatusBarController: NSObject {
         isRefreshingQuotes = true
         defer { isRefreshingQuotes = false }
 
-        await store.refreshQuotes()
+        await store.refreshQuotes(source: settingsStore.settings.quoteSource)
         updateStatusTitle()
         refreshVisiblePanels()
         sendFundThresholdRemindersIfNeeded()
@@ -1425,8 +1427,7 @@ final class StatusBarController: NSObject {
         let reminders = FundThresholdReminderEvaluator.eligibleReminders(
             in: store.snapshot,
             now: now,
-            lastSentAt: fundThresholdReminderLastSentAt,
-            interval: settingsStore.settings.thresholdReminderInterval.seconds
+            lastSentAt: fundThresholdReminderLastSentAt
         )
         let unsentReminders = reminders.filter {
             !pendingFundThresholdReminderKeys.contains($0.dedupeKey)

@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 8
+    static let currentSchemaVersion = 9
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
@@ -18,6 +18,7 @@ struct AppSettings: Codable, Equatable {
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
     var thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval
     var appearanceMode: AppAppearanceMode = .system
+    var quoteSource: QuoteSource = .eastmoneyCore
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -28,7 +29,8 @@ struct AppSettings: Codable, Equatable {
         operationReminderEnabled: Bool = true,
         operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
         thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
-        appearanceMode: AppAppearanceMode = .system
+        appearanceMode: AppAppearanceMode = .system,
+        quoteSource: QuoteSource = .eastmoneyCore
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -39,6 +41,7 @@ struct AppSettings: Codable, Equatable {
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
         self.thresholdReminderInterval = thresholdReminderInterval
         self.appearanceMode = appearanceMode
+        self.quoteSource = quoteSource.normalizedForSelection
     }
 
     enum CodingKeys: String, CodingKey {
@@ -51,6 +54,7 @@ struct AppSettings: Codable, Equatable {
         case operationReminderTimeMinutes
         case thresholdReminderInterval
         case appearanceMode
+        case quoteSource
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +75,9 @@ struct AppSettings: Codable, Equatable {
             forKey: .thresholdReminderInterval
         ) ?? Self.defaultThresholdReminderInterval
         appearanceMode = try container.decodeIfPresent(AppAppearanceMode.self, forKey: .appearanceMode) ?? .system
+        quoteSource = (
+            try container.decodeIfPresent(QuoteSource.self, forKey: .quoteSource) ?? .eastmoneyCore
+        ).normalizedForSelection
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {
@@ -291,18 +298,32 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
 }
 
 enum QuoteSource: String, Codable, CaseIterable, Identifiable, Equatable {
+    case eastmoneyCore
     case fundBabyAuto
     case eastmoneyFundGZ
     case tencentOfficial
 
     var id: String { rawValue }
 
-    var title: String {
+    static var selectableCases: [QuoteSource] {
+        [.eastmoneyCore, .eastmoneyFundGZ]
+    }
+
+    var normalizedForSelection: QuoteSource {
         switch self {
         case .fundBabyAuto:
-            "养基宝组合源"
+            .eastmoneyCore
+        case .eastmoneyCore, .eastmoneyFundGZ, .tencentOfficial:
+            self
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .eastmoneyCore, .fundBabyAuto:
+            "天天基金新接口"
         case .eastmoneyFundGZ:
-            "东方财富实时估值"
+            "天天基金旧接口"
         case .tencentOfficial:
             "腾讯官方净值"
         }
@@ -310,12 +331,12 @@ enum QuoteSource: String, Codable, CaseIterable, Identifiable, Equatable {
 
     var detail: String {
         switch self {
-        case .fundBabyAuto:
-            "fundgz.1234567.com.cn + qt.gtimg.cn + fundf10.eastmoney.com，跟养基宝同一套组合接口"
+        case .eastmoneyCore, .fundBabyAuto:
+            "fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew，支持批量实时估值；失败时回退旧接口。"
         case .eastmoneyFundGZ:
-            "fundgz.1234567.com.cn + fundf10.eastmoney.com，官方净值用于累计收益"
+            "fundgz.1234567.com.cn/js/{基金代码}.js，逐只获取实时估值，继续保留用于对照。"
         case .tencentOfficial:
-            "qt.gtimg.cn/q=jj{基金代码}，只返回官方净值"
+            "qt.gtimg.cn/q=jj{基金代码}，只返回官方净值，仅作为接口兜底。"
         }
     }
 }

@@ -7,6 +7,7 @@ final class PortfolioStore {
     private(set) var snapshot: PortfolioSnapshot = .empty
     private(set) var loadState: LoadState = .loading
     private(set) var dataDirectory: URL
+    private(set) var quoteSource: QuoteSource
     private let quoteService: FundQuoteService
     private let nowProvider: () -> Date
 
@@ -20,10 +21,12 @@ final class PortfolioStore {
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         quoteService: FundQuoteService = FundQuoteService(),
+        quoteSource: QuoteSource = .eastmoneyCore,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
+        self.quoteSource = quoteSource.normalizedForSelection
         self.nowProvider = now
     }
 
@@ -82,7 +85,14 @@ final class PortfolioStore {
         loadState = .loaded
     }
 
-    func refreshQuotes() async {
+    func setQuoteSource(_ source: QuoteSource) {
+        quoteSource = source.normalizedForSelection
+    }
+
+    func refreshQuotes(source: QuoteSource? = nil) async {
+        let activeQuoteSource = (source ?? quoteSource).normalizedForSelection
+        quoteSource = activeQuoteSource
+
         if case .loading = loadState {
             load()
         }
@@ -96,7 +106,7 @@ final class PortfolioStore {
         }
 
         do {
-            let quotes = await fetchQuotes(codes: codes, source: .fundBabyAuto)
+            let quotes = await quoteService.fetchQuotes(codes: codes, source: activeQuoteSource)
             normalizePrematureInitialConfirmations()
             await processPendingTrades(quotes: quotes)
             await processPendingPositions(quotes: quotes)
@@ -123,7 +133,7 @@ final class PortfolioStore {
 
         let existingFund = snapshot.funds.first { $0.code == (existingCode ?? code) }
         let isCreatingFund = existingFund == nil && existingCode == nil
-        let quote = try? await quoteService.fetchQuote(code: code, source: .fundBabyAuto)
+        let quote = try? await quoteService.fetchQuote(code: code, source: quoteSource)
         let requestedAcceptedDate = TradingCalendar.acceptedTradeDate(
             positionDate: draft.positionDate,
             timeType: draft.positionTimeType
@@ -192,7 +202,7 @@ final class PortfolioStore {
     func fetchLatestQuote(code: String) async -> FundQuote? {
         let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { return nil }
-        return try? await quoteService.fetchQuote(code: code, source: .fundBabyAuto)
+        return try? await quoteService.fetchQuote(code: code, source: quoteSource)
     }
 
     func fetchTradeReferenceNetValue(
@@ -302,28 +312,6 @@ final class PortfolioStore {
         try rebuildFundPositionFromTradeRecords(code: code)
         try save(snapshot)
         await refreshQuotes()
-    }
-
-    private func fetchQuotes(codes: [String], source: QuoteSource) async -> [String: FundQuote] {
-        await withTaskGroup(of: (String, FundQuote?).self) { group in
-            for code in codes {
-                group.addTask { [quoteService] in
-                    do {
-                        return (code, try await quoteService.fetchQuote(code: code, source: source))
-                    } catch {
-                        return (code, nil)
-                    }
-                }
-            }
-
-            var quotes: [String: FundQuote] = [:]
-            for await (code, quote) in group {
-                if let quote {
-                    quotes[code] = quote
-                }
-            }
-            return quotes
-        }
     }
 
     private func makeFundPosition(

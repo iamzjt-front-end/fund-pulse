@@ -29,7 +29,7 @@ struct FundThresholdReminder: Equatable {
         switch kind {
         case .dailyGrowth:
             let direction = currentValue >= 0 ? "涨幅" : "跌幅"
-            return "涨跌幅提醒：当前\(direction) \(MoneyFormatter.percent(currentValue, signed: true))，阈值 \(MoneyFormatter.percent(abs(threshold)))。"
+            return "涨跌幅提醒：当前\(direction) \(MoneyFormatter.percent(currentValue, signed: true))。"
         case .netValue:
             return "净值提醒：当前净值 \(Self.numberText(currentValue, places: 4))，目标 \(Self.numberText(threshold, places: 4))。"
         }
@@ -62,8 +62,7 @@ enum FundThresholdReminderEvaluator {
     static func eligibleReminders(
         in snapshot: PortfolioSnapshot,
         now: Date = .now,
-        lastSentAt: [String: Date],
-        interval: TimeInterval
+        lastSentAt: [String: Date]
     ) -> [FundThresholdReminder] {
         guard TradingCalendar.isMarketOpen(now: now) else {
             return []
@@ -73,7 +72,7 @@ enum FundThresholdReminderEvaluator {
             guard let lastSentDate = lastSentAt[reminder.dedupeKey] else {
                 return true
             }
-            return now.timeIntervalSince(lastSentDate) >= interval
+            return DateOnlyFormatter.string(from: lastSentDate) < reminder.dateKey
         }
     }
 

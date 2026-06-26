@@ -32,6 +32,7 @@ enum FundIntradayRateHistoryRecorder {
 
         next.funds = snapshot.funds.map { fund in
             var updatedFund = resetIfNeeded(fund, tradingDay: tradingDay)
+            updatedFund = normalizeHistoryIfNeeded(updatedFund)
 
             guard let quote = quotes[fund.code],
                   quote.growthRate.isFinite,
@@ -43,7 +44,7 @@ enum FundIntradayRateHistoryRecorder {
                 return updatedFund
             }
 
-            var points = updatedFund.intradayRateHistory ?? []
+            var points = normalizedPoints(updatedFund.intradayRateHistory ?? [])
             let point = FundIntradayRatePoint(
                 timestamp: pointTimestamp,
                 rate: quote.growthRate,
@@ -52,7 +53,7 @@ enum FundIntradayRateHistoryRecorder {
             points.removeAll { $0.estimateTime == point.estimateTime }
             points.append(point)
             updatedFund.intradayRateDate = tradingDay
-            updatedFund.intradayRateHistory = points.sorted { $0.timestamp < $1.timestamp }
+            updatedFund.intradayRateHistory = normalizedPoints(points)
             return updatedFund
         }
 
@@ -77,6 +78,38 @@ enum FundIntradayRateHistoryRecorder {
         next.intradayRateDate = tradingDay
         next.intradayRateHistory = nil
         return next
+    }
+
+    private static func normalizeHistoryIfNeeded(_ fund: FundPosition) -> FundPosition {
+        guard let points = fund.intradayRateHistory else { return fund }
+
+        var next = fund
+        next.intradayRateHistory = normalizedPoints(points)
+        return next
+    }
+
+    private static func normalizedPoints(_ points: [FundIntradayRatePoint]) -> [FundIntradayRatePoint] {
+        var latestByKey: [String: FundIntradayRatePoint] = [:]
+        var keys: [String] = []
+
+        for point in points {
+            let key = point.estimateTime.isEmpty ? "timestamp:\(point.timestamp)" : "estimate:\(point.estimateTime)"
+            if latestByKey[key] == nil {
+                keys.append(key)
+            }
+            latestByKey[key] = point
+        }
+
+        return keys
+            .compactMap { latestByKey[$0] }
+            .sorted { lhs, rhs in
+                let lhsTimestamp = recordedEstimateTimestamp(lhs) ?? lhs.timestamp
+                let rhsTimestamp = recordedEstimateTimestamp(rhs) ?? rhs.timestamp
+                if lhsTimestamp == rhsTimestamp {
+                    return lhs.timestamp < rhs.timestamp
+                }
+                return lhsTimestamp < rhsTimestamp
+            }
     }
 
     private static func quoteHasCurrentIntradayEstimate(_ quote: FundQuote, tradingDay: String) -> Bool {
