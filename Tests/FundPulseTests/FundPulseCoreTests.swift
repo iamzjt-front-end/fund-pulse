@@ -122,9 +122,9 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(reminders.map(\.code), ["024418", "024424"])
         XCTAssertEqual(reminders.map(\.kind), [.dailyGrowth, .dailyGrowth])
         XCTAssertEqual(reminders[0].title, "测试基金024418")
-        XCTAssertEqual(reminders[0].body, "涨跌幅提醒：当前涨幅 +5.41%，阈值 5.00%。")
+        XCTAssertEqual(reminders[0].body, "涨跌幅提醒：当前涨幅 +5.41%。")
         XCTAssertEqual(reminders[1].title, "测试基金024424")
-        XCTAssertEqual(reminders[1].body, "涨跌幅提醒：当前跌幅 -5.20%，阈值 5.00%。")
+        XCTAssertEqual(reminders[1].body, "涨跌幅提醒：当前跌幅 -5.20%。")
     }
 
     func testFundThresholdReminderEvaluatorTriggersNetValueTarget() throws {
@@ -157,8 +157,9 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(reminders.first?.body, "净值提醒：当前净值 2.5709，目标 2.5000。")
     }
 
-    func testFundThresholdReminderEvaluatorRespectsReminderInterval() throws {
+    func testFundThresholdReminderEvaluatorOnlySendsOncePerDay() throws {
         let now = try chinaDate("2026-06-24 13:30")
+        let nextDay = try chinaDate("2026-06-25 09:45")
         let snapshot = thresholdReminderSnapshot(
             funds: [
                 thresholdReminderFund(code: "024418", todayRate: 5.41, zdfRange: 5)
@@ -170,16 +171,14 @@ final class FundPulseCoreTests: XCTestCase {
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
                 now: now,
-                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 13:01")],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 09:31")]
             ).isEmpty
         )
         XCTAssertEqual(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
-                now: now,
-                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 12:59")],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                now: nextDay,
+                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 14:55")]
             ).count,
             1
         )
@@ -196,8 +195,7 @@ final class FundPulseCoreTests: XCTestCase {
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
                 now: try chinaDate("2026-06-24 10:30"),
-                lastSentAt: [:],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                lastSentAt: [:]
             ).count,
             1
         )
@@ -205,24 +203,21 @@ final class FundPulseCoreTests: XCTestCase {
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
                 now: try chinaDate("2026-06-24 12:00"),
-                lastSentAt: [:],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                lastSentAt: [:]
             ).isEmpty
         )
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
                 now: try chinaDate("2026-06-24 15:01"),
-                lastSentAt: [:],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                lastSentAt: [:]
             ).isEmpty
         )
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
                 now: try chinaDate("2026-06-21 10:30"),
-                lastSentAt: [:],
-                interval: FundThresholdReminderInterval.thirtyMinutes.seconds
+                lastSentAt: [:]
             ).isEmpty
         )
     }
@@ -241,7 +236,8 @@ final class FundPulseCoreTests: XCTestCase {
         {
           "settingsSchemaVersion": 3,
           "menuBarDisplayMode": "sign",
-          "autoRefreshInterval": "30s"
+          "autoRefreshInterval": "30s",
+          "quoteSource": "fundBabyAuto"
         }
         """
         try Data(legacySettings.utf8).write(to: settingsURL, options: .atomic)
@@ -257,6 +253,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(store.settings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(store.settings.appearanceMode, .system)
+        XCTAssertEqual(store.settings.quoteSource, .eastmoneyCore)
 
         let savedData = try Data(contentsOf: settingsURL)
         let savedSettings = try JSONDecoder().decode(AppSettings.self, from: savedData)
@@ -269,6 +266,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(savedSettings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(savedSettings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(savedSettings.appearanceMode, .system)
+        XCTAssertEqual(savedSettings.quoteSource, .eastmoneyCore)
     }
 
     @MainActor
@@ -303,6 +301,32 @@ final class FundPulseCoreTests: XCTestCase {
         store.setMenuBarDisplayMode(.sign)
         XCTAssertEqual(store.settings.menuBarDisplayMode, .sign)
         XCTAssertFalse(store.settings.menuBarDisplayMode.usesGrowthColor)
+        store.setQuoteSource(.eastmoneyFundGZ)
+        XCTAssertEqual(store.settings.quoteSource, .eastmoneyFundGZ)
+    }
+
+    func testEastmoneyCoreSourceUsesBatchQuoteFields() async throws {
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": """
+            {"data":[{"NAV":"--","DWJZ":2.5626,"GZTIME":"2026-06-26 14:17","PTYPE":"F","SHORTNAME":"平安科技精选混合发起式A","QDCODE":"026210","FCODE":"026210","RZDF":4.75,"JZRQ":"--","FSRQ":"2026-06-25","GSZZL":-5.21,"GSZ":2.4292},{"NAV":"--","DWJZ":"2.265","GZTIME":"2026-06-26 14:17","PTYPE":"F","SHORTNAME":"泰信发展主题混合","QDCODE":"290008","FCODE":"290008","RZDF":"-4.35","JZRQ":"--","FSRQ":"2026-06-25","GSZZL":"-5.88","GSZ":"2.1318"}],"errorCode":0,"success":true,"totalCount":2}
+            """
+        ])
+
+        let quotes = await service.fetchQuotes(codes: ["026210", "290008"], source: .eastmoneyCore)
+
+        let first = try XCTUnwrap(quotes["026210"])
+        XCTAssertEqual(first.name, "平安科技精选混合发起式A")
+        XCTAssertEqual(first.netValue, 2.5626, accuracy: 0.0001)
+        XCTAssertEqual(first.estimatedNetValue, 2.4292, accuracy: 0.0001)
+        XCTAssertEqual(first.growthRate, -5.21, accuracy: 0.0001)
+        XCTAssertEqual(first.estimateTime, "2026-06-26 14:17")
+        XCTAssertEqual(first.netValueDate, "2026-06-25")
+
+        let second = try XCTUnwrap(quotes["290008"])
+        XCTAssertEqual(second.name, "泰信发展主题混合")
+        XCTAssertEqual(second.netValue, 2.265, accuracy: 0.0001)
+        XCTAssertEqual(second.estimatedNetValue, 2.1318, accuracy: 0.0001)
+        XCTAssertEqual(second.growthRate, -5.88, accuracy: 0.0001)
     }
 
     func testEastmoneySourceUsesF10OfficialNetValueWhenFundGZOfficialIsStale() async throws {
@@ -386,6 +410,50 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(supplement.topHoldings[0].weight, "10.21%")
         XCTAssertEqual(supplement.topHoldings[0].changeRate, 2.45)
         XCTAssertEqual(supplement.topHoldings[1].changeRate, -2.35)
+    }
+
+    func testFundDetailSupplementUsesMobilePositionAndSectorSources() async throws {
+        let service = quoteServiceWithMockResponses([
+            "https://fund.eastmoney.com/pingzhongdata/290008.js": """
+            var Data_netWorthTrend = [
+              {"x":1718553600000,"y":2.2100,"equityReturn":0,"unitMoney":""},
+              {"x":1718640000000,"y":2.2650,"equityReturn":2.49,"unitMoney":""}
+            ];
+            """,
+            "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNInverstPosition?FCODE=290008": """
+            {"Datas":{"fundStocks":[{"GPDM":"300390","GPJC":"天华新能","JZBL":"9.97","PCTNVCHGTYPE":"增持","PCTNVCHG":"1.05","NEWTEXCH":"0","INDEXCODE":"029022","INDEXNAME":"电力设备"},{"GPDM":"002738","GPJC":"中矿资源","JZBL":"9.94","PCTNVCHGTYPE":"增持","PCTNVCHG":"1.14","NEWTEXCH":"0","INDEXCODE":"029004","INDEXNAME":"有色金属"},{"GPDM":"002240","GPJC":"盛新锂能","JZBL":"9.90","PCTNVCHGTYPE":"增持","PCTNVCHG":"1.71","NEWTEXCH":"0","INDEXCODE":"029004","INDEXNAME":"有色金属"}],"fundboods":[]},"ErrCode":0,"Success":true,"TotalCount":1,"Expansion":"2026-03-31"}
+            """,
+            "https://qt.gtimg.cn/q=s_sz300390,s_sz002738,s_sz002240": """
+            v_s_sz300390="51~天华新能~300390~31.00~1.00~3.33";
+            v_s_sz002738="51~中矿资源~002738~45.00~-1.00~-2.17";
+            v_s_sz002240="51~盛新锂能~002240~12.00~0.30~2.56";
+            """,
+            "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNSectorAllocation?FCODE=290008": """
+            {"Datas":[{"HYMC":"制造业","SZ":"110816.434718","ZJZBL":"62.91","FSRQ":"2026-03-31"},{"HYMC":"采矿业","SZ":"47116.755654","ZJZBL":"26.75","FSRQ":"2026-03-31"},{"HYMC":"合计","SZ":"165150.299572","ZJZBL":"93.76","FSRQ":"2026-03-31"}],"ErrCode":0,"Success":true,"TotalCount":3,"Expansion":"2026-03-31"}
+            """,
+            "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNAssetAllocationNew?FCODE=290008": """
+            {"Datas":[{"FSRQ":"2026-03-31","GP":"93.76","ZQ":"--","HB":"6.91","JZC":"17.614","QT":"0","JJ":"--"}],"ErrCode":0,"Success":true,"TotalCount":1,"Expansion":"2026-03-31"}
+            """
+        ])
+
+        let today = try XCTUnwrap(DateOnlyFormatter.parse("2024-06-19"))
+        let supplement = await service.fetchFundDetailSupplement(code: "290008", now: today)
+
+        XCTAssertEqual(supplement.topHoldings.count, 3)
+        XCTAssertEqual(supplement.holdingDisclosureDate, "2026-03-31")
+        XCTAssertEqual(supplement.topHoldings[0].code, "300390")
+        XCTAssertEqual(supplement.topHoldings[0].industryName, "电力设备")
+        XCTAssertEqual(supplement.topHoldings[0].positionChangeType, "增持")
+        XCTAssertEqual(supplement.topHoldings[0].positionChangeRate ?? 0, 1.05, accuracy: 0.0001)
+        XCTAssertEqual(supplement.topHoldings[0].changeRate, 3.33)
+
+        XCTAssertEqual(supplement.relatedSectors.count, 2)
+        XCTAssertEqual(supplement.relatedSectors[0].name, "有色金属")
+        XCTAssertEqual(supplement.relatedSectors[0].weight, 19.84, accuracy: 0.0001)
+        XCTAssertEqual(supplement.relatedSectors[1].name, "电力设备")
+        XCTAssertEqual(supplement.industryAllocation.map(\.name), ["制造业", "采矿业"])
+        XCTAssertEqual(supplement.assetAllocation.map(\.name), ["股票", "现金"])
+        XCTAssertEqual(supplement.assetAllocation.first?.weight ?? 0, 93.76, accuracy: 0.0001)
     }
 
     func testFundDetailSupplementUsesLatestHistoryPointAfterMidnight() async throws {
@@ -3150,6 +3218,63 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(second.funds[0].intradayRateDate, "2026-06-24")
         XCTAssertEqual(points.map(\.rate), [1.25, 1.40])
         XCTAssertEqual(points.map(\.estimateTime), ["2026-06-24 09:35", "2026-06-24 09:36"])
+    }
+
+    func testIntradayRateHistoryDeduplicatesStoredEstimateTimes() throws {
+        let duplicateTimestamp = Int64(try chinaDate("2026-06-24 11:11").timeIntervalSince1970 * 1000)
+        let duplicateEarlier = FundIntradayRatePoint(
+            timestamp: duplicateTimestamp,
+            rate: -4.46,
+            estimateTime: "2026-06-24 11:11"
+        )
+        let duplicateLater = FundIntradayRatePoint(
+            timestamp: duplicateTimestamp,
+            rate: -4.65,
+            estimateTime: "2026-06-24 11:11"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: try chinaDate("2026-06-24 13:30"),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "06-24 13:30",
+                    todayIncome: 0,
+                    todayRate: -4.65,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    intradayRateDate: "2026-06-24",
+                    intradayRateHistory: [duplicateEarlier, duplicateLater]
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 1.9,
+            growthRate: -5.16,
+            estimateTime: "2026-06-24 13:32",
+            netValueDate: "2026-06-23"
+        )
+
+        let result = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": quote],
+            now: try chinaDate("2026-06-24 13:32")
+        )
+
+        let points = try XCTUnwrap(result.funds[0].intradayRateHistory)
+        XCTAssertEqual(points.map(\.estimateTime), ["2026-06-24 11:11", "2026-06-24 13:32"])
+        XCTAssertEqual(points.map(\.rate), [-4.65, -5.16])
     }
 
     func testIntradayRateHistoryRecordsLatestEstimateOutsideOpenAndRestartsNextTradingDay() throws {

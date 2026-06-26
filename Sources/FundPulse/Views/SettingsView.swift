@@ -63,9 +63,11 @@ struct SettingsView: View {
     @State private var displayedAppearanceMode: AppAppearanceMode
     @State private var displayedMenuBarContentMode: MenuBarContentMode
     @State private var displayedMenuBarDisplayMode: MenuBarDisplayMode
+    @State private var displayedQuoteSource: QuoteSource
     @Namespace private var appearanceModeSelectionNamespace
     @Namespace private var menuBarContentModeSelectionNamespace
     @Namespace private var menuBarDisplayModeSelectionNamespace
+    @Namespace private var quoteSourceSelectionNamespace
     @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
@@ -94,6 +96,7 @@ struct SettingsView: View {
         _displayedAppearanceMode = State(initialValue: settingsStore.settings.appearanceMode)
         _displayedMenuBarContentMode = State(initialValue: settingsStore.settings.menuBarContentMode)
         _displayedMenuBarDisplayMode = State(initialValue: settingsStore.settings.menuBarDisplayMode)
+        _displayedQuoteSource = State(initialValue: settingsStore.settings.quoteSource)
     }
 
     var body: some View {
@@ -146,24 +149,20 @@ struct SettingsView: View {
 
                     PanelSection(title: "涨跌/净值提醒") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("涨跌幅提醒、净值提醒在单只基金的基金设置里配置；这里仅控制命中后的重复通知间隔。")
+                            Text("涨跌幅提醒、净值提醒在单只基金的基金设置里配置；同一只基金同一提醒每天最多通知一次。")
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    Text("重复提醒间隔")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    thresholdReminderIntervalMenu
-                                }
-
-                                Text(settingsStore.settings.thresholdReminderInterval.detail)
+                                Text("当日去重")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text("达到条件后立即提醒；当天已经提醒过的同一基金、同一阈值，不会再重复弹出。")
                                     .font(.system(size: 10))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                             .padding(9)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -218,6 +217,10 @@ struct SettingsView: View {
                             .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                             .overlay(PanelDesign.border(cornerRadius: 9))
                         }
+                    }
+
+                    PanelSection(title: "行情数据源") {
+                        quoteSourceRow
                     }
 
                     PanelSection(title: "自动刷新") {
@@ -292,6 +295,7 @@ struct SettingsView: View {
             displayedAppearanceMode = settingsStore.settings.appearanceMode
             displayedMenuBarContentMode = settingsStore.settings.menuBarContentMode
             displayedMenuBarDisplayMode = settingsStore.settings.menuBarDisplayMode
+            displayedQuoteSource = settingsStore.settings.quoteSource
             syncMainPanelHeightText()
             syncOperationReminderTimeText()
         }
@@ -303,6 +307,9 @@ struct SettingsView: View {
         }
         .onChange(of: settingsStore.settings.menuBarDisplayMode) { _, mode in
             displayedMenuBarDisplayMode = mode
+        }
+        .onChange(of: settingsStore.settings.quoteSource) { _, source in
+            displayedQuoteSource = source
         }
         .onChange(of: settingsStore.settings.autoRefreshInterval) { _, interval in
             selectedAutoRefreshInterval = interval
@@ -449,39 +456,6 @@ struct SettingsView: View {
             }
     }
 
-    private var thresholdReminderIntervalMenu: some View {
-        Menu {
-            ForEach(FundThresholdReminderInterval.allCases) { interval in
-                Button {
-                    settingsStore.setThresholdReminderInterval(interval)
-                    onSettingsChanged?()
-                } label: {
-                    if interval == settingsStore.settings.thresholdReminderInterval {
-                        Label(interval.title, systemImage: "checkmark")
-                    } else {
-                        Text(interval.title)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Text(settingsStore.settings.thresholdReminderInterval.title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .monospacedDigit()
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 8)
-            .frame(height: 26)
-            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(PanelDesign.border(cornerRadius: 7))
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-    }
-
     private var menuBarContentModeRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("显示内容")
@@ -624,6 +598,77 @@ struct SettingsView: View {
         .animation(.spring(response: 0.22, dampingFraction: 0.86), value: displayedMenuBarDisplayMode)
     }
 
+    private var quoteSourceRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("估值来源")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            quoteSourcePicker
+
+            Text(settingsStore.settings.quoteSource.detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var quoteSourcePicker: some View {
+        HStack(spacing: 4) {
+            ForEach(QuoteSource.selectableCases) { source in
+                let isSelected = source == displayedQuoteSource
+                Button {
+                    selectQuoteSource(source)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: quoteSourceSystemImage(source))
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(source.title)
+                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.76)
+                    }
+                    .foregroundStyle(isSelected ? .primary : Color.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
+                    .background {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(PanelDesign.segmentSelectionBackground)
+                                .matchedGeometryEffect(
+                                    id: "quoteSourceSelection",
+                                    in: quoteSourceSelectionNamespace
+                                )
+                                .shadow(color: Color.black.opacity(0.16), radius: 5, x: 0, y: 2)
+                        }
+                    }
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(PanelDesign.segmentSelectionBorder, lineWidth: 0.8)
+                                .matchedGeometryEffect(
+                                    id: "quoteSourceSelectionBorder",
+                                    in: quoteSourceSelectionNamespace
+                                )
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+            }
+        }
+        .padding(2)
+        .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .animation(.spring(response: 0.22, dampingFraction: 0.86), value: displayedQuoteSource)
+    }
+
     private var appearanceModePicker: some View {
         HStack(spacing: 4) {
             ForEach(AppAppearanceMode.allCases) { mode in
@@ -707,6 +752,19 @@ struct SettingsView: View {
         onSettingsChanged?()
     }
 
+    private func selectQuoteSource(_ source: QuoteSource) {
+        let normalizedSource = source.normalizedForSelection
+        guard normalizedSource != displayedQuoteSource else { return }
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            displayedQuoteSource = normalizedSource
+        }
+        settingsStore.setQuoteSource(normalizedSource)
+        onSettingsChanged?()
+        Task {
+            await onRefresh?()
+        }
+    }
+
     private func menuBarContentModeSystemImage(_ mode: MenuBarContentMode) -> String {
         switch mode {
         case .amount:
@@ -724,6 +782,19 @@ struct SettingsView: View {
             "paintpalette"
         case .sign:
             "circle"
+        }
+    }
+
+    private func quoteSourceSystemImage(_ source: QuoteSource) -> String {
+        switch source.normalizedForSelection {
+        case .eastmoneyCore:
+            "bolt.horizontal.circle"
+        case .eastmoneyFundGZ:
+            "clock.arrow.circlepath"
+        case .tencentOfficial:
+            "checkmark.seal"
+        case .fundBabyAuto:
+            "bolt.horizontal.circle"
         }
     }
 

@@ -310,8 +310,7 @@ struct PopoverContentView: View {
 
             toolbarActionGroup
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 8)
+        .padding(.horizontal, 12)
         .frame(height: 44)
         .background(toolbarSurfaceBackground)
         .overlay(alignment: .bottom) {
@@ -3896,6 +3895,7 @@ struct FundDetailView: View {
                     metricsGrid
                     trendSection
                     historySection
+                    sectorExposureSection
                     topHoldingsSection
                 }
                 .padding(.horizontal, 14)
@@ -4190,6 +4190,67 @@ struct FundDetailView: View {
         .overlay(PanelDesign.border(cornerRadius: 10))
     }
 
+    private var sectorExposureSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionHeader("关联板块", trailing: sectorExposureTrailingText, showsLoading: isSupplementLoading)
+
+            if relatedSectorRows.isEmpty && industryAllocationRows.isEmpty && assetAllocationRows.isEmpty {
+                emptySupplementView(isSupplementLoading ? "板块加载中..." : "暂无关联板块数据")
+                    .frame(height: 64)
+            } else {
+                VStack(alignment: .leading, spacing: 9) {
+                    if !relatedSectorRows.isEmpty {
+                        exposureGroupTitle("重仓关联")
+                        VStack(spacing: 7) {
+                            ForEach(relatedSectorRows) { exposure in
+                                sectorExposureRow(
+                                    exposure,
+                                    maxWeight: relatedSectorMaxWeight,
+                                    tint: .orange
+                                )
+                            }
+                        }
+                    }
+
+                    if !assetAllocationRows.isEmpty {
+                        if !relatedSectorRows.isEmpty {
+                            Divider().opacity(0.36)
+                        }
+                        exposureGroupTitle("资产配置")
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 2),
+                            alignment: .leading,
+                            spacing: 7
+                        ) {
+                            ForEach(assetAllocationRows) { item in
+                                assetAllocationChip(item)
+                            }
+                        }
+                    }
+
+                    if !industryAllocationRows.isEmpty {
+                        if !relatedSectorRows.isEmpty || !assetAllocationRows.isEmpty {
+                            Divider().opacity(0.36)
+                        }
+                        exposureGroupTitle("披露行业")
+                        VStack(spacing: 7) {
+                            ForEach(industryAllocationRows) { exposure in
+                                sectorExposureRow(
+                                    exposure,
+                                    maxWeight: industryAllocationMaxWeight,
+                                    tint: .blue
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
     private var actionBar: some View {
         VStack(spacing: 0) {
             Divider()
@@ -4460,6 +4521,57 @@ struct FundDetailView: View {
         .frame(height: 34)
     }
 
+    private func exposureGroupTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.secondary)
+    }
+
+    private func sectorExposureRow(_ exposure: FundSectorExposure, maxWeight: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(exposure.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(MoneyFormatter.percent(exposure.weight, signed: false))
+                    .font(.system(size: 10, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tint)
+            }
+
+            GeometryReader { proxy in
+                let width = proxy.size.width * min(max(exposure.weight / maxWeight, 0), 1)
+                Capsule()
+                    .fill(tint.opacity(0.12))
+                    .overlay(alignment: .leading) {
+                        Capsule()
+                            .fill(tint.opacity(0.48))
+                            .frame(width: max(width, 4))
+                    }
+            }
+            .frame(height: 5)
+        }
+        .frame(height: 29)
+    }
+
+    private func assetAllocationChip(_ item: FundAssetAllocationItem) -> some View {
+        HStack(spacing: 6) {
+            Text(item.name)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(MoneyFormatter.percent(item.weight, signed: false))
+                .font(.system(size: 10, weight: .semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 25)
+        .background(PanelDesign.selectorBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
     private func stockHoldingRow(_ holding: FundStockHolding, rank: Int) -> some View {
         HStack(spacing: 8) {
             Text("\(rank)")
@@ -4471,10 +4583,11 @@ struct FundDetailView: View {
                 Text(holding.name.isEmpty ? holding.code : holding.name)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
-                if !holding.code.isEmpty {
-                    Text(holding.code)
+                if let detail = stockHoldingDetailText(holding) {
+                    Text(detail)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
@@ -4497,6 +4610,24 @@ struct FundDetailView: View {
                 .frame(width: 48, alignment: .trailing)
         }
         .frame(height: 38)
+    }
+
+    private func stockHoldingDetailText(_ holding: FundStockHolding) -> String? {
+        var parts: [String] = []
+        if !holding.code.isEmpty {
+            parts.append(holding.code)
+        }
+        if let industryName = holding.industryName, !industryName.isEmpty {
+            parts.append(industryName)
+        }
+        if let positionChangeType = holding.positionChangeType, !positionChangeType.isEmpty {
+            if let positionChangeRate = holding.positionChangeRate, positionChangeRate != 0 {
+                parts.append("\(positionChangeType) \(MoneyFormatter.percent(positionChangeRate, signed: false))")
+            } else {
+                parts.append(positionChangeType)
+            }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func metric(_ title: String, _ value: String, tone: Double? = nil, isInteractive: Bool = false) -> some View {
@@ -4637,7 +4768,41 @@ struct FundDetailView: View {
     }
 
     private var topHoldingsTrailingText: String? {
-        supplement.topHoldings.isEmpty ? nil : "\(supplement.topHoldings.count)只"
+        guard !supplement.topHoldings.isEmpty else { return nil }
+        guard let date = supplement.holdingDisclosureDate else {
+            return "\(supplement.topHoldings.count)只"
+        }
+        return "\(supplement.topHoldings.count)只 · \(date)"
+    }
+
+    private var sectorExposureTrailingText: String? {
+        if let date = supplement.holdingDisclosureDate {
+            return "重仓 \(date)"
+        }
+        if let date = supplement.industryDisclosureDate ?? supplement.assetAllocationDate {
+            return date
+        }
+        return nil
+    }
+
+    private var relatedSectorRows: [FundSectorExposure] {
+        Array(supplement.relatedSectors.prefix(5))
+    }
+
+    private var industryAllocationRows: [FundSectorExposure] {
+        Array(supplement.industryAllocation.prefix(3))
+    }
+
+    private var assetAllocationRows: [FundAssetAllocationItem] {
+        Array(supplement.assetAllocation.prefix(4))
+    }
+
+    private var relatedSectorMaxWeight: Double {
+        max(relatedSectorRows.map(\.weight).max() ?? 1, 1)
+    }
+
+    private var industryAllocationMaxWeight: Double {
+        max(industryAllocationRows.map(\.weight).max() ?? 1, 1)
     }
 
     private var intradayRatePoints: [FundIntradayRatePoint] {
@@ -5217,7 +5382,6 @@ private struct FundIntradayRateChart: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredIndex: Int?
 
-    private static let maxRenderedPointCount = 140
     private static let chinaTimeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
 
     private static let timeFormatter: DateFormatter = {
@@ -5283,7 +5447,7 @@ private struct FundIntradayRateChart: View {
     }
 
     private var renderedPoints: [FundIntradayRatePoint] {
-        downsample(sortedPoints, maxCount: Self.maxRenderedPointCount)
+        sortedPoints
     }
 
     private var yAxisBounds: (min: Double, max: Double) {
@@ -5545,67 +5709,8 @@ private struct FundIntradayRateChart: View {
         }
     }
 
-    private func downsample(_ source: [FundIntradayRatePoint], maxCount: Int) -> [FundIntradayRatePoint] {
-        guard source.count > maxCount,
-              let first = source.first,
-              let last = source.last
-        else {
-            return source
-        }
-
-        let middlePoints = Array(source.dropFirst().dropLast())
-        guard !middlePoints.isEmpty else {
-            return source
-        }
-
-        let bucketCount = max((maxCount - 2) / 2, 1)
-        let bucketSize = Double(middlePoints.count) / Double(bucketCount)
-        var result = [first]
-        result.reserveCapacity(maxCount)
-
-        for bucketIndex in 0..<bucketCount {
-            let startIndex = Int(floor(Double(bucketIndex) * bucketSize))
-            let endIndex = min(Int(floor(Double(bucketIndex + 1) * bucketSize)), middlePoints.count)
-            guard startIndex < endIndex else { continue }
-
-            let bucket = middlePoints[startIndex..<endIndex]
-            guard let minPoint = bucket.min(by: { $0.rate < $1.rate }),
-                  let maxPoint = bucket.max(by: { $0.rate < $1.rate })
-            else {
-                continue
-            }
-
-            if minPoint.timestamp <= maxPoint.timestamp {
-                result.append(minPoint)
-                if minPoint != maxPoint {
-                    result.append(maxPoint)
-                }
-            } else {
-                result.append(maxPoint)
-                if minPoint != maxPoint {
-                    result.append(minPoint)
-                }
-            }
-        }
-
-        result.append(last)
-        return result
-            .sorted { $0.timestamp < $1.timestamp }
-            .removingAdjacentDuplicates()
-    }
-
     private func date(from timestamp: Int64) -> Date {
         Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000)
-    }
-}
-
-private extension Array where Element == FundIntradayRatePoint {
-    func removingAdjacentDuplicates() -> [FundIntradayRatePoint] {
-        reduce(into: []) { partialResult, point in
-            if partialResult.last != point {
-                partialResult.append(point)
-            }
-        }
     }
 }
 
