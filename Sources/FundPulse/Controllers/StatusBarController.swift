@@ -403,10 +403,7 @@ final class StatusBarController: NSObject {
         guard let button = statusItem.button else { return }
         button.toolTip = presentation.isHidden ? "显示金额" : "隐藏金额"
         if presentation.isHidden {
-            button.image = makeStatusPulseImage(
-                size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize),
-                tintColor: StatusBarTone.menuBarColor(forRate: store.snapshot.todayIncomeRate).withAlphaComponent(0.96)
-            )
+            button.image = hiddenStatusPulseImage()
             button.imagePosition = .imageOnly
             button.attributedTitle = NSAttributedString(string: "")
         } else {
@@ -421,11 +418,19 @@ final class StatusBarController: NSObject {
     }
 
     private func currentStatusTitlePresentation() -> StatusTitlePresentation {
-        let value = store.snapshot.todayIncome
+        let contentMode = settingsStore.settings.menuBarContentMode
+        let amountValue = store.snapshot.todayIncome
+        let rateValue = store.snapshot.todayIncomeRate
         let isHidden = UserDefaults.standard.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
         let font = statusTitleFont(forHiddenState: isHidden)
-        let text = statusTitleText(for: signedStatusText(value), isHidden: isHidden)
-        let attributes = statusTitleAttributes(for: value, font: font, isHidden: isHidden)
+        let statusText = MenuBarStatusFormatter.text(
+            amount: amountValue,
+            rate: rateValue,
+            mode: contentMode
+        )
+        let toneValue = statusTitleToneValue(rate: rateValue)
+        let text = statusTitleText(for: statusText, isHidden: isHidden)
+        let attributes = statusTitleAttributes(for: toneValue, font: font, isHidden: isHidden)
         let visualLength = StatusItemPresentation.visualLength(
             for: text,
             attributes: attributes,
@@ -459,6 +464,21 @@ final class StatusBarController: NSObject {
         return amountText
     }
 
+    private func hiddenStatusPulseImage() -> NSImage {
+        guard settingsStore.settings.menuBarDisplayMode.usesGrowthColor else {
+            return statusPulseImage
+        }
+
+        return makeStatusPulseImage(
+            size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize),
+            tintColor: StatusBarTone.menuBarColor(forRate: store.snapshot.todayIncomeRate).withAlphaComponent(0.96)
+        )
+    }
+
+    private func statusTitleToneValue(rate: Double) -> Double {
+        rate
+    }
+
     private func statusTitleAttributes(
         for value: Double,
         font: NSFont,
@@ -471,12 +491,11 @@ final class StatusBarController: NSObject {
         ]
     }
 
-    private func signedStatusText(_ value: Double) -> String {
-        let sign = value > 0 ? "+" : value < 0 ? "-" : ""
-        return "\(sign)\(abs(value).formatted(.number.precision(.fractionLength(2))))"
-    }
-
     private func statusTitleColor(for value: Double) -> NSColor {
+        guard settingsStore.settings.menuBarDisplayMode.usesGrowthColor else {
+            return .labelColor
+        }
+
         if value > 0 { return .systemRed }
         if value < 0 { return .systemGreen }
         return .secondaryLabelColor

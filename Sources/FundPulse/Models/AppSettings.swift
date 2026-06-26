@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 7
+    static let currentSchemaVersion = 8
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
@@ -11,6 +11,7 @@ struct AppSettings: Codable, Equatable {
 
     var settingsSchemaVersion: Int? = Self.currentSchemaVersion
     var menuBarDisplayMode: MenuBarDisplayMode = .color
+    var menuBarContentMode: MenuBarContentMode = .amount
     var autoRefreshInterval: AutoRefreshInterval = .tenSeconds
     var mainPanelHeight: Int = Self.defaultMainPanelHeight
     var operationReminderEnabled: Bool = true
@@ -21,6 +22,7 @@ struct AppSettings: Codable, Equatable {
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
         menuBarDisplayMode: MenuBarDisplayMode = .color,
+        menuBarContentMode: MenuBarContentMode = .amount,
         autoRefreshInterval: AutoRefreshInterval = .tenSeconds,
         mainPanelHeight: Int = Self.defaultMainPanelHeight,
         operationReminderEnabled: Bool = true,
@@ -30,6 +32,7 @@ struct AppSettings: Codable, Equatable {
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
+        self.menuBarContentMode = menuBarContentMode
         self.autoRefreshInterval = autoRefreshInterval
         self.mainPanelHeight = Self.clampedMainPanelHeight(mainPanelHeight)
         self.operationReminderEnabled = operationReminderEnabled
@@ -41,6 +44,7 @@ struct AppSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case settingsSchemaVersion
         case menuBarDisplayMode
+        case menuBarContentMode
         case autoRefreshInterval
         case mainPanelHeight
         case operationReminderEnabled
@@ -53,6 +57,7 @@ struct AppSettings: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         settingsSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .settingsSchemaVersion)
         menuBarDisplayMode = try container.decodeIfPresent(MenuBarDisplayMode.self, forKey: .menuBarDisplayMode) ?? .color
+        menuBarContentMode = try container.decodeIfPresent(MenuBarContentMode.self, forKey: .menuBarContentMode) ?? .amount
         autoRefreshInterval = try container.decodeIfPresent(AutoRefreshInterval.self, forKey: .autoRefreshInterval) ?? .tenSeconds
         let decodedMainPanelHeight = try container.decodeIfPresent(Int.self, forKey: .mainPanelHeight)
             ?? Self.defaultMainPanelHeight
@@ -172,18 +177,52 @@ enum MenuBarDisplayMode: String, Codable, CaseIterable, Identifiable, Equatable 
     var title: String {
         switch self {
         case .color:
-            "红绿颜色"
+            "红绿"
         case .sign:
-            "正负号"
+            "单色"
         }
     }
 
     var detail: String {
         switch self {
         case .color:
-            "上涨红色、下跌绿色，不显示正负号"
+            "未隐藏时文字按涨跌红/绿；隐藏金额时仅图标按涨跌红/绿。"
         case .sign:
-            "显示正负号，文字使用系统默认颜色"
+            "未隐藏时文字使用系统颜色；隐藏金额时图标也使用系统单色。"
+        }
+    }
+
+    var usesGrowthColor: Bool {
+        self == .color
+    }
+}
+
+enum MenuBarContentMode: String, Codable, CaseIterable, Identifiable, Equatable {
+    case amount
+    case rate
+    case both
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .amount:
+            "金额"
+        case .rate:
+            "百分比"
+        case .both:
+            "都显示"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .amount:
+            "菜单栏只显示实时收益金额。"
+        case .rate:
+            "菜单栏只显示实时收益率。"
+        case .both:
+            "菜单栏显示金额和百分比，中间用竖线分隔。"
         }
     }
 }
