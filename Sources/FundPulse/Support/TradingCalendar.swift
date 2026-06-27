@@ -48,6 +48,13 @@ enum TradingCalendar {
         return DateOnlyFormatter.string(from: acceptedTradeDate(from: date, timeType: timeType))
     }
 
+    static func nextFundTradingDate(after dateText: String) -> String? {
+        guard let date = DateOnlyFormatter.parse(dateText) else {
+            return nil
+        }
+        return DateOnlyFormatter.string(from: nextFundTradingDay(after: date))
+    }
+
     static func isFundTradingDay(_ date: Date) -> Bool {
         let calendar = chinaCalendar
         let weekday = calendar.component(.weekday, from: date)

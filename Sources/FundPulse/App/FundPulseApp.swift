@@ -28,7 +28,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         UNUserNotificationCenter.current().delegate = self
-        portfolioStore.setQuoteSource(settingsStore.settings.quoteSource)
         portfolioStore.load()
         statusBarController = StatusBarController(
             store: portfolioStore,
@@ -57,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func refreshPortfolioAndStatusTitle() async {
-        await portfolioStore.refreshQuotes(source: settingsStore.settings.quoteSource)
+        await portfolioStore.refreshQuotes()
         refreshStatusTitle()
     }
 

@@ -11,6 +11,7 @@ struct PortfolioSnapshot: Codable, Equatable {
     var funds: [FundPosition]
     var migration: MigrationInfo?
     var pendingTrades: [FundPendingTrade]? = nil
+    var pendingConversions: [FundPendingConversion]? = nil
     var tradeRecords: [FundTradeRecord]? = nil
 
     static let empty = PortfolioSnapshot(
@@ -121,6 +122,8 @@ enum FundTradeKind: String, Codable, Equatable {
     case newFund
     case buy
     case sell
+    case conversionOut
+    case conversionIn
 
     var title: String {
         switch self {
@@ -130,6 +133,10 @@ enum FundTradeKind: String, Codable, Equatable {
             "加仓"
         case .sell:
             "减仓"
+        case .conversionOut:
+            "转换转出"
+        case .conversionIn:
+            "转换转入"
         }
     }
 }
@@ -172,6 +179,10 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var buyFeeRate: Double? = nil
     var sellFeeMode: TradeFeeMode? = nil
     var sellFeeValue: Double? = nil
+    var conversionID: String? = nil
+    var linkedCode: String? = nil
+    var linkedName: String? = nil
+    var feeAmount: Double? = nil
 }
 
 enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
@@ -246,6 +257,50 @@ struct FundPendingTrade: Codable, Identifiable, Equatable {
             buyFeeRate: buyFeeRate,
             sellFeeMode: sellFeeMode,
             sellFeeValue: sellFeeValue
+        )
+    }
+}
+
+struct FundConversionDraft: Equatable {
+    var fromCode: String
+    var toCode: String
+    var toName: String? = nil
+    var shares: Double
+    var tradeDate: String
+    var tradeTimeType: PositionTimeType
+    var sellFeeMode: TradeFeeMode = .rate
+    var sellFeeValue: Double = 0
+    var buyFeeRate: Double = 0
+}
+
+struct FundPendingConversion: Codable, Identifiable, Equatable {
+    var id: String
+    var outRecordID: String? = nil
+    var inRecordID: String? = nil
+    var fromCode: String
+    var toCode: String
+    var toName: String?
+    var shares: Double
+    var tradeDate: String
+    var tradeTimeType: PositionTimeType
+    var acceptedDate: String
+    var createdAt: Date
+    var sellFeeMode: TradeFeeMode = .rate
+    var sellFeeValue: Double = 0
+    var buyFeeRate: Double = 0
+    var failureReason: String? = nil
+
+    var draft: FundConversionDraft {
+        FundConversionDraft(
+            fromCode: fromCode,
+            toCode: toCode,
+            toName: toName,
+            shares: shares,
+            tradeDate: tradeDate,
+            tradeTimeType: tradeTimeType,
+            sellFeeMode: sellFeeMode,
+            sellFeeValue: sellFeeValue,
+            buyFeeRate: buyFeeRate
         )
     }
 }

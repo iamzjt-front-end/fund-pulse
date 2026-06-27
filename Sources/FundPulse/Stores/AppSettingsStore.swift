@@ -49,11 +49,6 @@ final class AppSettingsStore {
         try? save()
     }
 
-    func setQuoteSource(_ source: QuoteSource) {
-        settings.quoteSource = source.normalizedForSelection
-        try? save()
-    }
-
     func setMainPanelHeight(_ height: Int) {
         settings.mainPanelHeight = AppSettings.clampedMainPanelHeight(height)
         try? save()

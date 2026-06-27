@@ -180,7 +180,11 @@ private enum ChildPanelKind {
     case tradeRecords(FundPosition)
     case buyFund(FundPosition)
     case sellFund(FundPosition)
+    case convertFund(FundPosition)
     case editTradeRecord(FundPosition, FundTradeRecord)
+    case editConversion(FundPosition, FundTradeRecord, FundPosition)
+    case editPendingTradeRecord(FundPosition, FundTradeRecord)
+    case editPendingConversion(FundPosition, FundTradeRecord)
     case editFund(FundPosition)
 
     var selectedFundCode: String? {
@@ -190,7 +194,11 @@ private enum ChildPanelKind {
              .tradeRecords(let fund),
              .buyFund(let fund),
              .sellFund(let fund),
+             .convertFund(let fund),
              .editTradeRecord(let fund, _),
+             .editConversion(let fund, _, _),
+             .editPendingTradeRecord(let fund, _),
+             .editPendingConversion(let fund, _),
              .editFund(let fund):
             fund.code
         case .settings, .portfolioBreakdown, .incomeRanking, .addFund:
@@ -363,7 +371,6 @@ final class StatusBarController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
-        store.setQuoteSource(settingsStore.settings.quoteSource)
         fundThresholdReminderLastSentAt = Self.loadFundThresholdReminderLastSentAt()
         configureStatusItem()
         configureAmountPrivacyObserver()
@@ -620,6 +627,12 @@ final class StatusBarController: NSObject {
             onOpenTradeRecords: { [weak self] fund in
                 self?.showChildPanel(.tradeRecords(fund))
             },
+            onOpenPendingActivity: { [weak self] activity in
+                self?.showPendingActivity(activity)
+            },
+            onDeletePendingActivity: { [weak self] activity in
+                await self?.deletePendingActivity(activity)
+            },
             onBuyFund: { [weak self] fund in
                 self?.showChildPanel(.buyFund(fund))
             },
@@ -752,6 +765,9 @@ final class StatusBarController: NSObject {
                 onSell: { [weak self] fund in
                     self?.showChildPanel(.sellFund(fund))
                 },
+                onConvert: { [weak self] fund in
+                    self?.showChildPanel(.convertFund(fund))
+                },
                 onEdit: { [weak self] fund in
                     self?.showChildPanel(.editFund(fund))
                 },
@@ -785,7 +801,13 @@ final class StatusBarController: NSObject {
                 fund: fund,
                 tradeRecords: store.snapshot.tradeRecords ?? [],
                 onEdit: { [weak self] record in
-                    self?.showChildPanel(.editTradeRecord(fund, record))
+                    if record.kind == .conversionOut || record.kind == .conversionIn {
+                        let sourceCode = record.kind == .conversionOut ? record.code : (record.linkedCode ?? fund.code)
+                        let sourceFund = self?.store.snapshot.funds.first { $0.code == sourceCode } ?? fund
+                        self?.showChildPanel(.editConversion(sourceFund, record, fund))
+                    } else {
+                        self?.showChildPanel(.editTradeRecord(fund, record))
+                    }
                 },
                 onDelete: { [weak self] record in
                     await self?.deleteTradeRecord(record, returningTo: fund)
@@ -830,6 +852,22 @@ final class StatusBarController: NSObject {
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
 
+        case .convertFund(let fund):
+            let view = FundConversionEditorView(
+                store: store,
+                sourceFund: fund,
+                onSaved: { [weak self] in
+                    await MainActor.run {
+                        self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
+                    }
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+
         case .editTradeRecord(let fund, let record):
             let action: FundTradeAction = record.kind == .sell ? .sell : .buy
             let view = FundTradeEditorView(
@@ -850,6 +888,62 @@ final class StatusBarController: NSObject {
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
 
+        case .editConversion(let fund, let record, let returnFund):
+            let view = FundConversionEditorView(
+                store: store,
+                sourceFund: fund,
+                editingRecord: record,
+                onSaved: { [weak self] in
+                    await MainActor.run {
+                        self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
+                        self?.showChildPanel(.tradeRecords(returnFund))
+                    }
+                },
+                onClose: { [weak self] in
+                    self?.showChildPanel(.tradeRecords(returnFund))
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+
+        case .editPendingTradeRecord(let fund, let record):
+            let action: FundTradeAction = record.kind == .sell ? .sell : .buy
+            let view = FundTradeEditorView(
+                store: store,
+                fund: fund,
+                action: action,
+                editingRecord: record,
+                onSaved: { [weak self] in
+                    await MainActor.run {
+                        self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
+                        self?.hideChildPanel()
+                    }
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+
+        case .editPendingConversion(let fund, let record):
+            let view = FundConversionEditorView(
+                store: store,
+                sourceFund: fund,
+                editingRecord: record,
+                onSaved: { [weak self] in
+                    await MainActor.run {
+                        self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
+                        self?.hideChildPanel()
+                    }
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+
         case .editFund(let fund):
             let view = FundPositionEditorView(
                 store: store,
@@ -865,6 +959,61 @@ final class StatusBarController: NSObject {
                 }
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
+        }
+    }
+
+    private func showPendingActivity(_ activity: PendingTradeActivity) {
+        let records = store.snapshot.tradeRecords ?? []
+        let matchingRecord = pendingActivityRecord(activity, records: records)
+        let matchingFund = activity.fund ?? store.snapshot.funds.first { $0.code == activity.code }
+
+        if let record = matchingRecord {
+            if record.kind == .conversionOut || record.kind == .conversionIn {
+                let sourceCode = record.kind == .conversionOut ? record.code : (record.linkedCode ?? activity.code)
+                guard let sourceFund = store.snapshot.funds.first(where: { $0.code == sourceCode }) ?? matchingFund else {
+                    return
+                }
+                showChildPanel(.editPendingConversion(sourceFund, record))
+            } else if let fund = store.snapshot.funds.first(where: { $0.code == record.code }) ?? matchingFund {
+                showChildPanel(.editPendingTradeRecord(fund, record))
+            }
+            return
+        }
+
+        guard let fund = matchingFund else { return }
+        switch activity.kind {
+        case .sell:
+            showChildPanel(.sellFund(fund))
+        case .conversionOut, .conversionIn:
+            showChildPanel(.convertFund(fund))
+        case .newFund:
+            showChildPanel(.editFund(fund))
+        case .buy:
+            showChildPanel(.buyFund(fund))
+        }
+    }
+
+    private func pendingActivityRecord(
+        _ activity: PendingTradeActivity,
+        records: [FundTradeRecord]
+    ) -> FundTradeRecord? {
+        if let recordID = activity.recordID,
+           let record = records.first(where: { $0.id == recordID }) {
+            return record
+        }
+
+        if let conversionID = activity.conversionID,
+           let record = records.first(where: { $0.conversionID == conversionID && $0.kind == .conversionOut })
+                ?? records.first(where: { $0.conversionID == conversionID }) {
+            return record
+        }
+
+        return records.first {
+            $0.status == .pending
+                && $0.code == activity.code
+                && $0.kind == activity.kind
+                && $0.tradeDate == activity.tradeDate
+                && $0.tradeTimeType == activity.tradeTimeType
         }
     }
 
@@ -939,7 +1088,7 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.tradeRecordsSize
         case .addFund, .editFund:
             size = PopoverLayout.editorSize
-        case .buyFund, .sellFund, .editTradeRecord:
+        case .buyFund, .sellFund, .convertFund, .editTradeRecord, .editConversion, .editPendingTradeRecord, .editPendingConversion:
             size = PopoverLayout.tradeEditorSize
         case nil:
             return
@@ -1328,7 +1477,6 @@ final class StatusBarController: NSObject {
     }
 
     private func handleSettingsChanged() {
-        store.setQuoteSource(settingsStore.settings.quoteSource)
         updateStatusTitle()
         refreshVisiblePanels(animatedAppearance: true)
         configureAutoRefreshTimer()
@@ -1341,7 +1489,7 @@ final class StatusBarController: NSObject {
         isRefreshingQuotes = true
         defer { isRefreshingQuotes = false }
 
-        await store.refreshQuotes(source: settingsStore.settings.quoteSource)
+        await store.refreshQuotes()
         updateStatusTitle()
         refreshVisiblePanels()
         sendFundThresholdRemindersIfNeeded()
@@ -1510,6 +1658,18 @@ final class StatusBarController: NSObject {
             refreshVisiblePanels()
         } catch {
             // Keep the existing data visible; PortfolioStore.loadState will surface refresh failures.
+        }
+    }
+
+    private func deletePendingActivity(_ activity: PendingTradeActivity) async {
+        guard let recordID = activity.recordID else { return }
+        do {
+            try await store.deleteTradeRecord(id: recordID)
+            updateStatusTitle()
+            refreshVisiblePanels()
+            updateMainPanelRootView()
+        } catch {
+            refreshVisiblePanels()
         }
     }
 

@@ -7,7 +7,6 @@ final class PortfolioStore {
     private(set) var snapshot: PortfolioSnapshot = .empty
     private(set) var loadState: LoadState = .loading
     private(set) var dataDirectory: URL
-    private(set) var quoteSource: QuoteSource
     private let quoteService: FundQuoteService
     private let nowProvider: () -> Date
 
@@ -21,12 +20,10 @@ final class PortfolioStore {
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         quoteService: FundQuoteService = FundQuoteService(),
-        quoteSource: QuoteSource = .eastmoneyCore,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
-        self.quoteSource = quoteSource.normalizedForSelection
         self.nowProvider = now
     }
 
@@ -85,14 +82,7 @@ final class PortfolioStore {
         loadState = .loaded
     }
 
-    func setQuoteSource(_ source: QuoteSource) {
-        quoteSource = source.normalizedForSelection
-    }
-
-    func refreshQuotes(source: QuoteSource? = nil) async {
-        let activeQuoteSource = (source ?? quoteSource).normalizedForSelection
-        quoteSource = activeQuoteSource
-
+    func refreshQuotes() async {
         if case .loading = loadState {
             load()
         }
@@ -106,9 +96,10 @@ final class PortfolioStore {
         }
 
         do {
-            let quotes = await quoteService.fetchQuotes(codes: codes, source: activeQuoteSource)
+            let quotes = await quoteService.fetchQuotes(codes: codes)
             normalizePrematureInitialConfirmations()
             await processPendingTrades(quotes: quotes)
+            await processPendingConversions(quotes: quotes)
             await processPendingPositions(quotes: quotes)
             let now = nowProvider()
             let calculatedSnapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: now)
@@ -133,7 +124,7 @@ final class PortfolioStore {
 
         let existingFund = snapshot.funds.first { $0.code == (existingCode ?? code) }
         let isCreatingFund = existingFund == nil && existingCode == nil
-        let quote = try? await quoteService.fetchQuote(code: code, source: quoteSource)
+        let quote = try? await quoteService.fetchQuote(code: code)
         let requestedAcceptedDate = TradingCalendar.acceptedTradeDate(
             positionDate: draft.positionDate,
             timeType: draft.positionTimeType
@@ -184,7 +175,8 @@ final class PortfolioStore {
                 confirmedNetValue: confirmedNetValue
             )
         } else {
-            upsertInitialTradeRecord(
+            resetTradeHistoryForEditedFund(codes: Set([existingCode ?? code, code]))
+            appendInitialTradeRecord(
                 draft: persistedDraft,
                 fund: fund,
                 acceptedDate: acceptedDate,
@@ -202,7 +194,7 @@ final class PortfolioStore {
     func fetchLatestQuote(code: String) async -> FundQuote? {
         let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { return nil }
-        return try? await quoteService.fetchQuote(code: code, source: quoteSource)
+        return try? await quoteService.fetchQuote(code: code)
     }
 
     func fetchTradeReferenceNetValue(
@@ -238,11 +230,112 @@ final class PortfolioStore {
         await refreshQuotes()
     }
 
+    func convertFundPosition(_ draft: FundConversionDraft) async throws {
+        let normalizedDraft = try normalizedConversionDraft(draft)
+        guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == normalizedDraft.fromCode }) else {
+            throw PortfolioStoreError.fundNotFound
+        }
+        guard availableShares(for: snapshot.funds[fromIndex]) + 0.0001 >= normalizedDraft.shares else {
+            throw PortfolioStoreError.insufficientShares
+        }
+
+        ensureConversionTargetFund(for: normalizedDraft)
+        let fromFund = snapshot.funds.first { $0.code == normalizedDraft.fromCode } ?? snapshot.funds[fromIndex]
+        let toFund = snapshot.funds.first { $0.code == normalizedDraft.toCode }
+        let acceptedDate = TradingCalendar.acceptedTradeDate(
+            positionDate: normalizedDraft.tradeDate,
+            timeType: normalizedDraft.tradeTimeType
+        )
+        appendPendingConversion(
+            normalizedDraft,
+            fromFund: fromFund,
+            toFund: toFund,
+            acceptedDate: acceptedDate,
+            conversionID: UUID().uuidString,
+            outRecordID: UUID().uuidString,
+            inRecordID: UUID().uuidString
+        )
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
+    func editConversion(id: String, with draft: FundConversionDraft) async throws {
+        let conversionID = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !conversionID.isEmpty else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+        let normalizedDraft = try normalizedConversionDraft(draft)
+        guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == normalizedDraft.fromCode }) else {
+            throw PortfolioStoreError.fundNotFound
+        }
+        ensureConversionTargetFund(for: normalizedDraft)
+
+        var records = snapshot.tradeRecords ?? []
+        let linkedRecords = records.filter { $0.conversionID == conversionID }
+        guard !linkedRecords.isEmpty else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+
+        let fromFund = snapshot.funds.first { $0.code == normalizedDraft.fromCode } ?? snapshot.funds[fromIndex]
+        let toFund = snapshot.funds.first { $0.code == normalizedDraft.toCode }
+        let acceptedDate = TradingCalendar.acceptedTradeDate(
+            positionDate: normalizedDraft.tradeDate,
+            timeType: normalizedDraft.tradeTimeType
+        )
+        let outRecordID = linkedRecords.first { $0.kind == .conversionOut }?.id ?? UUID().uuidString
+        let inRecordID = linkedRecords.first { $0.kind == .conversionIn }?.id ?? UUID().uuidString
+
+        records.removeAll { $0.conversionID == conversionID }
+        records.append(
+            pendingConversionOutRecord(
+                id: outRecordID,
+                conversionID: conversionID,
+                draft: normalizedDraft,
+                fromFund: fromFund,
+                toFund: toFund,
+                acceptedDate: acceptedDate,
+                createdAt: linkedRecords.map(\.createdAt).min() ?? .now
+            )
+        )
+        records.append(
+            pendingConversionInRecord(
+                id: inRecordID,
+                conversionID: conversionID,
+                draft: normalizedDraft,
+                fromFund: fromFund,
+                toFund: toFund,
+                acceptedDate: acceptedDate,
+                createdAt: linkedRecords.map(\.createdAt).min() ?? .now
+            )
+        )
+        snapshot.tradeRecords = records
+        upsertPendingConversion(
+            id: conversionID,
+            outRecordID: outRecordID,
+            inRecordID: inRecordID,
+            draft: normalizedDraft,
+            acceptedDate: acceptedDate,
+            createdAt: linkedRecords.map(\.createdAt).min() ?? .now,
+            failureReason: nil
+        )
+
+        let affectedCodes = Set(linkedRecords.map(\.code) + [normalizedDraft.fromCode, normalizedDraft.toCode])
+        for code in affectedCodes {
+            try rebuildFundPositionFromTradeRecords(code: code)
+        }
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
     func deleteFund(code: String) async throws {
         snapshot.funds.removeAll { $0.code == code }
         snapshot.pendingTrades?.removeAll { $0.code == code }
         if snapshot.pendingTrades?.isEmpty == true {
             snapshot.pendingTrades = nil
+        }
+        snapshot.pendingConversions?.removeAll { $0.fromCode == code || $0.toCode == code }
+        if snapshot.pendingConversions?.isEmpty == true {
+            snapshot.pendingConversions = nil
         }
         snapshot.tradeRecords?.removeAll { $0.code == code }
         if snapshot.tradeRecords?.isEmpty == true {
@@ -304,14 +397,112 @@ final class PortfolioStore {
             throw PortfolioStoreError.tradeRecordNotFound
         }
 
-        let code = records[index].code
-        records.remove(at: index)
+        let record = records[index]
+        let fundSnapshots = Dictionary(uniqueKeysWithValues: snapshot.funds.map { ($0.code, $0) })
+        let removedRecords: [FundTradeRecord]
+        let affectedCodes: Set<String>
+        if let conversionID = record.conversionID {
+            let linkedRecords = records.filter { $0.conversionID == conversionID }
+            removedRecords = linkedRecords
+            affectedCodes = Set(linkedRecords.flatMap { [$0.code, $0.linkedCode].compactMap { $0 } })
+            records.removeAll { $0.conversionID == conversionID }
+            snapshot.pendingConversions?.removeAll { $0.id == conversionID }
+            if snapshot.pendingConversions?.isEmpty == true {
+                snapshot.pendingConversions = nil
+            }
+        } else {
+            removedRecords = [record]
+            affectedCodes = [record.code]
+            records.remove(at: index)
+        }
         snapshot.tradeRecords = records.isEmpty ? nil : records
         snapshot.pendingTrades?.removeAll { $0.recordID == id }
-        rebuildPendingTradesFromRecords(for: code)
-        try rebuildFundPositionFromTradeRecords(code: code)
+        for code in affectedCodes {
+            rebuildPendingTradesFromRecords(for: code)
+            let removedRecordsForCode = removedRecords.filter { $0.code == code }
+            if !removedRecordsForCode.isEmpty && removedRecordsForCode.allSatisfy({ $0.status == .pending }) {
+                try handlePendingOnlyTradeRecordDeletion(
+                    code: code,
+                    remainingRecords: records,
+                    removedRecords: removedRecordsForCode,
+                    fundBeforeDeletion: fundSnapshots[code]
+                )
+            } else if shouldRestoreLegacyFundAfterDeletingTrade(
+                code: code,
+                remainingRecords: records,
+                removedRecords: removedRecords,
+                fundBeforeDeletion: fundSnapshots[code]
+            ) {
+                try restoreLegacyFundAfterDeletingTrade(
+                    code: code,
+                    removedRecords: removedRecords,
+                    fundBeforeDeletion: fundSnapshots[code]
+                )
+            } else {
+                try rebuildFundPositionFromTradeRecords(code: code)
+            }
+        }
         try save(snapshot)
         await refreshQuotes()
+    }
+
+    private func handlePendingOnlyTradeRecordDeletion(
+        code: String,
+        remainingRecords: [FundTradeRecord],
+        removedRecords: [FundTradeRecord],
+        fundBeforeDeletion: FundPosition?
+    ) throws {
+        if shouldRemoveFundAfterDeletingPendingOnlyRecord(
+            code: code,
+            remainingRecords: remainingRecords,
+            removedRecords: removedRecords,
+            fundBeforeDeletion: fundBeforeDeletion
+        ) {
+            snapshot.funds.removeAll { $0.code == code }
+            return
+        }
+
+        if remainingRecords.contains(where: { $0.code == code && $0.status == .confirmed }) {
+            try rebuildFundPositionFromTradeRecords(code: code)
+        } else if let fundBeforeDeletion,
+                  let index = snapshot.funds.firstIndex(where: { $0.code == code }) {
+            snapshot.funds[index] = fundBeforeDeletion
+        } else {
+            try rebuildFundPositionFromTradeRecords(code: code)
+        }
+    }
+
+    private func shouldRemoveFundAfterDeletingPendingOnlyRecord(
+        code: String,
+        remainingRecords: [FundTradeRecord],
+        removedRecords: [FundTradeRecord],
+        fundBeforeDeletion: FundPosition?
+    ) -> Bool {
+        guard let fundBeforeDeletion,
+              !remainingRecords.contains(where: { $0.code == code })
+        else {
+            return false
+        }
+
+        if removedRecords.contains(where: { $0.kind == .newFund }) {
+            return true
+        }
+
+        return removedRecords.contains(where: { $0.kind == .conversionIn })
+            && isEmptyPendingPlaceholder(fundBeforeDeletion)
+    }
+
+    private func isEmptyPendingPlaceholder(_ fund: FundPosition) -> Bool {
+        let shares = fund.migratedShares ?? 0
+        let principal = fund.migratedPrincipal ?? 0
+        let currentAmount = fund.currentAmount ?? 0
+        let pendingAmount = fund.pendingAmount ?? 0
+        return fund.status.isPendingDisplay
+            && effectiveLots(for: fund).isEmpty
+            && shares <= 0.0001
+            && principal <= 0.0001
+            && currentAmount <= 0.0001
+            && pendingAmount <= 0.0001
     }
 
     private func makeFundPosition(
@@ -500,6 +691,226 @@ final class PortfolioStore {
         snapshot.pendingTrades = remaining.isEmpty ? nil : remaining
     }
 
+    private func processPendingConversions(quotes: [String: FundQuote]) async {
+        guard let pendingConversions = snapshot.pendingConversions, !pendingConversions.isEmpty else {
+            return
+        }
+
+        var remaining: [FundPendingConversion] = []
+        for pendingConversion in pendingConversions {
+            let draft = pendingConversion.draft
+            guard let fromPrice = await quoteService.fetchConfirmedNetValue(
+                code: draft.fromCode,
+                acceptedDate: pendingConversion.acceptedDate,
+                latestQuote: quotes[draft.fromCode]
+            ),
+                  let toPrice = await quoteService.fetchConfirmedNetValue(
+                    code: draft.toCode,
+                    acceptedDate: pendingConversion.acceptedDate,
+                    latestQuote: quotes[draft.toCode]
+                  )
+            else {
+                remaining.append(pendingConversion)
+                continue
+            }
+            ensureConversionTargetFund(for: draft)
+            guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == draft.fromCode }) else {
+                continue
+            }
+            guard let toIndex = snapshot.funds.firstIndex(where: { $0.code == draft.toCode }) else {
+                remaining.append(pendingConversion)
+                continue
+            }
+
+            var fromFund = snapshot.funds[fromIndex]
+            var toFund = snapshot.funds[toIndex]
+            let resolvedAmounts = pendingConversionResolvedAmounts(
+                draft: draft,
+                fromPrice: fromPrice,
+                toPrice: toPrice
+            )
+            updatePendingConversionRecordsWithResolvedValues(
+                pendingConversion,
+                draft: draft,
+                fromFund: fromFund,
+                toFund: toFund,
+                fromPrice: fromPrice,
+                toPrice: toPrice,
+                grossAmount: resolvedAmounts.grossAmount,
+                transferAmount: resolvedAmounts.transferAmount,
+                sellFee: resolvedAmounts.sellFee,
+                buyFee: resolvedAmounts.buyFee,
+                confirmedOutShares: resolvedAmounts.confirmedOutShares,
+                confirmedInShares: resolvedAmounts.confirmedInShares
+            )
+            guard shouldExecutePendingConversion(acceptedDate: pendingConversion.acceptedDate) else {
+                remaining.append(pendingConversion)
+                continue
+            }
+            do {
+                let outDraft = FundTradeDraft(
+                    action: .sell,
+                    code: draft.fromCode,
+                    mode: .share,
+                    amount: nil,
+                    shares: draft.shares,
+                    tradeDate: draft.tradeDate,
+                    tradeTimeType: draft.tradeTimeType,
+                    sellFeeMode: draft.sellFeeMode,
+                    sellFeeValue: draft.sellFeeValue
+                )
+                let confirmedOutShares = try applySell(outDraft, price: fromPrice, from: &fromFund)
+                let executedAmounts = pendingConversionResolvedAmounts(
+                    draft: draft,
+                    fromPrice: fromPrice,
+                    toPrice: toPrice,
+                    confirmedOutShares: confirmedOutShares
+                )
+                let inDraft = FundTradeDraft(
+                    action: .buy,
+                    code: draft.toCode,
+                    mode: .amount,
+                    amount: executedAmounts.transferAmount,
+                    shares: nil,
+                    tradeDate: draft.tradeDate,
+                    tradeTimeType: draft.tradeTimeType,
+                    buyFeeRate: draft.buyFeeRate
+                )
+                let confirmedInShares = try applyBuy(inDraft, price: toPrice, to: &toFund)
+
+                syncAggregateFields(for: &fromFund)
+                syncAggregateFields(for: &toFund)
+                confirmPendingConversionRecords(
+                    pendingConversion,
+                    draft: draft,
+                    fromFund: fromFund,
+                    toFund: toFund,
+                    fromPrice: fromPrice,
+                    toPrice: toPrice,
+                    grossAmount: executedAmounts.grossAmount,
+                    transferAmount: executedAmounts.transferAmount,
+                    sellFee: executedAmounts.sellFee,
+                    buyFee: executedAmounts.buyFee,
+                    confirmedOutShares: confirmedOutShares,
+                    confirmedInShares: confirmedInShares
+                )
+                snapshot.funds[fromIndex] = fromFund
+                if let refreshedToIndex = snapshot.funds.firstIndex(where: { $0.code == draft.toCode }) {
+                    snapshot.funds[refreshedToIndex] = toFund
+                }
+            } catch PortfolioStoreError.insufficientShares {
+                var failed = pendingConversion
+                failed.failureReason = "可转换份额不足"
+                markPendingConversion(pendingConversion.id, failureReason: failed.failureReason)
+                remaining.append(failed)
+            } catch {
+                var failed = pendingConversion
+                failed.failureReason = error.localizedDescription
+                markPendingConversion(pendingConversion.id, failureReason: failed.failureReason)
+                remaining.append(failed)
+            }
+        }
+
+        snapshot.pendingConversions = remaining.isEmpty ? nil : remaining
+    }
+
+    private func shouldExecutePendingConversion(acceptedDate: String) -> Bool {
+        guard let executionDate = TradingCalendar.nextFundTradingDate(after: acceptedDate) else {
+            return false
+        }
+        return DateOnlyFormatter.string(from: nowProvider()) >= executionDate
+    }
+
+    private func pendingConversionResolvedAmounts(
+        draft: FundConversionDraft,
+        fromPrice: Double,
+        toPrice: Double,
+        confirmedOutShares: Double? = nil
+    ) -> (
+        confirmedOutShares: Double,
+        grossAmount: Double,
+        sellFee: Double,
+        transferAmount: Double,
+        buyFee: Double,
+        confirmedInShares: Double
+    ) {
+        let outShares = confirmedOutShares ?? rounded(draft.shares, places: 2)
+        let grossAmount = rounded(outShares * fromPrice, places: 2)
+        let sellFee = rounded(conversionFeeAmount(grossAmount: grossAmount, mode: draft.sellFeeMode, value: draft.sellFeeValue), places: 2)
+        let transferAmount = rounded(max(grossAmount - sellFee, 0), places: 2)
+        let buyNetAmount = buyNetAmount(totalAmount: transferAmount, feeRate: draft.buyFeeRate)
+        let buyFee = rounded(transferAmount - buyNetAmount, places: 2)
+        let confirmedInShares = toPrice > 0 ? rounded(buyNetAmount / toPrice, places: 2) : 0
+        return (outShares, grossAmount, sellFee, transferAmount, buyFee, confirmedInShares)
+    }
+
+    private func updatePendingConversionRecordsWithResolvedValues(
+        _ pendingConversion: FundPendingConversion,
+        draft: FundConversionDraft,
+        fromFund: FundPosition,
+        toFund: FundPosition,
+        fromPrice: Double,
+        toPrice: Double,
+        grossAmount: Double,
+        transferAmount: Double,
+        sellFee: Double,
+        buyFee: Double,
+        confirmedOutShares: Double,
+        confirmedInShares: Double
+    ) {
+        let acceptedDate = pendingConversion.acceptedDate
+        let conversionID = pendingConversion.id
+
+        _ = updateTradeRecord(
+            id: pendingConversion.outRecordID,
+            matching: { record in
+                record.conversionID == conversionID && record.kind == .conversionOut
+            },
+            update: { record in
+                record.status = .pending
+                record.name = fromFund.name
+                record.mode = .share
+                record.amount = grossAmount
+                record.shares = draft.shares
+                record.confirmedShares = confirmedOutShares
+                record.price = fromPrice
+                record.sellFeeMode = draft.sellFeeMode
+                record.sellFeeValue = draft.sellFeeValue
+                record.feeAmount = sellFee
+                record.tradeDate = draft.tradeDate
+                record.tradeTimeType = draft.tradeTimeType
+                record.acceptedDate = acceptedDate
+                record.failureReason = nil
+                record.linkedCode = draft.toCode
+                record.linkedName = toFund.name
+            }
+        )
+
+        _ = updateTradeRecord(
+            id: pendingConversion.inRecordID,
+            matching: { record in
+                record.conversionID == conversionID && record.kind == .conversionIn
+            },
+            update: { record in
+                record.status = .pending
+                record.name = toFund.name
+                record.mode = .amount
+                record.amount = transferAmount
+                record.shares = nil
+                record.confirmedShares = confirmedInShares
+                record.price = toPrice
+                record.buyFeeRate = draft.buyFeeRate
+                record.feeAmount = buyFee
+                record.tradeDate = draft.tradeDate
+                record.tradeTimeType = draft.tradeTimeType
+                record.acceptedDate = acceptedDate
+                record.failureReason = nil
+                record.linkedCode = draft.fromCode
+                record.linkedName = fromFund.name
+            }
+        )
+    }
+
     private func shouldConfirmPendingTrade(acceptedDate: String) -> Bool {
         guard DateOnlyFormatter.parse(acceptedDate) != nil else {
             return false
@@ -660,6 +1071,219 @@ final class PortfolioStore {
             .filter { $0.code == code && $0.kind == .newFund && $0.status == .pending }
             .sorted { $0.createdAt < $1.createdAt }
             .last
+    }
+
+    private func normalizedConversionDraft(_ draft: FundConversionDraft) throws -> FundConversionDraft {
+        let fromCode = draft.fromCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toCode = draft.toCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fromCode.isEmpty, !toCode.isEmpty else {
+            throw PortfolioStoreError.invalidCode
+        }
+        guard fromCode != toCode else {
+            throw PortfolioStoreError.invalidConversionTarget
+        }
+        let shares = rounded(draft.shares, places: 2)
+        guard shares > 0 else {
+            throw PortfolioStoreError.invalidPosition
+        }
+        return FundConversionDraft(
+            fromCode: fromCode,
+            toCode: toCode,
+            toName: draft.toName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            shares: shares,
+            tradeDate: draft.tradeDate,
+            tradeTimeType: draft.tradeTimeType,
+            sellFeeMode: draft.sellFeeMode,
+            sellFeeValue: max(draft.sellFeeValue, 0),
+            buyFeeRate: max(draft.buyFeeRate, 0)
+        )
+    }
+
+    private func ensureConversionTargetFund(for draft: FundConversionDraft) {
+        guard !snapshot.funds.contains(where: { $0.code == draft.toCode }) else {
+            return
+        }
+
+        let name = draft.toName?.isEmpty == false ? draft.toName! : draft.toCode
+        snapshot.funds.insert(
+            FundPosition(
+                code: draft.toCode,
+                name: name,
+                dateText: "--",
+                todayIncome: 0,
+                todayRate: 0,
+                holdingRate: nil,
+                status: .pending,
+                isUpdated: false,
+                isIncomeActive: false,
+                migratedShares: 0,
+                migratedCost: 0,
+                migratedPrincipal: 0,
+                positionMode: .amount,
+                positionDate: draft.tradeDate,
+                positionTimeType: draft.tradeTimeType,
+                lots: []
+            ),
+            at: 0
+        )
+    }
+
+    private func availableShares(for fund: FundPosition) -> Double {
+        effectiveLots(for: fund).reduce(0) { $0 + $1.shares }
+    }
+
+    private func appendPendingConversion(
+        _ draft: FundConversionDraft,
+        fromFund: FundPosition,
+        toFund: FundPosition?,
+        acceptedDate: String,
+        conversionID: String,
+        outRecordID: String,
+        inRecordID: String
+    ) {
+        let createdAt = Date.now
+        let targetFund = toFund ?? snapshot.funds.first { $0.code == draft.toCode }
+        var pendingConversions = snapshot.pendingConversions ?? []
+        pendingConversions.append(
+            FundPendingConversion(
+                id: conversionID,
+                outRecordID: outRecordID,
+                inRecordID: inRecordID,
+                fromCode: draft.fromCode,
+                toCode: draft.toCode,
+                toName: targetFund?.name ?? draft.toName,
+                shares: draft.shares,
+                tradeDate: draft.tradeDate,
+                tradeTimeType: draft.tradeTimeType,
+                acceptedDate: acceptedDate,
+                createdAt: createdAt,
+                sellFeeMode: draft.sellFeeMode,
+                sellFeeValue: draft.sellFeeValue,
+                buyFeeRate: draft.buyFeeRate
+            )
+        )
+        snapshot.pendingConversions = pendingConversions
+        appendTradeRecord(
+            pendingConversionOutRecord(
+                id: outRecordID,
+                conversionID: conversionID,
+                draft: draft,
+                fromFund: fromFund,
+                toFund: targetFund,
+                acceptedDate: acceptedDate,
+                createdAt: createdAt
+            )
+        )
+        appendTradeRecord(
+            pendingConversionInRecord(
+                id: inRecordID,
+                conversionID: conversionID,
+                draft: draft,
+                fromFund: fromFund,
+                toFund: targetFund,
+                acceptedDate: acceptedDate,
+                createdAt: createdAt
+            )
+        )
+    }
+
+    private func upsertPendingConversion(
+        id: String,
+        outRecordID: String?,
+        inRecordID: String?,
+        draft: FundConversionDraft,
+        acceptedDate: String,
+        createdAt: Date,
+        failureReason: String?
+    ) {
+        var pendingConversions = (snapshot.pendingConversions ?? []).filter { $0.id != id }
+        pendingConversions.append(
+            FundPendingConversion(
+                id: id,
+                outRecordID: outRecordID,
+                inRecordID: inRecordID,
+                fromCode: draft.fromCode,
+                toCode: draft.toCode,
+                toName: draft.toName,
+                shares: draft.shares,
+                tradeDate: draft.tradeDate,
+                tradeTimeType: draft.tradeTimeType,
+                acceptedDate: acceptedDate,
+                createdAt: createdAt,
+                sellFeeMode: draft.sellFeeMode,
+                sellFeeValue: draft.sellFeeValue,
+                buyFeeRate: draft.buyFeeRate,
+                failureReason: failureReason
+            )
+        )
+        snapshot.pendingConversions = pendingConversions
+    }
+
+    private func pendingConversionOutRecord(
+        id: String,
+        conversionID: String,
+        draft: FundConversionDraft,
+        fromFund: FundPosition,
+        toFund: FundPosition?,
+        acceptedDate: String,
+        createdAt: Date
+    ) -> FundTradeRecord {
+        FundTradeRecord(
+            id: id,
+            kind: .conversionOut,
+            status: .pending,
+            code: draft.fromCode,
+            name: fromFund.name,
+            mode: .share,
+            amount: nil,
+            shares: draft.shares,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: draft.tradeDate,
+            tradeTimeType: draft.tradeTimeType,
+            acceptedDate: acceptedDate,
+            createdAt: createdAt,
+            confirmedAt: nil,
+            failureReason: nil,
+            sellFeeMode: draft.sellFeeMode,
+            sellFeeValue: draft.sellFeeValue,
+            conversionID: conversionID,
+            linkedCode: draft.toCode,
+            linkedName: toFund?.name ?? draft.toName
+        )
+    }
+
+    private func pendingConversionInRecord(
+        id: String,
+        conversionID: String,
+        draft: FundConversionDraft,
+        fromFund: FundPosition,
+        toFund: FundPosition?,
+        acceptedDate: String,
+        createdAt: Date
+    ) -> FundTradeRecord {
+        FundTradeRecord(
+            id: id,
+            kind: .conversionIn,
+            status: .pending,
+            code: draft.toCode,
+            name: toFund?.name ?? draft.toName ?? draft.toCode,
+            mode: .amount,
+            amount: nil,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: draft.tradeDate,
+            tradeTimeType: draft.tradeTimeType,
+            acceptedDate: acceptedDate,
+            createdAt: createdAt,
+            confirmedAt: nil,
+            failureReason: nil,
+            buyFeeRate: draft.buyFeeRate,
+            conversionID: conversionID,
+            linkedCode: draft.fromCode,
+            linkedName: fromFund.name
+        )
     }
 
     private func appendPendingTrade(
@@ -910,14 +1534,14 @@ final class PortfolioStore {
                     fund.incomeStartDate = record.acceptedDate
                     fund.dateText = Self.confirmedDateText(record.acceptedDate)
                 }
-            case .buy:
+            case .buy, .conversionIn:
                 guard let lot = lot(from: record) else { continue }
                 lots.append(lot)
                 didRebuildPosition = true
                 fund.positionMode = record.mode
                 fund.positionDate = record.tradeDate
                 fund.positionTimeType = record.tradeTimeType
-            case .sell:
+            case .sell, .conversionOut:
                 guard didRebuildPosition else { continue }
                 let sellShares = try confirmedShares(for: record)
                 lots = try lotsAfterSelling(shares: sellShares, from: lots)
@@ -929,6 +1553,117 @@ final class PortfolioStore {
         fund.lots = lots
         syncAggregateFields(for: &fund)
         snapshot.funds[index] = fund
+    }
+
+    private func shouldRestoreLegacyFundAfterDeletingTrade(
+        code: String,
+        remainingRecords: [FundTradeRecord],
+        removedRecords: [FundTradeRecord],
+        fundBeforeDeletion: FundPosition?
+    ) -> Bool {
+        guard let fundBeforeDeletion,
+              removedRecords.contains(where: { $0.code == code && $0.status == .confirmed })
+        else {
+            return false
+        }
+
+        let remainingConfirmedRecords = remainingRecords.filter { $0.code == code && $0.status == .confirmed }
+        if remainingConfirmedRecords.contains(where: { $0.kind == .newFund }) {
+            return false
+        }
+
+        return !effectiveLots(for: fundBeforeDeletion).isEmpty || (fundBeforeDeletion.migratedShares ?? 0) > 0
+    }
+
+    private func restoreLegacyFundAfterDeletingTrade(
+        code: String,
+        removedRecords: [FundTradeRecord],
+        fundBeforeDeletion: FundPosition?
+    ) throws {
+        guard let index = snapshot.funds.firstIndex(where: { $0.code == code }),
+              var fund = fundBeforeDeletion
+        else {
+            return
+        }
+
+        var lots = effectiveLots(for: fund)
+        let recordsToUndo = removedRecords
+            .filter { $0.code == code && $0.status == .confirmed }
+            .sorted { lhs, rhs in
+                if lhs.acceptedDate != rhs.acceptedDate {
+                    return lhs.acceptedDate > rhs.acceptedDate
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
+
+        for record in recordsToUndo {
+            switch record.kind {
+            case .newFund, .buy, .conversionIn:
+                let shares = try confirmedShares(for: record)
+                lots = try lotsAfterRemovingRecentlyAdded(shares: shares, from: lots)
+            case .sell, .conversionOut:
+                if let lot = restoredLegacyLot(from: record, fund: fund) {
+                    lots.append(lot)
+                }
+            }
+        }
+
+        fund.lots = lots
+        syncAggregateFields(for: &fund)
+        snapshot.funds[index] = fund
+    }
+
+    private func lotsAfterRemovingRecentlyAdded(
+        shares sharesToRemove: Double,
+        from sourceLots: [FundPositionLot]
+    ) throws -> [FundPositionLot] {
+        var lots = sourceLots
+        var remainingShares = rounded(sharesToRemove, places: 2)
+
+        while remainingShares > 0.0001, !lots.isEmpty {
+            let index = lots.count - 1
+            let lotShares = rounded(lots[index].shares, places: 2)
+            if lotShares <= remainingShares + 0.0001 {
+                remainingShares = rounded(remainingShares - lotShares, places: 2)
+                lots.removeLast()
+            } else {
+                lots[index].shares = rounded(lotShares - remainingShares, places: 2)
+                remainingShares = 0
+            }
+        }
+
+        guard remainingShares <= 0.0001 else {
+            throw PortfolioStoreError.insufficientShares
+        }
+        return lots
+    }
+
+    private func restoredLegacyLot(from record: FundTradeRecord, fund: FundPosition) -> FundPositionLot? {
+        guard let shares = try? confirmedShares(for: record),
+              shares > 0
+        else {
+            return nil
+        }
+
+        let cost: Double
+        if let migratedCost = fund.migratedCost, migratedCost > 0 {
+            cost = migratedCost
+        } else if let amount = record.amount, amount > 0 {
+            cost = rounded(amount / shares, places: 4)
+        } else if let price = record.price, price > 0 {
+            cost = price
+        } else {
+            return nil
+        }
+
+        return FundPositionLot(
+            id: "restored-\(record.id)",
+            shares: shares,
+            cost: rounded(cost, places: 4),
+            incomeStartDate: fund.incomeStartDate ?? record.acceptedDate,
+            positionDate: record.tradeDate,
+            positionTimeType: record.tradeTimeType
+        )
     }
 
     private func lot(from record: FundTradeRecord) -> FundPositionLot? {
@@ -946,7 +1681,7 @@ final class PortfolioStore {
             let principal = amount - (record.profit ?? 0)
             guard principal > 0 else { return nil }
             cost = rounded(principal / shares, places: 4)
-        } else if record.kind == .buy,
+        } else if (record.kind == .buy || record.kind == .conversionIn),
                   record.mode == .amount,
                   let amount = record.amount,
                   amount > 0,
@@ -1043,56 +1778,6 @@ final class PortfolioStore {
             confirmedAt: status == .confirmed ? .now : nil
         )
         appendTradeRecord(record)
-    }
-
-    private func upsertInitialTradeRecord(
-        draft: FundPositionDraft,
-        fund: FundPosition,
-        acceptedDate: String,
-        confirmedNetValue: Double?
-    ) {
-        let status: FundTradeRecordStatus = fund.status.isPendingDisplay ? .pending : .confirmed
-        let confirmedShares = status == .confirmed ? fund.migratedShares : nil
-        let amount = draft.positionAmount ?? confirmedShares.flatMap { shares in
-            (fund.migratedCost ?? confirmedNetValue).map { rounded(shares * $0, places: 2) }
-        }
-        let price = initialRecordPrice(
-            mode: draft.positionMode,
-            status: status,
-            amount: amount,
-            confirmedShares: confirmedShares,
-            fund: fund,
-            confirmedNetValue: confirmedNetValue
-        )
-
-        if updateTradeRecord(
-            id: nil,
-            matching: { $0.code == fund.code && $0.kind == .newFund },
-            update: { record in
-                record.status = status
-                record.name = fund.name
-                record.mode = draft.positionMode
-                record.amount = amount
-                record.shares = draft.positionMode == .share ? draft.shares : nil
-                record.confirmedShares = confirmedShares
-                record.price = price
-                record.profit = draft.positionMode == .amount ? draft.positionProfit : nil
-                record.tradeDate = draft.positionDate
-                record.tradeTimeType = draft.positionTimeType
-                record.acceptedDate = acceptedDate
-                record.confirmedAt = status == .confirmed ? (record.confirmedAt ?? .now) : nil
-                record.failureReason = nil
-            }
-        ) {
-            return
-        }
-
-        appendInitialTradeRecord(
-            draft: draft,
-            fund: fund,
-            acceptedDate: acceptedDate,
-            confirmedNetValue: confirmedNetValue
-        )
     }
 
     private func initialRecordPrice(
@@ -1201,6 +1886,140 @@ final class PortfolioStore {
         )
     }
 
+    private func confirmPendingConversionRecords(
+        _ pendingConversion: FundPendingConversion,
+        draft: FundConversionDraft,
+        fromFund: FundPosition,
+        toFund: FundPosition,
+        fromPrice: Double,
+        toPrice: Double,
+        grossAmount: Double,
+        transferAmount: Double,
+        sellFee: Double,
+        buyFee: Double,
+        confirmedOutShares: Double,
+        confirmedInShares: Double
+    ) {
+        let createdAt = pendingConversion.createdAt
+        let acceptedDate = pendingConversion.acceptedDate
+        let conversionID = pendingConversion.id
+
+        if !updateTradeRecord(
+            id: pendingConversion.outRecordID,
+            matching: { record in
+                record.conversionID == conversionID && record.kind == .conversionOut
+            },
+            update: { record in
+                record.status = .confirmed
+                record.name = fromFund.name
+                record.mode = .share
+                record.amount = grossAmount
+                record.shares = draft.shares
+                record.confirmedShares = confirmedOutShares
+                record.price = fromPrice
+                record.sellFeeMode = draft.sellFeeMode
+                record.sellFeeValue = draft.sellFeeValue
+                record.feeAmount = sellFee
+                record.tradeDate = draft.tradeDate
+                record.tradeTimeType = draft.tradeTimeType
+                record.acceptedDate = acceptedDate
+                record.confirmedAt = .now
+                record.failureReason = nil
+                record.linkedCode = draft.toCode
+                record.linkedName = toFund.name
+            }
+        ) {
+            appendTradeRecord(
+                FundTradeRecord(
+                    id: pendingConversion.outRecordID ?? UUID().uuidString,
+                    kind: .conversionOut,
+                    status: .confirmed,
+                    code: draft.fromCode,
+                    name: fromFund.name,
+                    mode: .share,
+                    amount: grossAmount,
+                    shares: draft.shares,
+                    confirmedShares: confirmedOutShares,
+                    price: fromPrice,
+                    tradeDate: draft.tradeDate,
+                    tradeTimeType: draft.tradeTimeType,
+                    acceptedDate: acceptedDate,
+                    createdAt: createdAt,
+                    confirmedAt: .now,
+                    failureReason: nil,
+                    sellFeeMode: draft.sellFeeMode,
+                    sellFeeValue: draft.sellFeeValue,
+                    conversionID: conversionID,
+                    linkedCode: draft.toCode,
+                    linkedName: toFund.name,
+                    feeAmount: sellFee
+                )
+            )
+        }
+
+        if !updateTradeRecord(
+            id: pendingConversion.inRecordID,
+            matching: { record in
+                record.conversionID == conversionID && record.kind == .conversionIn
+            },
+            update: { record in
+                record.status = .confirmed
+                record.name = toFund.name
+                record.mode = .amount
+                record.amount = transferAmount
+                record.shares = nil
+                record.confirmedShares = confirmedInShares
+                record.price = toPrice
+                record.buyFeeRate = draft.buyFeeRate
+                record.feeAmount = buyFee
+                record.tradeDate = draft.tradeDate
+                record.tradeTimeType = draft.tradeTimeType
+                record.acceptedDate = acceptedDate
+                record.confirmedAt = .now
+                record.failureReason = nil
+                record.linkedCode = draft.fromCode
+                record.linkedName = fromFund.name
+            }
+        ) {
+            appendTradeRecord(
+                FundTradeRecord(
+                    id: pendingConversion.inRecordID ?? UUID().uuidString,
+                    kind: .conversionIn,
+                    status: .confirmed,
+                    code: draft.toCode,
+                    name: toFund.name,
+                    mode: .amount,
+                    amount: transferAmount,
+                    shares: nil,
+                    confirmedShares: confirmedInShares,
+                    price: toPrice,
+                    tradeDate: draft.tradeDate,
+                    tradeTimeType: draft.tradeTimeType,
+                    acceptedDate: acceptedDate,
+                    createdAt: createdAt,
+                    confirmedAt: .now,
+                    failureReason: nil,
+                    buyFeeRate: draft.buyFeeRate,
+                    conversionID: conversionID,
+                    linkedCode: draft.fromCode,
+                    linkedName: fromFund.name,
+                    feeAmount: buyFee
+                )
+            )
+        }
+    }
+
+    private func markPendingConversion(_ conversionID: String, failureReason: String?) {
+        guard var records = snapshot.tradeRecords, !records.isEmpty else {
+            return
+        }
+        for index in records.indices where records[index].conversionID == conversionID {
+            records[index].status = .pending
+            records[index].failureReason = failureReason
+        }
+        snapshot.tradeRecords = records
+    }
+
     private func confirmInitialTradeRecord(
         fund: FundPosition,
         acceptedDate: String,
@@ -1298,6 +2117,46 @@ final class PortfolioStore {
         var records = snapshot.tradeRecords ?? []
         records.append(record)
         snapshot.tradeRecords = records
+    }
+
+    private func resetTradeHistoryForEditedFund(codes: Set<String>) {
+        let normalizedCodes = Set(codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        guard !normalizedCodes.isEmpty else { return }
+
+        var removedRecordIDs = Set<String>()
+        var removedConversionIDs = Set<String>()
+        if var records = snapshot.tradeRecords {
+            for record in records where normalizedCodes.contains(record.code) || record.linkedCode.map(normalizedCodes.contains) == true {
+                removedRecordIDs.insert(record.id)
+                if let conversionID = record.conversionID {
+                    removedConversionIDs.insert(conversionID)
+                }
+            }
+
+            records.removeAll { record in
+                normalizedCodes.contains(record.code)
+                    || record.linkedCode.map(normalizedCodes.contains) == true
+                    || record.conversionID.map(removedConversionIDs.contains) == true
+            }
+            snapshot.tradeRecords = records.isEmpty ? nil : records
+        }
+
+        snapshot.pendingTrades?.removeAll { pendingTrade in
+            normalizedCodes.contains(pendingTrade.code)
+                || pendingTrade.recordID.map(removedRecordIDs.contains) == true
+        }
+        if snapshot.pendingTrades?.isEmpty == true {
+            snapshot.pendingTrades = nil
+        }
+
+        snapshot.pendingConversions?.removeAll { pendingConversion in
+            normalizedCodes.contains(pendingConversion.fromCode)
+                || normalizedCodes.contains(pendingConversion.toCode)
+                || removedConversionIDs.contains(pendingConversion.id)
+        }
+        if snapshot.pendingConversions?.isEmpty == true {
+            snapshot.pendingConversions = nil
+        }
     }
 
     private func syncInitialTradeRecordsFromFunds() {
@@ -1400,6 +2259,16 @@ final class PortfolioStore {
         return totalAmount / (1 + normalizedFeeRate / 100)
     }
 
+    private func conversionFeeAmount(grossAmount: Double, mode: TradeFeeMode, value: Double) -> Double {
+        let normalizedValue = max(value, 0)
+        switch mode {
+        case .rate:
+            return grossAmount * normalizedValue / 100
+        case .amount:
+            return min(grossAmount, normalizedValue)
+        }
+    }
+
     private func rounded(_ value: Double, places: Int) -> Double {
         let scale = pow(10, Double(places))
         return (value * scale).rounded() / scale
@@ -1440,7 +2309,7 @@ final class PortfolioStore {
     }
 }
 
-enum PortfolioStoreError: LocalizedError {
+enum PortfolioStoreError: LocalizedError, Equatable {
     case invalidCode
     case invalidPosition
     case invalidCost
@@ -1451,6 +2320,7 @@ enum PortfolioStoreError: LocalizedError {
     case tradeRecordNotFound
     case buyTradeRequiresAmount
     case sellTradeRequiresShare
+    case invalidConversionTarget
 
     var errorDescription: String? {
         switch self {
@@ -1474,6 +2344,8 @@ enum PortfolioStoreError: LocalizedError {
             "加仓只能按金额录入"
         case .sellTradeRequiresShare:
             "减仓只能按份额录入"
+        case .invalidConversionTarget:
+            "转换目标基金不能与当前基金相同"
         }
     }
 }
