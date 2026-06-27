@@ -635,13 +635,14 @@ final class FundPulseCoreTests: XCTestCase {
         let confirmedFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
         XCTAssertEqual(confirmedFund.status, .holding)
         XCTAssertEqual(confirmedFund.pendingAmount ?? 0, 0, accuracy: 0.0001)
-        XCTAssertEqual(confirmedFund.migratedShares ?? 0, 3304.69, accuracy: 0.0001)
+        XCTAssertEqual(confirmedFund.migratedShares ?? 0, 3304.692664, accuracy: 0.000001)
+        XCTAssertEqual(((confirmedFund.migratedShares ?? 0) * 100).rounded() / 100, 3304.69, accuracy: 0.0001)
         XCTAssertEqual(confirmedFund.migratedCost ?? 0, 1.5130, accuracy: 0.0001)
         XCTAssertEqual(store.snapshot.pendingCount, 0)
         let confirmedRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first)
         XCTAssertEqual(confirmedRecord.status, .confirmed)
         XCTAssertEqual(confirmedRecord.amount ?? 0, 5_000, accuracy: 0.0001)
-        XCTAssertEqual(confirmedRecord.confirmedShares ?? 0, 3304.69, accuracy: 0.0001)
+        XCTAssertEqual(confirmedRecord.confirmedShares ?? 0, 3304.692664, accuracy: 0.000001)
         XCTAssertEqual(confirmedRecord.price ?? 0, 1.5130, accuracy: 0.0001)
     }
 
@@ -808,7 +809,8 @@ final class FundPulseCoreTests: XCTestCase {
         let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "024418" })
         XCTAssertEqual(fund.status, .holding)
         XCTAssertEqual(fund.positionDate, "2026-06-23")
-        XCTAssertEqual(fund.migratedShares ?? 0, 1944.84, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 1944.844218, accuracy: 0.000001)
+        XCTAssertEqual(((fund.migratedShares ?? 0) * 100).rounded() / 100, 1944.84, accuracy: 0.0001)
         XCTAssertEqual(fund.migratedCost ?? 0, 2.5709, accuracy: 0.0001)
         XCTAssertEqual(store.snapshot.pendingCount, 0)
 
@@ -818,7 +820,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.tradeDate, "2026-06-23")
         XCTAssertEqual(record.acceptedDate, "2026-06-23")
         XCTAssertEqual(record.price ?? 0, 2.5709, accuracy: 0.0001)
-        XCTAssertEqual(record.confirmedShares ?? 0, 1944.84, accuracy: 0.0001)
+        XCTAssertEqual(record.confirmedShares ?? 0, 1944.844218, accuracy: 0.000001)
     }
 
     @MainActor
@@ -2164,7 +2166,8 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(outRecord.feeAmount ?? 0, 2.5, accuracy: 0.0001)
         XCTAssertEqual(inRecord.price ?? 0, 1.25, accuracy: 0.0001)
         XCTAssertEqual(inRecord.amount ?? 0, 247.5, accuracy: 0.0001)
-        XCTAssertEqual(inRecord.confirmedShares ?? 0, 197.01, accuracy: 0.0001)
+        XCTAssertEqual(inRecord.confirmedShares ?? 0, 197.014925, accuracy: 0.000001)
+        XCTAssertEqual(((inRecord.confirmedShares ?? 0) * 100).rounded() / 100, 197.01, accuracy: 0.0001)
         XCTAssertEqual(inRecord.feeAmount ?? 0, 1.23, accuracy: 0.01)
 
         let sourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
@@ -2173,7 +2176,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(sourceFund.migratedPrincipal ?? 0, 100, accuracy: 0.0001)
 
         let targetFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "290008" })
-        XCTAssertEqual(targetFund.migratedShares ?? 0, 247.01, accuracy: 0.0001)
+        XCTAssertEqual(targetFund.migratedShares ?? 0, 247.014925, accuracy: 0.000001)
         XCTAssertEqual(targetFund.migratedPrincipal ?? 0, 297.5, accuracy: 0.01)
         XCTAssertEqual(targetFund.migratedCost ?? 0, 1.2044, accuracy: 0.0001)
     }
@@ -2233,7 +2236,7 @@ final class FundPulseCoreTests: XCTestCase {
         let sourceAfterExecution = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
         let targetAfterExecution = try XCTUnwrap(store.snapshot.funds.first { $0.code == "290008" })
         XCTAssertEqual(sourceAfterExecution.migratedShares ?? 0, 100, accuracy: 0.0001)
-        XCTAssertEqual(targetAfterExecution.migratedShares ?? 0, 247.01, accuracy: 0.0001)
+        XCTAssertEqual(targetAfterExecution.migratedShares ?? 0, 247.014925, accuracy: 0.000001)
     }
 
     @MainActor
@@ -3578,7 +3581,8 @@ final class FundPulseCoreTests: XCTestCase {
         try await store.upsertFund(draft, replacing: "018926")
 
         let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "018926" })
-        XCTAssertEqual(fund.migratedShares ?? 0, 1875.96, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 1875.957227, accuracy: 0.000001)
+        XCTAssertEqual(((fund.migratedShares ?? 0) * 100).rounded() / 100, 1875.96, accuracy: 0.0001)
         XCTAssertEqual(fund.migratedCost ?? 0, 1.8657, accuracy: 0.0001)
         XCTAssertEqual(fund.migratedPrincipal ?? 0, 3500, accuracy: 0.1)
         XCTAssertEqual(fund.status, .holding)
@@ -3586,7 +3590,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.kind, .newFund)
         XCTAssertEqual(record.amount ?? 0, 3263.04, accuracy: 0.0001)
         XCTAssertEqual(record.profit ?? 0, -236.96, accuracy: 0.0001)
-        XCTAssertEqual(record.confirmedShares ?? 0, 1875.96, accuracy: 0.0001)
+        XCTAssertEqual(record.confirmedShares ?? 0, 1875.957227, accuracy: 0.000001)
         XCTAssertEqual(record.price ?? 0, 1.7394, accuracy: 0.0001)
     }
 
@@ -3619,7 +3623,7 @@ final class FundPulseCoreTests: XCTestCase {
                 code: "007818",
                 name: "国泰中证全指通信设备ETF联接C",
                 positionMode: .amount,
-                positionAmount: 14_455.10,
+                positionAmount: 15_455.10,
                 positionProfit: -544.90,
                 shares: nil,
                 cost: nil,
@@ -3632,14 +3636,123 @@ final class FundPulseCoreTests: XCTestCase {
         )
 
         let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "007818" })
-        XCTAssertEqual(fund.currentAmount ?? 0, 14_455.09584, accuracy: 0.0001)
-        XCTAssertEqual(fund.migratedShares ?? 0, 3033.28, accuracy: 0.0001)
-        XCTAssertEqual(fund.migratedCost ?? 0, 4.9451, accuracy: 0.0001)
-        XCTAssertEqual(fund.migratedPrincipal ?? 0, 15_000, accuracy: 0.0001)
-        XCTAssertEqual(fund.holdingIncome ?? 0, -544.90416, accuracy: 0.0001)
+        XCTAssertEqual(fund.currentAmount ?? 0, 15_455.10, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 3243.122443, accuracy: 0.000001)
+        XCTAssertEqual(((fund.migratedShares ?? 0) * 100).rounded() / 100, 3243.12, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedCost ?? 0, 4.9335, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedPrincipal ?? 0, 16_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.holdingIncome ?? 0, -544.90, accuracy: 0.0001)
+        XCTAssertEqual(((fund.currentAmount ?? 0) * 100).rounded() / 100, 15_455.10, accuracy: 0.0001)
         XCTAssertEqual(((fund.holdingIncome ?? 0) * 100).rounded() / 100, -544.90, accuracy: 0.0001)
         let record = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.code == "007818" })
         XCTAssertEqual(record.profit ?? 0, -544.90, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testRefreshRepairsLegacyAmountFundSharesToStoredPrecision() async throws {
+        let now = try chinaDate("2026-06-27 21:20")
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "007818",
+                name: "国泰中证全指通信设备ETF联接C",
+                netValueDate: "2026-06-26",
+                netValue: 4.7655,
+                estimatedNetValue: 4.7655,
+                growthRate: 0,
+                estimateTime: "2026-06-26 15:00"
+            ),
+            "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=007818&page=1&per=1": """
+            var apidata={ content:"<table><tbody><tr><td>2026-06-26</td><td class='tor bold'>4.7655</td><td>4.7655</td><td class='red'>0.00%</td></tr></tbody></table>",records:1,pages:1,curpage:1};
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-legacy-amount-share-precision-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        let createdAt = try chinaDate("2026-06-27 21:08")
+        let snapshot = PortfolioSnapshot(
+            updateTime: createdAt,
+            totalAmount: 15_455.09,
+            holdingIncome: -544.91,
+            holdingIncomeRate: -3.41,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "007818",
+                    name: "国泰中证全指通信设备ETF联接C",
+                    dateText: "06-26 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -544.91164,
+                    holdingRate: -3.41,
+                    confirmedHoldingIncome: -544.91164,
+                    confirmedHoldingRate: -3.41,
+                    currentAmount: 15_455.08836,
+                    status: .holding,
+                    isUpdated: true,
+                    isIncomeActive: true,
+                    migratedShares: 3_243.12,
+                    migratedCost: 4.9335,
+                    migratedPrincipal: 16_000,
+                    incomeStartDate: "2026-06-26",
+                    positionMode: .amount,
+                    positionDate: "2026-06-26",
+                    positionTimeType: .before15,
+                    pendingAmount: nil,
+                    pendingProfit: nil,
+                    lots: [
+                        FundPositionLot(
+                            id: "legacy-lot",
+                            shares: 3_243.12,
+                            cost: 4.9335,
+                            principal: 16_000,
+                            incomeStartDate: "2026-06-26",
+                            positionDate: "2026-06-26",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil,
+            tradeRecords: [
+                FundTradeRecord(
+                    id: "legacy-record",
+                    kind: .newFund,
+                    status: .confirmed,
+                    code: "007818",
+                    name: "国泰中证全指通信设备ETF联接C",
+                    mode: .amount,
+                    amount: 15_455.10,
+                    shares: 3_243.12,
+                    confirmedShares: 3_243.12,
+                    price: 4.7655,
+                    profit: -544.90,
+                    tradeDate: "2026-06-26",
+                    tradeTimeType: .before15,
+                    acceptedDate: "2026-06-26",
+                    createdAt: createdAt,
+                    confirmedAt: createdAt,
+                    failureReason: nil
+                )
+            ]
+        )
+        try seedPortfolio(snapshot, into: store, directory: tempDirectory)
+
+        await store.refreshQuotes()
+
+        let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "007818" })
+        XCTAssertEqual(fund.migratedShares ?? 0, 3243.122443, accuracy: 0.000001)
+        XCTAssertEqual(((fund.migratedShares ?? 0) * 100).rounded() / 100, 3243.12, accuracy: 0.0001)
+        XCTAssertEqual((fund.currentAmount ?? 0).roundedMoneyForTest, 15_455.10, accuracy: 0.0001)
+        XCTAssertEqual((fund.holdingIncome ?? 0).roundedMoneyForTest, -544.90, accuracy: 0.0001)
+
+        let record = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.code == "007818" })
+        XCTAssertNil(record.shares)
+        XCTAssertEqual(record.confirmedShares ?? 0, 3243.122443, accuracy: 0.000001)
     }
 
     func testTradingCalendarAcceptedTradeDateSkipsDragonBoatHoliday() {
@@ -3800,7 +3913,8 @@ final class FundPulseCoreTests: XCTestCase {
         )
 
         let fund = result.funds[0]
-        XCTAssertEqual(fund.migratedShares ?? 0, 2035.17, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 2035.170563, accuracy: 0.000001)
+        XCTAssertEqual(((fund.migratedShares ?? 0) * 100).rounded() / 100, 2035.17, accuracy: 0.0001)
         XCTAssertEqual(fund.migratedCost ?? 0, 2.4568, accuracy: 0.0001)
         XCTAssertEqual(fund.migratedPrincipal ?? 0, 5_000, accuracy: 0.0001)
         XCTAssertNil(fund.pendingAmount)
@@ -4946,6 +5060,12 @@ private final class MockResponseStore: @unchecked Sendable {
             .filter { url.hasPrefix($0.key) }
             .max { lhs, rhs in lhs.key.count < rhs.key.count }?
             .value
+    }
+}
+
+private extension Double {
+    var roundedMoneyForTest: Double {
+        (self * 100).rounded() / 100
     }
 }
 
