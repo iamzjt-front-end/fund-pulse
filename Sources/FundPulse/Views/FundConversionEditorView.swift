@@ -729,8 +729,12 @@ struct FundConversionEditorView: View {
     }
 
     private var availableTargetFunds: [FundPosition] {
-        store.snapshot.funds
-            .filter { $0.code != sourceFund.code }
+        let records = store.snapshot.tradeRecords ?? []
+        return store.snapshot.funds
+            .filter {
+                $0.code != sourceFund.code
+                    && !PendingFundDisplayRules.isClosedZeroPosition($0, tradeRecords: records)
+            }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 

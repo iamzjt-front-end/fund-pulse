@@ -521,7 +521,7 @@ final class PortfolioStore {
         let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = !name.isEmpty ? name : quote?.name ?? existingFund?.name ?? code
 
-        let position: (shares: Double, cost: Double)?
+        let position: (shares: Double, cost: Double, principal: Double)?
         let status: FundHoldingStatus
         let pendingAmount: Double?
         let pendingProfit: Double?
@@ -559,6 +559,7 @@ final class PortfolioStore {
                     id: UUID().uuidString,
                     shares: $0.shares,
                     cost: $0.cost,
+                    principal: $0.principal,
                     incomeStartDate: incomeStartDate,
                     positionDate: draft.positionDate,
                     positionTimeType: draft.positionTimeType
@@ -581,7 +582,7 @@ final class PortfolioStore {
             isIncomeActive: status == .holding,
             migratedShares: position?.shares ?? 0,
             migratedCost: position?.cost,
-            migratedPrincipal: position.map { $0.shares * $0.cost } ?? 0,
+            migratedPrincipal: position?.principal ?? 0,
             incomeStartDate: incomeStartDate,
             positionMode: draft.positionMode,
             positionDate: draft.positionDate,
@@ -618,6 +619,7 @@ final class PortfolioStore {
             id: UUID().uuidString,
             shares: shares,
             cost: lotCost,
+            principal: draft.mode == .amount ? draft.amount : nil,
             incomeStartDate: TradingCalendar.acceptedTradeDate(
                 positionDate: draft.tradeDate,
                 timeType: draft.tradeTimeType
@@ -743,10 +745,6 @@ final class PortfolioStore {
                 confirmedOutShares: resolvedAmounts.confirmedOutShares,
                 confirmedInShares: resolvedAmounts.confirmedInShares
             )
-            guard shouldExecutePendingConversion(acceptedDate: pendingConversion.acceptedDate) else {
-                remaining.append(pendingConversion)
-                continue
-            }
             do {
                 let outDraft = FundTradeDraft(
                     action: .sell,
@@ -812,13 +810,6 @@ final class PortfolioStore {
         }
 
         snapshot.pendingConversions = remaining.isEmpty ? nil : remaining
-    }
-
-    private func shouldExecutePendingConversion(acceptedDate: String) -> Bool {
-        guard let executionDate = TradingCalendar.nextFundTradingDate(after: acceptedDate) else {
-            return false
-        }
-        return DateOnlyFormatter.string(from: nowProvider()) >= executionDate
     }
 
     private func pendingConversionResolvedAmounts(
@@ -1355,6 +1346,7 @@ final class PortfolioStore {
             id: UUID().uuidString,
             shares: shares,
             cost: cost,
+            principal: principal,
             incomeStartDate: incomeStartDate,
             positionDate: positionDate,
             positionTimeType: positionTimeType
@@ -1425,8 +1417,17 @@ final class PortfolioStore {
 
         for index in lots.indices {
             guard remainingToSell > 0 else { break }
-            let deducted = min(lots[index].shares, remainingToSell)
-            lots[index].shares = rounded(lots[index].shares - deducted, places: 2)
+            let originalShares = lots[index].shares
+            let deducted = min(originalShares, remainingToSell)
+            let remainingShares = rounded(originalShares - deducted, places: 2)
+            lots[index].shares = remainingShares
+            if let principal = lots[index].principal {
+                lots[index].principal = remainingPrincipal(
+                    originalPrincipal: principal,
+                    originalShares: originalShares,
+                    remainingShares: remainingShares
+                )
+            }
             remainingToSell = rounded(remainingToSell - deducted, places: 2)
         }
         fund.lots = lots.filter { $0.shares > 0 }
@@ -1461,7 +1462,7 @@ final class PortfolioStore {
     private func syncAggregateFields(for fund: inout FundPosition) {
         let lots = effectiveLots(for: fund)
         let totalShares = rounded(lots.reduce(0) { $0 + $1.shares }, places: 2)
-        let totalCost = lots.reduce(0) { $0 + $1.shares * $1.cost }
+        let totalCost = lots.reduce(0) { $0 + lotPrincipal($1) }
         fund.migratedShares = totalShares
         fund.migratedCost = totalShares > 0 ? rounded(totalCost / totalShares, places: 4) : 0
         fund.migratedPrincipal = totalCost
@@ -1627,7 +1628,15 @@ final class PortfolioStore {
                 remainingShares = rounded(remainingShares - lotShares, places: 2)
                 lots.removeLast()
             } else {
-                lots[index].shares = rounded(lotShares - remainingShares, places: 2)
+                let nextShares = rounded(lotShares - remainingShares, places: 2)
+                lots[index].shares = nextShares
+                if let principal = lots[index].principal {
+                    lots[index].principal = remainingPrincipal(
+                        originalPrincipal: principal,
+                        originalShares: lotShares,
+                        remainingShares: nextShares
+                    )
+                }
                 remainingShares = 0
             }
         }
@@ -1699,6 +1708,7 @@ final class PortfolioStore {
             id: record.id,
             shares: rounded(shares, places: 2),
             cost: rounded(cost, places: 4),
+            principal: lotPrincipal(from: record, shares: shares, cost: cost),
             incomeStartDate: record.acceptedDate,
             positionDate: record.tradeDate,
             positionTimeType: record.tradeTimeType
@@ -1734,8 +1744,17 @@ final class PortfolioStore {
 
         for index in lots.indices {
             guard remainingToSell > 0 else { break }
-            let deducted = min(lots[index].shares, remainingToSell)
-            lots[index].shares = rounded(lots[index].shares - deducted, places: 2)
+            let originalShares = lots[index].shares
+            let deducted = min(originalShares, remainingToSell)
+            let remainingShares = rounded(originalShares - deducted, places: 2)
+            lots[index].shares = remainingShares
+            if let principal = lots[index].principal {
+                lots[index].principal = remainingPrincipal(
+                    originalPrincipal: principal,
+                    originalShares: originalShares,
+                    remainingShares: remainingShares
+                )
+            }
             remainingToSell = rounded(remainingToSell - deducted, places: 2)
         }
         return lots.filter { $0.shares > 0 }
@@ -2224,14 +2243,14 @@ final class PortfolioStore {
         }
     }
 
-    private func resolvedPosition(draft: FundPositionDraft, netValue: Double?) throws -> (shares: Double, cost: Double) {
+    private func resolvedPosition(draft: FundPositionDraft, netValue: Double?) throws -> (shares: Double, cost: Double, principal: Double) {
         switch draft.positionMode {
         case .share:
             let shares = rounded(draft.shares ?? 0, places: 2)
             guard shares > 0 else { throw PortfolioStoreError.invalidPosition }
             let cost = rounded(draft.cost ?? netValue ?? 0, places: 4)
             guard cost > 0 else { throw PortfolioStoreError.missingNetValue }
-            return (shares, cost)
+            return (shares, cost, shares * cost)
 
         case .amount:
             let amount = draft.positionAmount ?? 0
@@ -2243,8 +2262,35 @@ final class PortfolioStore {
             guard principal > 0 else { throw PortfolioStoreError.invalidCost }
             let cost = rounded(principal / shares, places: 4)
             guard cost > 0 else { throw PortfolioStoreError.invalidCost }
-            return (shares, cost)
+            return (shares, cost, principal)
         }
+    }
+
+    private func lotPrincipal(_ lot: FundPositionLot) -> Double {
+        lot.principal ?? (lot.shares * lot.cost)
+    }
+
+    private func lotPrincipal(from record: FundTradeRecord, shares: Double, cost: Double) -> Double {
+        if record.kind == .newFund,
+           record.mode == .amount,
+           let amount = record.amount {
+            return amount - (record.profit ?? 0)
+        }
+        if (record.kind == .buy || record.kind == .conversionIn),
+           record.mode == .amount,
+           let amount = record.amount {
+            return amount
+        }
+        return shares * cost
+    }
+
+    private func remainingPrincipal(
+        originalPrincipal: Double,
+        originalShares: Double,
+        remainingShares: Double
+    ) -> Double {
+        guard remainingShares > 0, originalShares > 0 else { return 0 }
+        return originalPrincipal * remainingShares / originalShares
     }
 
     private func quoteNetValue(_ quote: FundQuote?) -> Double? {

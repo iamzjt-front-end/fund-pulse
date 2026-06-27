@@ -106,6 +106,7 @@ struct FundPositionLot: Codable, Identifiable, Equatable {
     var id: String
     var shares: Double
     var cost: Double
+    var principal: Double? = nil
     var incomeStartDate: String
     var positionDate: String
     var positionTimeType: PositionTimeType
@@ -346,6 +347,32 @@ enum FundHoldingStatus: String, Codable, Equatable {
 
     var isPendingDisplay: Bool {
         self == .pending || self == .watch
+    }
+}
+
+enum PendingFundDisplayRules {
+    static func isClosedZeroPosition(
+        _ fund: FundPosition,
+        tradeRecords: [FundTradeRecord]
+    ) -> Bool {
+        let shares = fund.migratedShares ?? 0
+        let principal = fund.migratedPrincipal ?? 0
+        let currentAmount = fund.currentAmount ?? 0
+        let pendingAmount = fund.pendingAmount ?? 0
+        let hasLots = fund.lots?.isEmpty == false
+
+        guard shares <= 0.0001,
+              principal <= 0.0001,
+              currentAmount <= 0.0001,
+              pendingAmount <= 0.0001,
+              !hasLots
+        else {
+            return false
+        }
+
+        return tradeRecords.contains {
+            $0.code == fund.code && $0.status == .confirmed
+        }
     }
 }
 

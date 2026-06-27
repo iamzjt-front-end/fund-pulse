@@ -6,6 +6,7 @@ enum PortfolioCalculator {
         quotes: [String: FundQuote],
         now: Date = .now
     ) -> PortfolioSnapshot {
+        let tradeRecords = snapshot.tradeRecords ?? []
         var costTotal = 0.0
         var currentTotal = 0.0
         var todayIncomeTotal = 0.0
@@ -34,7 +35,7 @@ enum PortfolioCalculator {
                 next.pendingProfit = nil
             }
             let totalShares = lots.reduce(0) { $0 + $1.shares }
-            let lotCostTotal = lots.reduce(0) { $0 + $1.shares * $1.cost }
+            let lotCostTotal = lots.reduce(0) { $0 + lotPrincipal($1) }
             let manualAmount = lots.isEmpty ? manualHoldingAmount(for: fund) : nil
             let manualProfit = manualAmount == nil ? 0 : (fund.pendingProfit ?? 0)
             let manualPrincipal = manualAmount.map { max($0 - manualProfit, 0) } ?? 0
@@ -63,7 +64,11 @@ enum PortfolioCalculator {
                 && totalShares == 0
                 && manualPrincipal == 0
                 && fund.pendingAmount == nil
-            if status == .pending && !isConversionPlaceholder {
+            let isClosedZeroPosition = PendingFundDisplayRules.isClosedZeroPosition(
+                next,
+                tradeRecords: tradeRecords
+            )
+            if status == .pending && !isConversionPlaceholder && !isClosedZeroPosition {
                 pendingCount += 1
             }
             costTotal += fundCostTotal
@@ -167,6 +172,7 @@ enum PortfolioCalculator {
             id: "\(code)-amount-backfill",
             shares: shares,
             cost: cost,
+            principal: principal,
             incomeStartDate: fund.incomeStartDate ?? fund.positionDate ?? "",
             positionDate: fund.positionDate ?? "",
             positionTimeType: fund.positionTimeType ?? .before15
@@ -259,7 +265,7 @@ enum PortfolioCalculator {
         netValue: Double
     ) -> Double {
         guard quote != nil else { return 0 }
-        return lots.reduce(0) { $0 + $1.shares * (netValue - $1.cost) }
+        return lots.reduce(0) { $0 + $1.shares * netValue - lotPrincipal($1) }
     }
 
     private static func calculatedHoldingIncome(
@@ -268,7 +274,7 @@ enum PortfolioCalculator {
         netValue: Double
     ) -> Double {
         guard quote != nil else { return 0 }
-        return lots.reduce(0) { $0 + $1.shares * (netValue - $1.cost) }
+        return lots.reduce(0) { $0 + $1.shares * netValue - lotPrincipal($1) }
     }
 
     private static func confirmedHoldingNetValue(for quote: FundQuote?, fallback: Double) -> Double {
@@ -294,6 +300,10 @@ enum PortfolioCalculator {
         if quote.netValue > 0 { return quote.netValue }
         if quote.estimatedNetValue > 0 { return quote.estimatedNetValue }
         return nil
+    }
+
+    private static func lotPrincipal(_ lot: FundPositionLot) -> Double {
+        lot.principal ?? (lot.shares * lot.cost)
     }
 
     private static func rounded(_ value: Double, places: Int) -> Double {

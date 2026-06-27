@@ -1428,12 +1428,14 @@ struct PopoverContentView: View {
     }
 
     private var filteredFunds: [FundPosition] {
+        let records = store.snapshot.tradeRecords ?? []
         let funds = store.snapshot.funds.filter { fund in
             switch filter {
             case .holding:
                 fund.status == .holding
             case .pending:
                 isPendingStatus(fund.status)
+                    && !PendingFundDisplayRules.isClosedZeroPosition(fund, tradeRecords: records)
             }
         }
 
@@ -1624,6 +1626,7 @@ struct PopoverContentView: View {
             isPendingStatus($0.status)
                 && !pendingNewFundCodes.contains($0.code)
                 && !pendingConversionTargetCodes.contains($0.code)
+                && !PendingFundDisplayRules.isClosedZeroPosition($0, tradeRecords: records)
         }
         activities.append(contentsOf: legacyPendingFunds.map { fund in
             let tradeDate = fund.positionDate ?? DateOnlyFormatter.string(from: .now)
