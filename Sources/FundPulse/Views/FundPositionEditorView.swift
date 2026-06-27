@@ -77,8 +77,8 @@ struct FundPositionEditorView: View {
         _code = State(initialValue: fund?.code ?? "")
         _name = State(initialValue: fund?.name ?? "")
         _positionMode = State(initialValue: mode)
-        _positionAmount = State(initialValue: amount.map { Self.text($0) } ?? "")
-        _positionProfit = State(initialValue: profit.map { Self.text($0) } ?? "")
+        _positionAmount = State(initialValue: amount.map { Self.fixedText($0, places: PortfolioPrecision.moneyPlaces) } ?? "")
+        _positionProfit = State(initialValue: profit.map { Self.fixedText($0, places: PortfolioPrecision.moneyPlaces) } ?? "")
         _shares = State(initialValue: fund?.migratedShares.map { Self.text($0, places: 2) } ?? "")
         _cost = State(initialValue: fund?.migratedCost.map { Self.text($0, places: 4) } ?? "")
         _isSameDayNewFund = State(initialValue: false)
@@ -464,5 +464,9 @@ struct FundPositionEditorView: View {
 
     private static func text(_ value: Double, places: Int = 2) -> String {
         value.formatted(.number.precision(.fractionLength(0...places)))
+    }
+
+    private static func fixedText(_ value: Double, places: Int) -> String {
+        value.formatted(.number.precision(.fractionLength(places)))
     }
 }

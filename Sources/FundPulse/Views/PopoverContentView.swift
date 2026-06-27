@@ -293,10 +293,10 @@ struct PopoverContentView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             filterSwitchControl
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             Button {
                 withAnimation(.easeInOut(duration: 0.12)) {
@@ -320,8 +320,9 @@ struct PopoverContentView: View {
 
             toolbarActionGroup
         }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
+        .frame(height: 42)
         .background(toolbarSurfaceBackground)
         .overlay(alignment: .bottom) {
             Divider()
@@ -552,20 +553,24 @@ struct PopoverContentView: View {
     }
 
     private var toolbarActionGroup: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             addFundToolbarButton
-            refreshToolbarButton
-            toolbarRefreshStateButton
+            toolbarRefreshControl
             toolbarIconButton("gearshape", "设置", action: onOpenSettings)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private var refreshToolbarButton: some View {
-        toolbarIconButton("arrow.clockwise", isRefreshing ? "刷新中" : "刷新") {
-            refresh()
+    @ViewBuilder
+    private var toolbarRefreshControl: some View {
+        if case .failed = store.loadState {
+            toolbarRefreshStateButton
+        } else {
+            toolbarIconButton("arrow.clockwise", isRefreshing ? "刷新中" : "刷新") {
+                refresh()
+            }
+            .disabled(isRefreshing)
         }
-        .disabled(isRefreshing)
     }
 
     @ViewBuilder
@@ -577,10 +582,10 @@ struct PopoverContentView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
-                    .frame(width: 28, height: 28)
-                    .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(toolbarControlBorder(cornerRadius: 8))
-                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
+                    .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
+                    .overlay(toolbarControlBorder(cornerRadius: toolbarIconButtonCornerRadius))
+                    .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
             }
             .buttonStyle(.plain)
             .focusable(false)
@@ -595,12 +600,12 @@ struct PopoverContentView: View {
                 .font(.system(size: 14, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(toolbarIconForeground)
-                .frame(width: 28, height: 28)
-                .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(toolbarControlBorder(cornerRadius: 8))
-                .overlay(toolbarControlInnerHighlight(cornerRadius: 7.4))
+                .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
+                .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
+                .overlay(toolbarControlBorder(cornerRadius: toolbarIconButtonCornerRadius))
+                .overlay(toolbarControlInnerHighlight(cornerRadius: toolbarIconButtonCornerRadius - 0.6))
                 .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .focusable(false)
@@ -613,12 +618,12 @@ struct PopoverContentView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(PanelDesign.accent)
-                .frame(width: 28, height: 28)
-                .background(addFundToolbarButtonBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
+                .background(addFundToolbarButtonBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
                 .overlay(addFundToolbarButtonBorder)
-                .overlay(toolbarControlInnerHighlight(cornerRadius: 7.4))
+                .overlay(toolbarControlInnerHighlight(cornerRadius: toolbarIconButtonCornerRadius - 0.6))
                 .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
         .focusable(false)
@@ -626,7 +631,7 @@ struct PopoverContentView: View {
     }
 
     private var addFundToolbarButtonBorder: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
+        RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous)
             .stroke(PanelDesign.accent.opacity(colorScheme == .dark ? 0.68 : 0.52), lineWidth: 0.85)
     }
 
@@ -718,16 +723,17 @@ struct PopoverContentView: View {
         HStack(spacing: 5) {
             Text(sortMode.title)
                 .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.86)
+                .allowsTightening(true)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Image(systemName: "chevron.down")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(.primary)
-        .padding(.horizontal, 10)
-        .frame(minWidth: 80, minHeight: 26)
-        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 8)
+        .frame(width: 88, height: 26)
         .background(toolbarPillBackground, in: Capsule())
         .overlay(
             Capsule()
@@ -1168,6 +1174,14 @@ struct PopoverContentView: View {
         colorScheme == .dark
             ? Color.white.opacity(0.86)
             : Color(red: 44 / 255, green: 47 / 255, blue: 52 / 255)
+    }
+
+    private var toolbarIconButtonSize: CGFloat {
+        27
+    }
+
+    private var toolbarIconButtonCornerRadius: CGFloat {
+        7.5
     }
 
     private var toolbarControlBackground: some ShapeStyle {
