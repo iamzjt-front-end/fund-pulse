@@ -17,6 +17,8 @@ struct MainPanelWindowView: View {
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
+    let onOpenPendingActivity: (PendingTradeActivity) -> Void
+    let onDeletePendingActivity: (PendingTradeActivity) async -> Void
     let onBuyFund: (FundPosition) -> Void
     let onSellFund: (FundPosition) -> Void
     let onEditFund: (FundPosition) -> Void
@@ -49,6 +51,8 @@ struct MainPanelWindowView: View {
                 onAddFund: onAddFund,
                 onOpenFundDetail: onOpenFundDetail,
                 onOpenTradeRecords: onOpenTradeRecords,
+                onOpenPendingActivity: onOpenPendingActivity,
+                onDeletePendingActivity: onDeletePendingActivity,
                 onBuyFund: onBuyFund,
                 onSellFund: onSellFund,
                 onEditFund: onEditFund,
@@ -109,6 +113,8 @@ struct PopoverContentView: View {
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
+    let onOpenPendingActivity: (PendingTradeActivity) -> Void
+    let onDeletePendingActivity: (PendingTradeActivity) async -> Void
     let onBuyFund: (FundPosition) -> Void
     let onSellFund: (FundPosition) -> Void
     let onEditFund: (FundPosition) -> Void
@@ -122,6 +128,7 @@ struct PopoverContentView: View {
     @State private var filter: FundListFilter = .holding
     @State private var sortMode: FundSortMode = .todayRate
     @State private var isSortMenuPresented = false
+    @State private var deletingPendingActivity: PendingTradeActivity?
     @Namespace private var filterSwitchNamespace
 
     var body: some View {
@@ -134,6 +141,19 @@ struct PopoverContentView: View {
                 .zIndex(0)
         }
         .background(panelSurfaceBackground)
+        .alert("删除待确认记录", isPresented: deletePendingActivityConfirmationBinding, presenting: deletingPendingActivity) { activity in
+            Button("取消", role: .cancel) {
+                deletingPendingActivity = nil
+            }
+            Button("删除记录", role: .destructive) {
+                Task {
+                    await onDeletePendingActivity(activity)
+                    deletingPendingActivity = nil
+                }
+            }
+        } message: { activity in
+            Text(deletePendingActivityConfirmationMessage(for: activity))
+        }
     }
 
     private var header: some View {
@@ -146,26 +166,6 @@ struct PopoverContentView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 Spacer()
-                if displayPendingCount > 0 {
-                    Button {
-                        selectFilter(.pending)
-                    } label: {
-                        Text("待确认 \(displayPendingCount)笔")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(pendingBadgeForeground)
-                            .padding(.horizontal, 8)
-                            .frame(height: 22)
-                            .background(pendingBadgeBackground, in: Capsule())
-                            .overlay(
-                                Capsule()
-                                    .stroke(pendingBadgeForeground.opacity(colorScheme == .dark ? 0.28 : 0.18), lineWidth: 0.6)
-                            )
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .help("查看待确认")
-                }
                 marketBadge
                 privacyToggleButton
             }
@@ -183,7 +183,6 @@ struct PopoverContentView: View {
                     metricCard(
                         "总金额",
                         headerMoneyText(store.snapshot.totalAmount),
-                        footnote: pendingAmountSummaryText,
                         isTotal: true
                     )
                 }
@@ -214,6 +213,17 @@ struct PopoverContentView: View {
                 .focusable(false)
                 .frame(maxWidth: .infinity)
                 .help("查看累计收益率排行")
+            }
+
+            if let pendingHeaderImpact {
+                Button {
+                    selectFilter(.pending)
+                } label: {
+                    pendingImpactBar(pendingHeaderImpact)
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("查看待确认")
             }
 
             HStack(alignment: .bottom) {
@@ -811,11 +821,12 @@ struct PopoverContentView: View {
             ForEach(pendingActivities) { activity in
                 PendingTradeActivityRow(
                     activity: activity,
-                    isSelected: selectedFundCode == activity.fund?.code
-                ) {
-                    if let fund = activity.fund {
-                        onOpenTradeRecords(fund)
+                    isSelected: selectedFundCode == activity.code,
+                    onDelete: activity.recordID == nil ? nil : {
+                        deletingPendingActivity = activity
                     }
+                ) {
+                    onOpenPendingActivity(activity)
                 }
                 Divider()
             }
@@ -1037,10 +1048,11 @@ struct PopoverContentView: View {
                 disclosureIndicator
             }
             Text(value)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .monospacedDigit()
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.64)
+                .allowsTightening(true)
                 .foregroundStyle(metricCardValueColor(tone, isTotal: isTotal))
 
             if let footnote {
@@ -1048,17 +1060,88 @@ struct PopoverContentView: View {
                     .font(.system(size: 9, weight: .medium))
                     .monospacedDigit()
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
                     .foregroundStyle(hidesHeaderAmounts ? Color.secondary : pendingAmountFootnoteColor)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
-        .frame(height: pendingAmountSummaryText == nil ? 42 : 52)
+        .frame(height: footnote == nil ? 44 : 52)
         .background(metricCardBackground(tone, isTotal: isTotal), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(metricCardBorder)
         .overlay(metricCardInnerHighlight)
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.12 : 0.035), radius: 8, x: 0, y: 4)
+    }
+
+    private func pendingImpactBar(_ impact: PendingHeaderImpact) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.orange)
+                Text("待确认 \(impact.count) 笔")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                Text(impact.hasEstimatedAmount ? "含预估金额" : "净值已更新")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.72))
+            }
+
+            if hidesHeaderAmounts {
+                Text("***")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 9) {
+                    if impact.buyAmount > 0 {
+                        pendingImpactToken("买入", pendingImpactSideText(amount: impact.buyAmount), color: .red)
+                    }
+                    if impact.sellAmount > 0 {
+                        pendingImpactToken("卖出", pendingImpactSideText(amount: impact.sellAmount), color: .fundPulseGreen)
+                    }
+                    pendingImpactToken(
+                        pendingNetTitle(impact.netAmount),
+                        signedCompactPendingMoney(impact.netAmount),
+                        color: pendingImpactNetColor(impact.netAmount)
+                    )
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(colorScheme == .dark ? 0.13 : 0.075), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.orange.opacity(colorScheme == .dark ? 0.24 : 0.16), lineWidth: 0.8)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func pendingImpactToken(_ title: String, _ value: String, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Text(title)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .foregroundStyle(color)
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.76)
+        .allowsTightening(true)
+    }
+
+    private func pendingNetTitle(_ value: Double) -> String {
+        if value > 0.5 { return "净买入" }
+        if value < -0.5 { return "净卖出" }
+        return "净额"
     }
 
     private func metricCardValueColor(_ tone: Double?, isTotal: Bool) -> Color {
@@ -1428,48 +1511,28 @@ struct PopoverContentView: View {
         pendingActivities.count
     }
 
-    private var pendingAmountSummaryText: String? {
-        var buyAmount: Double = 0
-        var sellAmount: Double = 0
-        var buyShares: Double = 0
-        var sellShares: Double = 0
+    private var pendingHeaderImpact: PendingHeaderImpact? {
+        var impact = PendingHeaderImpact(count: displayPendingCount)
 
         for activity in pendingActivities {
+            guard let displayAmount = activity.displayAmount else {
+                continue
+            }
             switch activity.kind {
             case .newFund, .buy:
-                if let amount = activity.amount, amount > 0 {
-                    buyAmount += amount
-                } else if let shares = activity.shares, shares > 0 {
-                    buyShares += shares
-                }
-            case .sell:
-                if let amount = activity.amount, amount > 0 {
-                    sellAmount += amount
-                } else if let shares = activity.shares, shares > 0 {
-                    sellShares += shares
-                }
+                impact.buyAmount += displayAmount.value
+            case .sell, .conversionOut:
+                impact.sellAmount += displayAmount.value
+            case .conversionIn:
+                impact.buyAmount += displayAmount.value
+            }
+            if displayAmount.source == .estimatedNetValue {
+                impact.hasEstimatedAmount = true
             }
         }
 
-        var parts: [String] = []
-        if buyAmount > 0 {
-            parts.append("+\(compactPendingMoney(buyAmount))")
-        }
-        if sellAmount > 0 {
-            parts.append("-\(compactPendingMoney(sellAmount))")
-        }
-        if buyShares > 0 {
-            parts.append("+\(compactPendingShares(buyShares))份")
-        }
-        if sellShares > 0 {
-            parts.append("-\(compactPendingShares(sellShares))份")
-        }
-
-        guard !parts.isEmpty else { return nil }
-        if hidesHeaderAmounts {
-            return "待确认 ***"
-        }
-        return "待确认 \(parts.joined(separator: " / "))"
+        guard impact.hasAmount else { return nil }
+        return impact
     }
 
     private var visibleFilters: [FundListFilter] {
@@ -1485,6 +1548,7 @@ struct PopoverContentView: View {
         let records = store.snapshot.tradeRecords ?? []
         let pendingTrades = store.snapshot.pendingTrades ?? []
         let pendingTradeRecordIDs = Set(pendingTrades.compactMap(\.recordID))
+        let pendingConversionTargetCodes = Set((store.snapshot.pendingConversions ?? []).map(\.toCode))
 
         var activities: [PendingTradeActivity] = pendingTrades.map { pendingTrade in
             let record = pendingTrade.recordID.flatMap { id in
@@ -1497,6 +1561,8 @@ struct PopoverContentView: View {
             )
             return PendingTradeActivity(
                 id: "pending-trade-\(pendingTrade.id)",
+                recordID: record?.id ?? pendingTrade.recordID,
+                conversionID: record?.conversionID,
                 kind: record?.kind ?? tradeKind(for: pendingTrade.action),
                 code: pendingTrade.code,
                 name: record?.name ?? fund?.name ?? pendingTrade.code,
@@ -1507,16 +1573,27 @@ struct PopoverContentView: View {
                 tradeTimeType: pendingTrade.tradeTimeType,
                 acceptedDate: acceptedDate,
                 createdAt: pendingTrade.createdAt,
+                displayAmount: pendingDisplayAmount(
+                    kind: record?.kind ?? tradeKind(for: pendingTrade.action),
+                    amount: record?.amount ?? pendingTrade.amount,
+                    shares: record?.shares ?? pendingTrade.shares,
+                    acceptedDate: acceptedDate,
+                    fund: fund
+                ),
                 fund: fund
             )
         }
 
         let pendingRecords = records.filter {
-            $0.status == .pending && !pendingTradeRecordIDs.contains($0.id)
+            $0.status == .pending
+                && !pendingTradeRecordIDs.contains($0.id)
+                && $0.kind != .conversionIn
         }
         activities.append(contentsOf: pendingRecords.map { record in
             PendingTradeActivity(
                 id: "pending-record-\(record.id)",
+                recordID: record.id,
+                conversionID: record.conversionID,
                 kind: record.kind,
                 code: record.code,
                 name: record.name,
@@ -1527,6 +1604,13 @@ struct PopoverContentView: View {
                 tradeTimeType: record.tradeTimeType,
                 acceptedDate: record.acceptedDate,
                 createdAt: record.createdAt,
+                displayAmount: pendingDisplayAmount(
+                    kind: record.kind,
+                    amount: record.amount,
+                    shares: record.shares,
+                    acceptedDate: record.acceptedDate,
+                    fund: fundsByCode[record.code]
+                ),
                 fund: fundsByCode[record.code]
             )
         })
@@ -1537,13 +1621,17 @@ struct PopoverContentView: View {
                 .map(\.code)
         )
         let legacyPendingFunds = store.snapshot.funds.filter {
-            isPendingStatus($0.status) && !pendingNewFundCodes.contains($0.code)
+            isPendingStatus($0.status)
+                && !pendingNewFundCodes.contains($0.code)
+                && !pendingConversionTargetCodes.contains($0.code)
         }
         activities.append(contentsOf: legacyPendingFunds.map { fund in
             let tradeDate = fund.positionDate ?? DateOnlyFormatter.string(from: .now)
             let timeType = fund.positionTimeType ?? .before15
             return PendingTradeActivity(
                 id: "pending-fund-\(fund.code)",
+                recordID: nil,
+                conversionID: nil,
                 kind: .newFund,
                 code: fund.code,
                 name: fund.name,
@@ -1554,6 +1642,13 @@ struct PopoverContentView: View {
                 tradeTimeType: timeType,
                 acceptedDate: TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType),
                 createdAt: .distantPast,
+                displayAmount: pendingDisplayAmount(
+                    kind: .newFund,
+                    amount: fund.pendingAmount,
+                    shares: fund.migratedShares,
+                    acceptedDate: TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType),
+                    fund: fund
+                ),
                 fund: fund
             )
         })
@@ -1566,6 +1661,24 @@ struct PopoverContentView: View {
         }
     }
 
+    private var deletePendingActivityConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { deletingPendingActivity != nil },
+            set: { isPresented in
+                if !isPresented {
+                    deletingPendingActivity = nil
+                }
+            }
+        )
+    }
+
+    private func deletePendingActivityConfirmationMessage(for activity: PendingTradeActivity) -> String {
+        if activity.isConversion {
+            return "这是一条基金转换待确认记录。删除后会连带删除同一次转换的转出、转入两条记录，并移除这笔待确认转换；已确认持仓不会被提前改动。"
+        }
+        return "确定删除 \(activity.tradeDate) \(activity.tradeTimeType.title) 的\(activity.kind.title)待确认记录吗？删除后会移除这笔待确认交易，且无法撤销。"
+    }
+
     private func tradeKind(for action: FundTradeAction) -> FundTradeKind {
         switch action {
         case .buy:
@@ -1575,12 +1688,87 @@ struct PopoverContentView: View {
         }
     }
 
-    private func compactPendingMoney(_ value: Double) -> String {
-        "¥\(value.formatted(.number.precision(.fractionLength(0))))"
+    private func pendingDisplayAmount(
+        kind: FundTradeKind,
+        amount: Double?,
+        shares: Double?,
+        acceptedDate: String,
+        fund: FundPosition?
+    ) -> PendingActivityAmount? {
+        if let amount, amount > 0 {
+            return PendingActivityAmount(value: amount, source: .enteredAmount, price: nil, shares: shares)
+        }
+        guard let shares, shares > 0,
+              let reference = pendingReferenceValue(for: fund, acceptedDate: acceptedDate)
+        else {
+            return nil
+        }
+        return PendingActivityAmount(
+            value: shares * reference.price,
+            source: reference.source,
+            price: reference.price,
+            shares: shares
+        )
     }
 
-    private func compactPendingShares(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(2)))
+    private func pendingReferenceValue(
+        for fund: FundPosition?,
+        acceptedDate: String
+    ) -> (price: Double, source: PendingActivityAmount.Source)? {
+        guard let fund else { return nil }
+        let shares = fund.migratedShares ?? 0
+        let currentAmount = PortfolioPanelDisplay.currentAmount(for: fund)
+        let basePrice: Double
+        if shares > 0, currentAmount > 0 {
+            basePrice = currentAmount / shares
+        } else if let migratedCost = fund.migratedCost, migratedCost > 0 {
+            basePrice = migratedCost
+        } else {
+            return nil
+        }
+
+        let acceptedShortDate = String(acceptedDate.dropFirst(5))
+        let updateDate = DateOnlyFormatter.string(from: store.snapshot.updateTime)
+        let dateMatchesAcceptedNetValue = fund.dateText.hasPrefix(acceptedShortDate)
+        if dateMatchesAcceptedNetValue && (fund.isUpdated || acceptedDate != updateDate) {
+            return (basePrice, .confirmedNetValue)
+        }
+
+        if acceptedDate == updateDate, !fund.isUpdated, fund.todayRate != 0 {
+            return (basePrice * (1 + fund.todayRate / 100), .estimatedNetValue)
+        }
+
+        return (basePrice, .latestNetValue)
+    }
+
+    private func pendingImpactSideText(amount: Double) -> String {
+        amount > 0 ? pendingMoneyText(amount) : "--"
+    }
+
+    private func signedCompactPendingMoney(_ value: Double) -> String {
+        if abs(value) < 0.5 {
+            return "持平"
+        }
+        let sign = value > 0 ? "+" : "-"
+        return "\(sign)\(pendingMoneyText(abs(value)))"
+    }
+
+    private func pendingImpactNetColor(_ value: Double) -> Color {
+        if value > 0.5 {
+            return .red
+        }
+        if value < -0.5 {
+            return .fundPulseGreen
+        }
+        return .secondary
+    }
+
+    private func pendingMoneyText(_ value: Double) -> String {
+        "¥\(value.formatted(.number.precision(.fractionLength(2))))"
+    }
+
+    private func numberText(_ value: Double, maxFractionDigits: Int) -> String {
+        value.formatted(.number.precision(.fractionLength(0...maxFractionDigits)))
     }
 
     private func refresh() {
@@ -1653,8 +1841,10 @@ private enum FundSortMode: String, CaseIterable, Identifiable {
     }
 }
 
-private struct PendingTradeActivity: Identifiable {
+struct PendingTradeActivity: Identifiable {
     var id: String
+    var recordID: String?
+    var conversionID: String?
     var kind: FundTradeKind
     var code: String
     var name: String
@@ -1665,7 +1855,41 @@ private struct PendingTradeActivity: Identifiable {
     var tradeTimeType: PositionTimeType
     var acceptedDate: String
     var createdAt: Date
+    var displayAmount: PendingActivityAmount?
     var fund: FundPosition?
+
+    var isConversion: Bool {
+        kind == .conversionOut || kind == .conversionIn || conversionID != nil
+    }
+}
+
+struct PendingActivityAmount {
+    enum Source {
+        case enteredAmount
+        case estimatedNetValue
+        case confirmedNetValue
+        case latestNetValue
+    }
+
+    var value: Double
+    var source: Source
+    var price: Double?
+    var shares: Double?
+}
+
+private struct PendingHeaderImpact {
+    var count: Int
+    var buyAmount: Double = 0
+    var sellAmount: Double = 0
+    var hasEstimatedAmount = false
+
+    var hasAmount: Bool {
+        buyAmount > 0 || sellAmount > 0
+    }
+
+    var netAmount: Double {
+        buyAmount - sellAmount
+    }
 }
 
 private enum PortfolioPanelDisplay {
@@ -1802,6 +2026,34 @@ private enum PortfolioTreemapLayout {
 private struct PortfolioTreemapChart: View {
     let items: [PortfolioAllocationItem]
 
+    private enum LabelDensity {
+        case full
+        case stacked
+        case compact
+
+        var padding: CGFloat {
+            switch self {
+            case .full:
+                6
+            case .stacked:
+                5
+            case .compact:
+                4
+            }
+        }
+
+        var titleFontSize: CGFloat {
+            switch self {
+            case .full:
+                10
+            case .stacked:
+                9.5
+            case .compact:
+                8.5
+            }
+        }
+    }
+
     @Environment(\.colorScheme) private var colorScheme
     @State private var hoverState: PortfolioTreemapHoverState?
 
@@ -1881,19 +2133,9 @@ private struct PortfolioTreemapChart: View {
                     )
             )
             .overlay(alignment: .topLeading) {
-                if slice.rect.width >= 76 && slice.rect.height >= 42 {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(slice.item.fund.name)
-                            .font(.system(size: 10, weight: .semibold))
-                            .lineLimit(1)
-                        Text(MoneyFormatter.percent(slice.item.share * 100))
-                            .font(.system(size: 10, weight: .bold))
-                            .monospacedDigit()
-                    }
-                    .foregroundStyle(.white)
-                    .shadow(color: Color.black.opacity(0.32), radius: 2, x: 0, y: 1)
-                    .padding(6)
-                }
+                treemapLabel(for: slice)
+                    .frame(width: max(slice.rect.width, 0), height: max(slice.rect.height, 0), alignment: .topLeading)
+                    .clipped()
             }
             .shadow(
                 color: isHovered ? slice.item.color.opacity(colorScheme == .dark ? 0.36 : 0.24) : .clear,
@@ -1901,6 +2143,75 @@ private struct PortfolioTreemapChart: View {
                 x: 0,
                 y: isHovered ? 3 : 0
             )
+    }
+
+    @ViewBuilder
+    private func treemapLabel(for slice: PortfolioTreemapSlice) -> some View {
+        if let density = labelDensity(for: slice.rect) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(treemapTitle(for: slice.item, density: density, width: slice.rect.width))
+                    .font(.system(size: density.titleFontSize, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .truncationMode(.tail)
+
+                Text(treemapPercentText(for: slice.item, density: density))
+                    .font(.system(size: percentFontSize(for: density), weight: .bold))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.62)
+                    .allowsTightening(true)
+            }
+            .foregroundStyle(.white)
+            .shadow(color: Color.black.opacity(0.32), radius: 2, x: 0, y: 1)
+            .padding(density.padding)
+        }
+    }
+
+    private func labelDensity(for rect: CGRect) -> LabelDensity? {
+        guard rect.width >= 16, rect.height >= 28 else {
+            return nil
+        }
+        if rect.width >= 76, rect.height >= 42 {
+            return .full
+        }
+        if rect.width >= 54, rect.height >= 34 {
+            return .stacked
+        }
+        return .compact
+    }
+
+    private func treemapTitle(for item: PortfolioAllocationItem, density: LabelDensity, width: CGFloat) -> String {
+        let name = item.fund.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = name.isEmpty ? FundCodeFormatter.display(item.fund.code) : name
+        guard density != .full else {
+            return source
+        }
+
+        let availableWidth = max(width - density.padding * 2, 8)
+        let estimatedCharacterWidth: CGFloat = density == .compact ? 8 : 9
+        let maxCharacters = max(Int(availableWidth / estimatedCharacterWidth), 1)
+        return String(source.prefix(maxCharacters))
+    }
+
+    private func treemapPercentText(for item: PortfolioAllocationItem, density: LabelDensity) -> String {
+        let value = item.share * 100
+        if density == .compact {
+            return value.formatted(.number.precision(.fractionLength(0))) + "%"
+        }
+        return MoneyFormatter.percent(value)
+    }
+
+    private func percentFontSize(for density: LabelDensity) -> CGFloat {
+        switch density {
+        case .full:
+            10
+        case .stacked:
+            9
+        case .compact:
+            7.5
+        }
     }
 
     private func blockFill(for item: PortfolioAllocationItem) -> LinearGradient {
@@ -3136,66 +3447,89 @@ struct TodayIncomeRankingPanelView: View {
 private struct PendingTradeActivityRow: View {
     let activity: PendingTradeActivity
     let isSelected: Bool
+    let onDelete: (() -> Void)?
     let onOpen: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Button(action: onOpen) {
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 6) {
-                        tag(activity.kind.title, color: accentColor)
-                        Text(activity.name)
-                            .font(.system(size: 14, weight: .semibold))
-                            .lineLimit(1)
-                        tag("待确认", color: .orange)
-                    }
-
-                    HStack(alignment: .top, spacing: 7) {
-                        Text(FundCodeFormatter.display(activity.code))
-                            .fontWeight(.semibold)
-                            .frame(width: 58, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(activity.tradeDate) \(activity.tradeTimeType.title)")
-                            Text("确认 \(activity.acceptedDate)")
+        HStack(spacing: 8) {
+            Button(action: onOpen) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            tag(activity.kind.title, color: accentColor)
+                            Text(activity.name)
+                                .font(.system(size: 14, weight: .semibold))
+                                .lineLimit(1)
+                            tag("待确认", color: .orange)
                         }
-                    }
-                    .font(.system(size: 10, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                }
 
-                Spacer(minLength: 8)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(primaryValueText)
-                        .font(.system(size: 13, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(accentColor)
-                    Text(activity.mode.title)
+                        HStack(alignment: .top, spacing: 7) {
+                            Text(FundCodeFormatter.display(activity.code))
+                                .fontWeight(.semibold)
+                                .frame(width: 58, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(activity.tradeDate) \(activity.tradeTimeType.title)")
+                                Text("确认 \(activity.acceptedDate)")
+                            }
+                        }
                         .font(.system(size: 10, weight: .medium))
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(primaryValueText)
+                            .font(.system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(accentColor)
+                        Text(activity.mode.title)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
-            .frame(height: 64)
-            .background(selectionBackground)
-            .overlay(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                    .fill(accentColor)
-                    .frame(width: 3, height: 42)
-                    .opacity(isSelected ? 1 : 0)
-                    .padding(.leading, 4)
+            .buttonStyle(.plain)
+            .focusable(false)
+
+            if let onDelete {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.red)
+                        .frame(width: 24, height: 24)
+                        .background(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help(activity.isConversion ? "删除这笔转换待确认记录" : "删除这笔待确认记录")
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .focusable(false)
+        .padding(.horizontal, 12)
+        .frame(height: 64)
+        .background(selectionBackground)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(accentColor)
+                .frame(width: 3, height: 42)
+                .opacity(isSelected ? 1 : 0)
+                .padding(.leading, 4)
+        }
     }
 
     private var accentColor: Color {
-        activity.kind == .sell ? .fundPulseGreen : .red
+        switch activity.kind {
+        case .sell, .conversionOut:
+            .fundPulseGreen
+        case .newFund, .buy, .conversionIn:
+            .red
+        }
     }
 
     private var selectionBackground: some View {
@@ -3208,13 +3542,10 @@ private struct PendingTradeActivityRow: View {
     }
 
     private var primaryValueText: String {
-        if let amount = activity.amount {
-            return MoneyFormatter.plainMoney(amount)
+        guard let displayAmount = activity.displayAmount else {
+            return "--"
         }
-        if let shares = activity.shares {
-            return "\(numberText(shares, places: 2))份"
-        }
-        return "--"
+        return MoneyFormatter.plainMoney(displayAmount.value)
     }
 
     private func tag(_ title: String, color: Color) -> some View {
@@ -3807,6 +4138,7 @@ struct FundDetailView: View {
     let tradeRecords: [FundTradeRecord]
     let onBuy: (FundPosition) -> Void
     let onSell: (FundPosition) -> Void
+    let onConvert: (FundPosition) -> Void
     let onEdit: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
     let onOpenDailyIncome: (FundPosition) -> Void
@@ -3831,6 +4163,7 @@ struct FundDetailView: View {
         tradeRecords: [FundTradeRecord],
         onBuy: @escaping (FundPosition) -> Void,
         onSell: @escaping (FundPosition) -> Void,
+        onConvert: @escaping (FundPosition) -> Void,
         onEdit: @escaping (FundPosition) -> Void,
         onOpenTradeRecords: @escaping (FundPosition) -> Void,
         onOpenDailyIncome: @escaping (FundPosition) -> Void,
@@ -3844,6 +4177,7 @@ struct FundDetailView: View {
         self.tradeRecords = tradeRecords
         self.onBuy = onBuy
         self.onSell = onSell
+        self.onConvert = onConvert
         self.onEdit = onEdit
         self.onOpenTradeRecords = onOpenTradeRecords
         self.onOpenDailyIncome = onOpenDailyIncome
@@ -4275,6 +4609,15 @@ struct FundDetailView: View {
                 .disabled((fund.migratedShares ?? 0) <= 0)
 
                 Button {
+                    onConvert(fund)
+                } label: {
+                    PanelButtonLabel(title: "转换", systemImage: "arrow.left.arrow.right.circle")
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .disabled((fund.migratedShares ?? 0) <= 0)
+
+                Button {
                     onEdit(fund)
                 } label: {
                     PanelButtonLabel(title: "编辑", systemImage: "pencil")
@@ -4405,10 +4748,17 @@ struct FundDetailView: View {
                     dateText: record.acceptedDate,
                     price: record.price
                 )
-            case .sell:
+            case .sell, .conversionOut:
                 return FundTrendTradeMarker(
                     id: record.id,
                     kind: .sell,
+                    dateText: record.acceptedDate,
+                    price: record.price
+                )
+            case .conversionIn:
+                return FundTrendTradeMarker(
+                    id: record.id,
+                    kind: .buy,
                     dateText: record.acceptedDate,
                     price: record.price
                 )
@@ -4425,12 +4775,6 @@ struct FundDetailView: View {
         if summary.sellAmount > 0 {
             parts.append("-\(compactPendingMoney(summary.sellAmount))")
         }
-        if summary.buyShares > 0 {
-            parts.append("+\(compactPendingShares(summary.buyShares))份")
-        }
-        if summary.sellShares > 0 {
-            parts.append("-\(compactPendingShares(summary.sellShares))份")
-        }
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: " / ")
     }
@@ -4440,11 +4784,15 @@ struct FundDetailView: View {
         var parts: [String] = []
         let buyCount = pendingTradeRecords.filter { $0.kind == .newFund || $0.kind == .buy }.count
         let sellCount = pendingTradeRecords.filter { $0.kind == .sell }.count
+        let conversionCount = Set(pendingTradeRecords.filter { $0.kind == .conversionOut || $0.kind == .conversionIn }.compactMap(\.conversionID)).count
         if buyCount > 0 {
             parts.append("加仓 \(buyCount)笔")
         }
         if sellCount > 0 {
             parts.append("减仓 \(sellCount)笔")
+        }
+        if conversionCount > 0 {
+            parts.append("转换 \(conversionCount)笔")
         }
         if let acceptedDate = pendingTradeRecords.map(\.acceptedDate).sorted().first {
             parts.append("确认 \(acceptedDate)")
@@ -4453,7 +4801,7 @@ struct FundDetailView: View {
     }
 
     private var pendingTradeSummaryTone: Color {
-        pendingTradeSummaryValues.buyAmount > 0 || pendingTradeSummaryValues.buyShares > 0
+        pendingTradeSummaryValues.buyAmount > 0
             ? .red
             : .fundPulseGreen
     }
@@ -4462,11 +4810,9 @@ struct FundDetailView: View {
         Color.orange.opacity(0.08)
     }
 
-    private var pendingTradeSummaryValues: (buyAmount: Double, sellAmount: Double, buyShares: Double, sellShares: Double) {
+    private var pendingTradeSummaryValues: (buyAmount: Double, sellAmount: Double) {
         var buyAmount: Double = 0
         var sellAmount: Double = 0
-        var buyShares: Double = 0
-        var sellShares: Double = 0
 
         for record in pendingTradeRecords {
             switch record.kind {
@@ -4474,23 +4820,57 @@ struct FundDetailView: View {
                 if let amount = record.amount, amount > 0 {
                     buyAmount += amount
                 } else if let shares = record.confirmedShares ?? record.shares, shares > 0 {
-                    buyShares += shares
+                    buyAmount += pendingTradeSummaryAmount(shares: shares, acceptedDate: record.acceptedDate)
                 }
             case .sell:
                 if let amount = record.amount, amount > 0 {
                     sellAmount += amount
                 } else if let shares = record.confirmedShares ?? record.shares, shares > 0 {
-                    sellShares += shares
+                    sellAmount += pendingTradeSummaryAmount(shares: shares, acceptedDate: record.acceptedDate)
+                }
+            case .conversionOut:
+                if let shares = record.confirmedShares ?? record.shares, shares > 0 {
+                    sellAmount += pendingTradeSummaryAmount(shares: shares, acceptedDate: record.acceptedDate)
+                }
+            case .conversionIn:
+                if let amount = record.amount, amount > 0 {
+                    buyAmount += amount
                 }
             }
         }
 
-        return (buyAmount, sellAmount, buyShares, sellShares)
+        return (buyAmount, sellAmount)
+    }
+
+    private func pendingTradeSummaryAmount(shares: Double, acceptedDate: String) -> Double {
+        guard let price = pendingTradeSummaryReferencePrice(acceptedDate: acceptedDate) else {
+            return 0
+        }
+        return shares * price
+    }
+
+    private func pendingTradeSummaryReferencePrice(acceptedDate: String) -> Double? {
+        let shares = fund.migratedShares ?? 0
+        let currentAmount = PortfolioPanelDisplay.currentAmount(for: fund)
+        let basePrice: Double
+        if shares > 0, currentAmount > 0 {
+            basePrice = currentAmount / shares
+        } else if let migratedCost = fund.migratedCost, migratedCost > 0 {
+            basePrice = migratedCost
+        } else {
+            return nil
+        }
+
+        let today = DateOnlyFormatter.string(from: .now)
+        if acceptedDate == today, !fund.isUpdated, fund.todayRate != 0 {
+            return basePrice * (1 + fund.todayRate / 100)
+        }
+        return basePrice
     }
 
     private var tradeRecordsEntrySubtitle: String {
         let pendingCount = recentTradeRecords.filter { $0.status == .pending }.count
-        guard pendingCount > 0 else { return "查看新增、加仓、减仓流水" }
+        guard pendingCount > 0 else { return "查看新增、加仓、减仓、转换流水" }
         return "含待确认 \(pendingCount) 笔"
     }
 
@@ -4965,6 +5345,7 @@ private enum TradeRecordFilter: String, CaseIterable, Identifiable {
     case all
     case buy
     case sell
+    case conversion
 
     var id: String { rawValue }
 
@@ -4976,6 +5357,8 @@ private enum TradeRecordFilter: String, CaseIterable, Identifiable {
             "加仓"
         case .sell:
             "减仓"
+        case .conversion:
+            "转换"
         }
     }
 
@@ -4987,6 +5370,8 @@ private enum TradeRecordFilter: String, CaseIterable, Identifiable {
             record.kind == .buy || record.kind == .newFund
         case .sell:
             record.kind == .sell
+        case .conversion:
+            record.kind == .conversionOut || record.kind == .conversionIn
         }
     }
 }
@@ -5151,7 +5536,7 @@ struct FundTradeRecordsPanelView: View {
 
                 Spacer(minLength: 4)
 
-                recordStatusBadge(record.status)
+                recordStatusBadge(record)
             }
             .frame(height: 22, alignment: .center)
 
@@ -5233,9 +5618,10 @@ struct FundTradeRecordsPanelView: View {
             )
     }
 
-    private func recordStatusBadge(_ status: FundTradeRecordStatus) -> some View {
-        let color = tradeStatusColor(status)
-        return Text(status.title)
+    private func recordStatusBadge(_ record: FundTradeRecord) -> some View {
+        let title = recordStatusTitle(record)
+        let color = tradeStatusColor(record.status)
+        return Text(title)
             .font(.system(size: 10, weight: .semibold))
             .lineLimit(1)
             .foregroundStyle(color)
@@ -5269,6 +5655,10 @@ struct FundTradeRecordsPanelView: View {
             "加仓"
         case .sell:
             "减仓"
+        case .conversionOut:
+            "转出"
+        case .conversionIn:
+            "转入"
         }
     }
 
@@ -5280,7 +5670,30 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func recordConfirmationText(_ record: FundTradeRecord) -> String {
+        if record.status == .pending,
+           isConversionRecord(record),
+           record.amount != nil,
+           let executionDate = TradingCalendar.nextFundTradingDate(after: record.acceptedDate) {
+            return "执行 \(executionDate) 00:00后"
+        }
         return "确认 \(record.acceptedDate)"
+    }
+
+    private func recordStatusTitle(_ record: FundTradeRecord) -> String {
+        if record.status == .pending,
+           isConversionRecord(record),
+           record.amount != nil {
+            return "待执行"
+        }
+        if record.status == .pending,
+           isConversionRecord(record) {
+            return "待净值"
+        }
+        return record.status.title
+    }
+
+    private func isConversionRecord(_ record: FundTradeRecord) -> Bool {
+        record.kind == .conversionOut || record.kind == .conversionIn
     }
 
     @ViewBuilder
@@ -5342,8 +5755,10 @@ struct FundTradeRecordsPanelView: View {
             Color(nsColor: .systemBlue)
         case .buy:
             Color(nsColor: .systemRed)
-        case .sell:
+        case .sell, .conversionOut:
             .fundPulseGreen
+        case .conversionIn:
+            Color(nsColor: .systemRed)
         }
     }
 
@@ -6069,9 +6484,9 @@ private func todayIncomeAmount(_ value: Double, isMasked: Bool = false) -> Text 
         .font(.system(size: 30, weight: .semibold))
 }
 
-private func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeRecord? {
+func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeRecord? {
     let shares = fund.migratedShares ?? 0
-    let amount = fund.positionMode == .amount ? fund.pendingAmount : (fund.migratedPrincipal ?? fund.pendingAmount)
+    let amount = inferredInitialTradeRecordAmount(for: fund)
     guard shares > 0 || (amount ?? 0) > 0 else {
         return nil
     }
@@ -6098,6 +6513,22 @@ private func inferredInitialTradeRecord(for fund: FundPosition) -> FundTradeReco
         confirmedAt: status == .confirmed ? .distantPast : nil,
         failureReason: nil
     )
+}
+
+private func inferredInitialTradeRecordAmount(for fund: FundPosition) -> Double? {
+    if fund.positionMode == .amount {
+        return firstPositiveAmount(fund.pendingAmount, fund.migratedPrincipal, fund.currentAmount)
+    }
+    return firstPositiveAmount(fund.migratedPrincipal, fund.pendingAmount, fund.currentAmount)
+}
+
+private func firstPositiveAmount(_ values: Double?...) -> Double? {
+    for value in values {
+        if let value, value > 0 {
+            return value
+        }
+    }
+    return nil
 }
 
 private func inferredInitialTradeRecordID(for code: String) -> String {

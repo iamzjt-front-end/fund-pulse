@@ -11,7 +11,8 @@ enum PortfolioCalculator {
         var todayIncomeTotal = 0.0
         var todayIncomeBaseTotal = 0.0
         var holdingIncomeTotal = 0.0
-        var pendingCount = snapshot.pendingTrades?.count ?? 0
+        var pendingCount = (snapshot.pendingTrades?.count ?? 0) + (snapshot.pendingConversions?.count ?? 0)
+        let pendingConversionTargetCodes = Set(snapshot.pendingConversions?.map(\.toCode) ?? [])
 
         let funds = snapshot.funds.map { fund in
             var next = fund
@@ -58,7 +59,11 @@ enum PortfolioCalculator {
             let fundCurrentTotal = currentAmount(lots: lots, quote: quote, netValue: holdingNetValue) + (manualAmount ?? 0)
             let isIncomeActive = totalShares > 0 || hasManualHolding
 
-            if status == .pending {
+            let isConversionPlaceholder = pendingConversionTargetCodes.contains(fund.code)
+                && totalShares == 0
+                && manualPrincipal == 0
+                && fund.pendingAmount == nil
+            if status == .pending && !isConversionPlaceholder {
                 pendingCount += 1
             }
             costTotal += fundCostTotal
@@ -101,6 +106,7 @@ enum PortfolioCalculator {
             funds: funds,
             migration: snapshot.migration,
             pendingTrades: snapshot.pendingTrades,
+            pendingConversions: snapshot.pendingConversions,
             tradeRecords: snapshot.tradeRecords
         )
     }

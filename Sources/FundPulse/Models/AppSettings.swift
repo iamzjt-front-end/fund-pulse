@@ -18,7 +18,6 @@ struct AppSettings: Codable, Equatable {
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
     var thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval
     var appearanceMode: AppAppearanceMode = .system
-    var quoteSource: QuoteSource = .eastmoneyCore
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -29,8 +28,7 @@ struct AppSettings: Codable, Equatable {
         operationReminderEnabled: Bool = true,
         operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
         thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
-        appearanceMode: AppAppearanceMode = .system,
-        quoteSource: QuoteSource = .eastmoneyCore
+        appearanceMode: AppAppearanceMode = .system
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -41,7 +39,6 @@ struct AppSettings: Codable, Equatable {
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
         self.thresholdReminderInterval = thresholdReminderInterval
         self.appearanceMode = appearanceMode
-        self.quoteSource = quoteSource.normalizedForSelection
     }
 
     enum CodingKeys: String, CodingKey {
@@ -54,7 +51,6 @@ struct AppSettings: Codable, Equatable {
         case operationReminderTimeMinutes
         case thresholdReminderInterval
         case appearanceMode
-        case quoteSource
     }
 
     init(from decoder: Decoder) throws {
@@ -75,9 +71,6 @@ struct AppSettings: Codable, Equatable {
             forKey: .thresholdReminderInterval
         ) ?? Self.defaultThresholdReminderInterval
         appearanceMode = try container.decodeIfPresent(AppAppearanceMode.self, forKey: .appearanceMode) ?? .system
-        quoteSource = (
-            try container.decodeIfPresent(QuoteSource.self, forKey: .quoteSource) ?? .eastmoneyCore
-        ).normalizedForSelection
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {
@@ -294,49 +287,5 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
 
     var detail: String {
         "后台每 \(title) 自动刷新基金数据，并同步更新菜单栏收益。"
-    }
-}
-
-enum QuoteSource: String, Codable, CaseIterable, Identifiable, Equatable {
-    case eastmoneyCore
-    case fundBabyAuto
-    case eastmoneyFundGZ
-    case tencentOfficial
-
-    var id: String { rawValue }
-
-    static var selectableCases: [QuoteSource] {
-        [.eastmoneyCore, .eastmoneyFundGZ]
-    }
-
-    var normalizedForSelection: QuoteSource {
-        switch self {
-        case .fundBabyAuto:
-            .eastmoneyCore
-        case .eastmoneyCore, .eastmoneyFundGZ, .tencentOfficial:
-            self
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .eastmoneyCore, .fundBabyAuto:
-            "天天基金新接口"
-        case .eastmoneyFundGZ:
-            "天天基金旧接口"
-        case .tencentOfficial:
-            "腾讯官方净值"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .eastmoneyCore, .fundBabyAuto:
-            "fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew，支持批量实时估值；失败时回退旧接口。"
-        case .eastmoneyFundGZ:
-            "fundgz.1234567.com.cn/js/{基金代码}.js，逐只获取实时估值，继续保留用于对照。"
-        case .tencentOfficial:
-            "qt.gtimg.cn/q=jj{基金代码}，只返回官方净值，仅作为接口兜底。"
-        }
     }
 }

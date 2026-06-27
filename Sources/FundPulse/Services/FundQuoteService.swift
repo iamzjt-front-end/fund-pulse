@@ -19,35 +19,17 @@ struct FundQuoteService {
         self.session = session
     }
 
-    func fetchQuote(code: String, source: QuoteSource = .eastmoneyCore) async throws -> FundQuote {
-        switch source {
-        case .eastmoneyCore, .fundBabyAuto:
-            return try await fetchFundBabyAutoQuote(code: code)
-        case .eastmoneyFundGZ:
-            return try await fetchEastmoneyFundGZQuote(code: code)
-        case .tencentOfficial:
-            return try await fetchTencentOfficialQuote(code: code)
-        }
+    func fetchQuote(code: String) async throws -> FundQuote {
+        try await fetchEastmoneyCoreQuote(code: code)
     }
 
-    func fetchQuotes(codes: [String], source: QuoteSource = .eastmoneyCore) async -> [String: FundQuote] {
+    func fetchQuotes(codes: [String]) async -> [String: FundQuote] {
         let uniqueCodes = Array(Set(codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }))
             .filter { !$0.isEmpty }
             .sorted()
         guard !uniqueCodes.isEmpty else { return [:] }
 
-        switch source {
-        case .eastmoneyCore, .fundBabyAuto:
-            var quotes = (try? await fetchEastmoneyCoreQuotes(codes: uniqueCodes)) ?? [:]
-            let missingCodes = uniqueCodes.filter { quotes[$0] == nil }
-            if !missingCodes.isEmpty {
-                let fallbackQuotes = await fetchLegacyQuotesIndividually(codes: missingCodes)
-                quotes.merge(fallbackQuotes) { current, _ in current }
-            }
-            return quotes
-        case .eastmoneyFundGZ, .tencentOfficial:
-            return await fetchQuotesIndividually(codes: uniqueCodes, source: source)
-        }
+        return (try? await fetchEastmoneyCoreQuotes(codes: uniqueCodes)) ?? [:]
     }
 
     func fetchSmartNetValue(code: String, startDate: String) async -> (date: String, value: Double)? {
@@ -93,7 +75,7 @@ struct FundQuoteService {
             return name
         }
 
-        if let quote = try? await fetchQuote(code: code, source: .fundBabyAuto),
+        if let quote = try? await fetchQuote(code: code),
            quote.name != code {
             return quote.name
         }
@@ -130,72 +112,6 @@ struct FundQuoteService {
         return points.last { point in
             let date = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
             return DateOnlyFormatter.string(from: date) < today
-        }
-    }
-
-    private func fetchQuotesIndividually(codes: [String], source: QuoteSource) async -> [String: FundQuote] {
-        await withTaskGroup(of: (String, FundQuote?).self) { group in
-            for code in codes {
-                group.addTask { [session] in
-                    let service = FundQuoteService(session: session)
-                    do {
-                        return (code, try await service.fetchQuote(code: code, source: source))
-                    } catch {
-                        return (code, nil)
-                    }
-                }
-            }
-
-            var quotes: [String: FundQuote] = [:]
-            for await (code, quote) in group {
-                if let quote {
-                    quotes[code] = quote
-                }
-            }
-            return quotes
-        }
-    }
-
-    private func fetchLegacyQuotesIndividually(codes: [String]) async -> [String: FundQuote] {
-        await withTaskGroup(of: (String, FundQuote?).self) { group in
-            for code in codes {
-                group.addTask { [session] in
-                    let service = FundQuoteService(session: session)
-                    do {
-                        return (code, try await service.fetchLegacyQuoteWithTencentFallback(code: code))
-                    } catch {
-                        return (code, nil)
-                    }
-                }
-            }
-
-            var quotes: [String: FundQuote] = [:]
-            for await (code, quote) in group {
-                if let quote {
-                    quotes[code] = quote
-                }
-            }
-            return quotes
-        }
-    }
-
-    private func fetchFundBabyAutoQuote(code: String) async throws -> FundQuote {
-        do {
-            return try await fetchEastmoneyCoreQuote(code: code)
-        } catch {
-            return try await fetchLegacyQuoteWithTencentFallback(code: code)
-        }
-    }
-
-    private func fetchLegacyQuoteWithTencentFallback(code: String) async throws -> FundQuote {
-        do {
-            let eastmoneyQuote = try await fetchEastmoneyFundGZQuote(code: code)
-            guard let tencentQuote = try? await fetchTencentOfficialQuote(code: code) else {
-                return eastmoneyQuote
-            }
-            return mergedQuote(eastmoney: eastmoneyQuote, tencent: tencentQuote)
-        } catch {
-            return try await fetchTencentOfficialQuote(code: code)
         }
     }
 
@@ -246,60 +162,6 @@ struct FundQuoteService {
             throw QuoteError.invalidResponse
         }
         return quotes
-    }
-
-    private func fetchEastmoneyFundGZQuote(code: String) async throws -> FundQuote {
-        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
-        let url = URL(string: "https://fundgz.1234567.com.cn/js/\(code).js?rt=\(timestamp)")!
-        var request = URLRequest(url: url)
-        request.setValue("https://fundgz.1234567.com.cn/", forHTTPHeaderField: "Referer")
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-
-        let (data, _) = try await session.data(for: request)
-        guard let text = String(data: data, encoding: .utf8),
-              let payload = parseJSONP(text)
-        else {
-            throw QuoteError.invalidResponse
-        }
-
-        let decoder = JSONDecoder()
-        let row = try decoder.decode(FundGZPayload.self, from: payload)
-        let realtimeQuote = FundQuote(
-            code: row.fundcode ?? code,
-            name: row.name ?? code,
-            netValue: row.dwjz.doubleValue,
-            estimatedNetValue: (row.gsz ?? row.dwjz).doubleValue,
-            growthRate: row.gszzl.doubleValue,
-            estimateTime: row.gztime ?? "",
-            netValueDate: row.jzrq ?? ""
-        )
-        guard let officialQuote = try? await fetchEastmoneyLatestOfficialQuote(
-            code: code,
-            fallbackName: realtimeQuote.name
-        ) else {
-            return realtimeQuote
-        }
-        return mergedEastmoneyQuote(realtime: realtimeQuote, official: officialQuote)
-    }
-
-    private func fetchTencentOfficialQuote(code: String) async throws -> FundQuote {
-        let url = URL(string: "https://qt.gtimg.cn/q=jj\(code)")!
-        var request = URLRequest(url: url)
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-
-        let (data, _) = try await session.data(for: request)
-        guard let text = decodedText(data, preferredEncoding: Self.gb18030Encoding),
-              let row = parseTencentPayload(text, code: code)
-        else {
-            throw QuoteError.invalidResponse
-        }
-        return row
     }
 
     private func fetchHistoricalNetValue(code: String, date: String) async throws -> Double? {
@@ -570,31 +432,6 @@ struct FundQuoteService {
         return matchedFund?.name?.nilIfBlank ?? matchedFund?.shortName?.nilIfBlank
     }
 
-    private func fetchEastmoneyLatestOfficialQuote(code: String, fallbackName: String) async throws -> FundQuote? {
-        let url = URL(string: "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=\(code)&page=1&per=1")!
-        var request = URLRequest(url: url)
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-            forHTTPHeaderField: "User-Agent"
-        )
-
-        let (data, _) = try await session.data(for: request)
-        guard let text = decodedText(data),
-              let row = parseLatestOfficialNetValue(text)
-        else {
-            throw QuoteError.invalidResponse
-        }
-        return FundQuote(
-            code: code,
-            name: fallbackName,
-            netValue: row.value,
-            estimatedNetValue: row.value,
-            growthRate: row.growthRate ?? 0,
-            estimateTime: "",
-            netValueDate: row.date
-        )
-    }
-
     private func parseJSONP(_ text: String) -> Data? {
         guard let start = text.firstIndex(of: "("),
               let end = text.lastIndex(of: ")"),
@@ -606,35 +443,6 @@ struct FundQuoteService {
         return String(json).data(using: .utf8)
     }
 
-    private func parseTencentPayload(_ text: String, code: String) -> FundQuote? {
-        guard let firstQuote = text.firstIndex(of: "\""),
-              let lastQuote = text.lastIndex(of: "\""),
-              firstQuote < lastQuote
-        else {
-            return nil
-        }
-
-        let payload = String(text[text.index(after: firstQuote)..<lastQuote])
-        let parts = payload.split(separator: "~", omittingEmptySubsequences: false).map(String.init)
-        func part(_ index: Int) -> String {
-            parts.indices.contains(index) ? parts[index] : ""
-        }
-
-        let netValue = Double(part(5)) ?? 0
-        guard netValue > 0 else { return nil }
-        let growthRate = Double(part(7)) ?? 0
-        let netValueDate = String(part(8).prefix(10))
-        return FundQuote(
-            code: part(0).isEmpty ? code : part(0),
-            name: part(1).isEmpty ? code : part(1),
-            netValue: netValue,
-            estimatedNetValue: netValue,
-            growthRate: growthRate,
-            estimateTime: "",
-            netValueDate: netValueDate
-        )
-    }
-
     private func parseHistoricalNetValue(_ text: String, date: String) -> Double? {
         let rows = text.components(separatedBy: "<tr")
         guard let row = rows.first(where: { $0.contains("<td>\(date)</td>") }),
@@ -643,11 +451,6 @@ struct FundQuoteService {
             return nil
         }
         return parsed.value
-    }
-
-    private func parseLatestOfficialNetValue(_ text: String) -> (date: String, value: Double, growthRate: Double?)? {
-        let rows = text.components(separatedBy: "<tr")
-        return rows.lazy.compactMap(parseOfficialNetValueRow).first
     }
 
     private func extractJSONArray(named variableName: String, from text: String) -> Data? {
@@ -868,46 +671,6 @@ struct FundQuoteService {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func mergedQuote(eastmoney: FundQuote, tencent: FundQuote) -> FundQuote {
-        guard !tencent.netValueDate.isEmpty,
-              tencent.netValueDate >= eastmoney.netValueDate
-        else {
-            return eastmoney
-        }
-
-        var merged = eastmoney
-        merged.netValue = tencent.netValue
-        merged.netValueDate = tencent.netValueDate
-
-        let estimateDate = eastmoney.estimateTime.count >= 10 ? String(eastmoney.estimateTime.prefix(10)) : ""
-        if estimateDate.isEmpty || estimateDate <= tencent.netValueDate {
-            merged.estimatedNetValue = tencent.netValue
-            merged.growthRate = tencent.growthRate
-            merged.estimateTime = ""
-        }
-        return merged
-    }
-
-    private func mergedEastmoneyQuote(realtime: FundQuote, official: FundQuote) -> FundQuote {
-        guard !official.netValueDate.isEmpty,
-              official.netValueDate >= realtime.netValueDate
-        else {
-            return realtime
-        }
-
-        var merged = realtime
-        merged.netValue = official.netValue
-        merged.netValueDate = official.netValueDate
-
-        let estimateDate = realtime.estimateTime.count >= 10 ? String(realtime.estimateTime.prefix(10)) : ""
-        if estimateDate.isEmpty || estimateDate <= official.netValueDate {
-            merged.estimatedNetValue = official.netValue
-            merged.growthRate = official.growthRate
-            merged.estimateTime = ""
-        }
-        return merged
-    }
-
     private func decodedText(_ data: Data, preferredEncoding: String.Encoding = .utf8) -> String? {
         String(data: data, encoding: preferredEncoding)
             ?? String(data: data, encoding: .utf8)
@@ -919,16 +682,6 @@ struct FundQuoteService {
             CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
         )
     )
-}
-
-private struct FundGZPayload: Decodable {
-    var fundcode: String?
-    var name: String?
-    var dwjz: String?
-    var gsz: String?
-    var gszzl: String?
-    var gztime: String?
-    var jzrq: String?
 }
 
 private struct EastmoneyCoreQuoteResponse: Decodable {
@@ -954,10 +707,18 @@ private struct EastmoneyCoreQuotePayload: Decodable {
 
         let netValue = netValue.doubleValue
         let estimatedNetValue = estimatedNetValue.doubleValue
-        let hasRealtimeEstimate = estimatedNetValue > 0 || estimateTime.stringValue?.nilIfDash != nil
-        let growthRate = hasRealtimeEstimate
-            ? estimatedGrowthRate.doubleValue
-            : (latestGrowthRate.doubleValue != 0 ? latestGrowthRate.doubleValue : estimatedGrowthRate.doubleValue)
+        let estimateTimeText = estimateTime.stringValue?.nilIfDash
+        let netValueDateText = netValueDate.stringValue?.nilIfDash
+            ?? fallbackNetValueDate.stringValue?.nilIfDash
+        let hasRealtimeEstimate = estimatedNetValue > 0 || estimateTimeText != nil
+        let officialDateHasCaughtUp = Self.officialDateHasCaughtUp(
+            netValueDate: netValueDateText,
+            estimateTime: estimateTimeText
+        )
+        let latestGrowthRateText = latestGrowthRate.stringValue?.nilIfDash
+        let growthRate = officialDateHasCaughtUp
+            ? (latestGrowthRateText != nil ? latestGrowthRateText.doubleValue : estimatedGrowthRate.doubleValue)
+            : estimatedGrowthRate.doubleValue
         let resolvedNetValue = netValue > 0 ? netValue : estimatedNetValue
         guard resolvedNetValue > 0 else { return nil }
 
@@ -967,11 +728,15 @@ private struct EastmoneyCoreQuotePayload: Decodable {
             netValue: resolvedNetValue,
             estimatedNetValue: estimatedNetValue > 0 ? estimatedNetValue : resolvedNetValue,
             growthRate: growthRate,
-            estimateTime: hasRealtimeEstimate ? (estimateTime.stringValue?.nilIfDash ?? "") : "",
-            netValueDate: netValueDate.stringValue?.nilIfDash
-                ?? fallbackNetValueDate.stringValue?.nilIfDash
-                ?? ""
+            estimateTime: hasRealtimeEstimate ? (estimateTimeText ?? "") : "",
+            netValueDate: netValueDateText ?? ""
         )
+    }
+
+    private static func officialDateHasCaughtUp(netValueDate: String?, estimateTime: String?) -> Bool {
+        guard let netValueDate else { return false }
+        guard let estimateTime, estimateTime.count >= 10 else { return true }
+        return netValueDate >= String(estimateTime.prefix(10))
     }
 
     private enum CodingKeys: String, CodingKey {

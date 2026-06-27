@@ -404,10 +404,16 @@ struct FundTradeEditorView: View {
                     confirmationRow("买入日期", tradeDateText)
                 } else {
                     confirmationRow("卖出份额", "\(numberText(inputShares ?? 0, places: 2)) 份")
-                    confirmationRow("预估卖出单价", referencePriceText)
+                    confirmationRow("预估卖出单价") {
+                        sellPriceDisplayValue
+                    }
                     confirmationRow("卖出费率/费用", sellFeeValueText)
-                    confirmationRow("预估手续费", estimatedSellFee.map { MoneyFormatter.plainMoney($0) } ?? "待计算")
-                    confirmationRow("预计回款", estimatedSellReturn.map { MoneyFormatter.plainMoney($0) } ?? "待计算")
+                    confirmationRow("预估手续费") {
+                        sellFeeDisplayValue
+                    }
+                    confirmationRow("预计回款") {
+                        sellReturnDisplayValue
+                    }
                     confirmationRow("卖出日期", tradeDateText)
                 }
                 Divider().opacity(0.55)
@@ -422,7 +428,7 @@ struct FundTradeEditorView: View {
 
     private var positionPreview: some View {
         section("持仓变化预览") {
-            HStack(spacing: 8) {
+            VStack(spacing: 8) {
                 previewTile(
                     title: "持有份额",
                     before: numberText(fund.migratedShares ?? 0, places: 2),
@@ -430,8 +436,12 @@ struct FundTradeEditorView: View {
                 )
                 previewTile(
                     title: "持有市值（估）",
-                    before: previewCurrentValueBefore.map { MoneyFormatter.plainMoney($0) } ?? "--",
-                    after: previewCurrentValueAfter.map { MoneyFormatter.plainMoney($0) } ?? "待计算"
+                    before: {
+                        previewCurrentValueBeforeDisplayValue
+                    },
+                    after: {
+                        previewCurrentValueAfterDisplayValue
+                    }
                 )
             }
         }
@@ -506,6 +516,9 @@ struct FundTradeEditorView: View {
     }
 
     private var headerTitle: String {
+        if isEditingInitialFund {
+            return isConfirming ? "新增基金确认" : "新增基金"
+        }
         if isConfirming {
             return action == .buy ? "买入确认" : "卖出确认"
         }
@@ -545,6 +558,10 @@ struct FundTradeEditorView: View {
     }
 
     private var canChooseTradeMode: Bool {
+        isEditingInitialFund
+    }
+
+    private var isEditingInitialFund: Bool {
         editingRecord?.kind == .newFund
     }
 
@@ -637,6 +654,60 @@ struct FundTradeEditorView: View {
         }
     }
 
+    // Display-only approximation; keep it out of persisted trades and position math.
+    private var displayOnlyApproximateSellReturn: Double? {
+        guard referenceNetValue == nil,
+              let grossAmount = displayOnlyApproximateSellGrossAmount,
+              let fee = displayOnlyApproximateSellFee
+        else { return nil }
+        return max(0, grossAmount - fee)
+    }
+
+    private var displayOnlyApproximateSellGrossAmount: Double? {
+        guard action == .sell,
+              let shares = inputShares,
+              let price = displayOnlyApproximateSellPrice,
+              price > 0
+        else { return nil }
+        return shares * price
+    }
+
+    private var displayOnlyApproximateSellPrice: Double? {
+        guard action == .sell,
+              fund.todayRate.isFinite
+        else { return nil }
+        let basePrice: Double?
+        if let currentAmount = fund.currentAmount,
+           let totalShares = fund.migratedShares,
+           currentAmount > 0,
+           totalShares > 0 {
+            basePrice = currentAmount / totalShares
+        } else if let cost = fund.migratedCost,
+                  cost > 0 {
+            basePrice = cost
+        } else {
+            basePrice = nil
+        }
+        guard let basePrice, basePrice > 0 else { return nil }
+        if fund.isUpdated {
+            return basePrice
+        }
+        guard fund.todayRate != 0 else { return nil }
+        return basePrice * (1 + fund.todayRate / 100)
+    }
+
+    private var displayOnlyApproximateSellFee: Double? {
+        guard let grossAmount = displayOnlyApproximateSellGrossAmount,
+              let feeValue = inputSellFeeValue
+        else { return nil }
+        switch sellFeeMode {
+        case .rate:
+            return grossAmount * feeValue / 100
+        case .amount:
+            return feeValue
+        }
+    }
+
     private var sellFeeValueText: String {
         let value = inputSellFeeValue ?? 0
         switch sellFeeMode {
@@ -644,6 +715,42 @@ struct FundTradeEditorView: View {
             return "\(numberText(value, places: 2))%"
         case .amount:
             return MoneyFormatter.plainMoney(value)
+        }
+    }
+
+    @ViewBuilder
+    private var sellPriceDisplayValue: some View {
+        if let referenceNetValue {
+            Text(MoneyFormatter.plainMoney(referenceNetValue))
+        } else if let displayOnlyApproximateSellPrice {
+            Text("≈ \(MoneyFormatter.plainMoney(displayOnlyApproximateSellPrice))")
+                .foregroundStyle(Color(nsColor: .systemOrange))
+        } else {
+            Text("待确认")
+        }
+    }
+
+    @ViewBuilder
+    private var sellFeeDisplayValue: some View {
+        if let estimatedSellFee {
+            Text(MoneyFormatter.plainMoney(estimatedSellFee))
+        } else if let displayOnlyApproximateSellFee {
+            Text("≈ \(MoneyFormatter.plainMoney(displayOnlyApproximateSellFee))")
+                .foregroundStyle(Color(nsColor: .systemOrange))
+        } else {
+            Text("待计算")
+        }
+    }
+
+    @ViewBuilder
+    private var sellReturnDisplayValue: some View {
+        if let estimatedSellReturn {
+            Text(MoneyFormatter.plainMoney(estimatedSellReturn))
+        } else if let displayOnlyApproximateSellReturn {
+            Text("≈ \(MoneyFormatter.plainMoney(displayOnlyApproximateSellReturn))")
+                .foregroundStyle(Color(nsColor: .systemOrange))
+        } else {
+            Text("待计算")
         }
     }
 
@@ -667,6 +774,47 @@ struct FundTradeEditorView: View {
     private var previewCurrentValueAfter: Double? {
         guard let previewShares, let referenceNetValue else { return nil }
         return previewShares * referenceNetValue
+    }
+
+    private var displayOnlyApproximateCurrentValueBefore: Double? {
+        guard referenceNetValue == nil,
+              let price = displayOnlyApproximateSellPrice
+        else { return nil }
+        return (fund.migratedShares ?? 0) * price
+    }
+
+    private var displayOnlyApproximateCurrentValueAfter: Double? {
+        guard referenceNetValue == nil,
+              let previewShares,
+              let price = displayOnlyApproximateSellPrice
+        else { return nil }
+        return previewShares * price
+    }
+
+    @ViewBuilder
+    private var previewCurrentValueBeforeDisplayValue: some View {
+        if let previewCurrentValueBefore {
+            Text(MoneyFormatter.plainMoney(previewCurrentValueBefore))
+                .foregroundStyle(.secondary)
+        } else if let displayOnlyApproximateCurrentValueBefore {
+            Text("≈ \(MoneyFormatter.plainMoney(displayOnlyApproximateCurrentValueBefore))")
+                .foregroundStyle(Color(nsColor: .systemOrange))
+        } else {
+            Text("--")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var previewCurrentValueAfterDisplayValue: some View {
+        if let previewCurrentValueAfter {
+            Text(MoneyFormatter.plainMoney(previewCurrentValueAfter))
+        } else if let displayOnlyApproximateCurrentValueAfter {
+            Text("≈ \(MoneyFormatter.plainMoney(displayOnlyApproximateCurrentValueAfter))")
+                .foregroundStyle(Color(nsColor: .systemOrange))
+        } else {
+            Text("待计算")
+        }
     }
 
     private var referencePriceText: String {
@@ -715,12 +863,21 @@ struct FundTradeEditorView: View {
     }
 
     private func confirmationRow(_ title: String, _ value: String) -> some View {
+        confirmationRow(title) {
+            Text(value)
+        }
+    }
+
+    private func confirmationRow<Value: View>(
+        _ title: String,
+        @ViewBuilder value: () -> Value
+    ) -> some View {
         HStack(alignment: .firstTextBaseline) {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 12)
-            Text(value)
+            value()
                 .font(.system(size: 12, weight: .semibold))
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
@@ -729,16 +886,28 @@ struct FundTradeEditorView: View {
     }
 
     private func previewTile(title: String, before: String, after: String) -> some View {
+        previewTile(title: title) {
+            Text(before)
+                .foregroundStyle(.secondary)
+        } after: {
+            Text(after)
+        }
+    }
+
+    private func previewTile<Before: View, After: View>(
+        title: String,
+        @ViewBuilder before: () -> Before,
+        @ViewBuilder after: () -> After
+    ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
             HStack(spacing: 4) {
-                Text(before)
-                    .foregroundStyle(.secondary)
+                before()
                 Text("→")
                     .foregroundStyle(.tertiary)
-                Text(after)
+                after()
                     .fontWeight(.semibold)
             }
             .font(.system(size: 11, weight: .medium))
