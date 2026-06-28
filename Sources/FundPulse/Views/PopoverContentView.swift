@@ -192,7 +192,7 @@ struct PopoverContentView: View {
                 .help("查看持仓占比")
                 Button(action: onOpenHoldingIncomeRanking) {
                     metricCard(
-                        "累计收益",
+                        "持有收益",
                         headerSignedMoneyText(store.snapshot.holdingIncome),
                         tone: headerMetricTone(store.snapshot.holdingIncome)
                     )
@@ -200,11 +200,11 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看累计收益排行")
+                .help("查看持有收益排行")
 
                 Button(action: onOpenHoldingRateRanking) {
                     metricCard(
-                        "累计收益率",
+                        "持有收益率",
                         headerPercentText(store.snapshot.holdingIncomeRate),
                         tone: headerMetricTone(store.snapshot.holdingIncomeRate)
                     )
@@ -212,7 +212,7 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看累计收益率排行")
+                .help("查看持有收益率排行")
             }
 
             if let pendingHeaderImpact {
@@ -785,6 +785,9 @@ struct PopoverContentView: View {
     private var fundList: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
+                MainPopoverNativeScrollConfiguration()
+                    .frame(height: 0)
+
                 if filter == .pending {
                     pendingActivityList
                 } else {
@@ -792,7 +795,7 @@ struct PopoverContentView: View {
                 }
             }
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.visible)
         .refreshable {
             await refreshAsync()
         }
@@ -1849,9 +1852,9 @@ private enum FundSortMode: String, CaseIterable, Identifiable {
         case .todayTotal:
             "今日总值"
         case .holdingIncome:
-            "累计收益"
+            "持有收益"
         case .holdingRate:
-            "累计收益率"
+            "持有收益率"
         case .name:
             "名称(A-Z)"
         }
@@ -2462,12 +2465,12 @@ private struct PortfolioTreemapTooltipWindowContent: View {
                 tooltipMetric("今日涨幅", MoneyFormatter.percent(item.fund.todayRate, signed: true), color: toneColor(for: item.fund.todayRate))
                 tooltipMetric("今日收益", MoneyFormatter.money(item.fund.todayIncome, signed: true), color: toneColor(for: item.fund.todayIncome))
                 tooltipMetric(
-                    "累计收益",
+                    "持有收益",
                     MoneyFormatter.money(PortfolioPanelDisplay.holdingIncome(for: item.fund), signed: true),
                     color: toneColor(for: PortfolioPanelDisplay.holdingIncome(for: item.fund))
                 )
                 tooltipMetric(
-                    "累计收益率",
+                    "持有收益率",
                     item.fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "--",
                     color: item.fund.holdingRate.map(toneColor(for:)) ?? .secondary
                 )
@@ -2787,9 +2790,9 @@ enum IncomeRankingKind {
         case .today:
             return "实时收益率排行"
         case .holding where metric == .amount:
-            return "累计收益排行"
+            return "持有收益排行"
         case .holding:
-            return "累计收益率排行"
+            return "持有收益率排行"
         }
     }
 
@@ -2798,7 +2801,7 @@ enum IncomeRankingKind {
         case .today:
             "暂无实时收益"
         case .holding:
-            "暂无累计收益"
+            "暂无持有收益"
         }
     }
 
@@ -4246,7 +4249,6 @@ struct FundDetailView: View {
                     metricsGrid
                     trendSection
                     historySection
-                    sectorExposureSection
                     topHoldingsSection
                 }
                 .padding(.horizontal, 14)
@@ -4415,8 +4417,8 @@ struct FundDetailView: View {
             metric("持有金额", numberText(currentTotal, places: 2))
             metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
             metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
-            dailyIncomeMetricButton("累计收益", signedNumberText(holdingIncome), tone: holdingIncome)
-            metric("累计收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
+            dailyIncomeMetricButton("持有收益", signedNumberText(holdingIncome), tone: holdingIncome)
+            metric("持有收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
             metric("持有天数", holdingDaysText)
         }
         .padding(12)
@@ -4531,67 +4533,6 @@ struct FundDetailView: View {
                         if index < supplement.topHoldings.count - 1 {
                             Divider()
                                 .opacity(0.55)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 10))
-    }
-
-    private var sectorExposureSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            sectionHeader("关联板块", trailing: sectorExposureTrailingText, showsLoading: isSupplementLoading)
-
-            if relatedSectorRows.isEmpty && industryAllocationRows.isEmpty && assetAllocationRows.isEmpty {
-                emptySupplementView(isSupplementLoading ? "板块加载中..." : "暂无关联板块数据")
-                    .frame(height: 64)
-            } else {
-                VStack(alignment: .leading, spacing: 9) {
-                    if !relatedSectorRows.isEmpty {
-                        exposureGroupTitle("重仓关联")
-                        VStack(spacing: 7) {
-                            ForEach(relatedSectorRows) { exposure in
-                                sectorExposureRow(
-                                    exposure,
-                                    maxWeight: relatedSectorMaxWeight,
-                                    tint: .orange
-                                )
-                            }
-                        }
-                    }
-
-                    if !assetAllocationRows.isEmpty {
-                        if !relatedSectorRows.isEmpty {
-                            Divider().opacity(0.36)
-                        }
-                        exposureGroupTitle("资产配置")
-                        LazyVGrid(
-                            columns: Array(repeating: GridItem(.flexible(), spacing: 7), count: 2),
-                            alignment: .leading,
-                            spacing: 7
-                        ) {
-                            ForEach(assetAllocationRows) { item in
-                                assetAllocationChip(item)
-                            }
-                        }
-                    }
-
-                    if !industryAllocationRows.isEmpty {
-                        if !relatedSectorRows.isEmpty || !assetAllocationRows.isEmpty {
-                            Divider().opacity(0.36)
-                        }
-                        exposureGroupTitle("披露行业")
-                        VStack(spacing: 7) {
-                            ForEach(industryAllocationRows) { exposure in
-                                sectorExposureRow(
-                                    exposure,
-                                    maxWeight: industryAllocationMaxWeight,
-                                    tint: .blue
-                                )
-                            }
                         }
                     }
                 }
@@ -4918,57 +4859,6 @@ struct FundDetailView: View {
         .frame(height: 34)
     }
 
-    private func exposureGroupTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-    }
-
-    private func sectorExposureRow(_ exposure: FundSectorExposure, maxWeight: Double, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Text(exposure.name)
-                    .font(.system(size: 11, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(MoneyFormatter.percent(exposure.weight, signed: false))
-                    .font(.system(size: 10, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(tint)
-            }
-
-            GeometryReader { proxy in
-                let width = proxy.size.width * min(max(exposure.weight / maxWeight, 0), 1)
-                Capsule()
-                    .fill(tint.opacity(0.12))
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(tint.opacity(0.48))
-                            .frame(width: max(width, 4))
-                    }
-            }
-            .frame(height: 5)
-        }
-        .frame(height: 29)
-    }
-
-    private func assetAllocationChip(_ item: FundAssetAllocationItem) -> some View {
-        HStack(spacing: 6) {
-            Text(item.name)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Text(MoneyFormatter.percent(item.weight, signed: false))
-                .font(.system(size: 10, weight: .semibold))
-                .monospacedDigit()
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 8)
-        .frame(height: 25)
-        .background(PanelDesign.selectorBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-
     private func stockHoldingRow(_ holding: FundStockHolding, rank: Int) -> some View {
         HStack(spacing: 8) {
             Text("\(rank)")
@@ -5170,36 +5060,6 @@ struct FundDetailView: View {
             return "\(supplement.topHoldings.count)只"
         }
         return "\(supplement.topHoldings.count)只 · \(date)"
-    }
-
-    private var sectorExposureTrailingText: String? {
-        if let date = supplement.holdingDisclosureDate {
-            return "重仓 \(date)"
-        }
-        if let date = supplement.industryDisclosureDate ?? supplement.assetAllocationDate {
-            return date
-        }
-        return nil
-    }
-
-    private var relatedSectorRows: [FundSectorExposure] {
-        Array(supplement.relatedSectors.prefix(5))
-    }
-
-    private var industryAllocationRows: [FundSectorExposure] {
-        Array(supplement.industryAllocation.prefix(3))
-    }
-
-    private var assetAllocationRows: [FundAssetAllocationItem] {
-        Array(supplement.assetAllocation.prefix(4))
-    }
-
-    private var relatedSectorMaxWeight: Double {
-        max(relatedSectorRows.map(\.weight).max() ?? 1, 1)
-    }
-
-    private var industryAllocationMaxWeight: Double {
-        max(industryAllocationRows.map(\.weight).max() ?? 1, 1)
     }
 
     private var intradayRatePoints: [FundIntradayRatePoint] {
@@ -6576,6 +6436,49 @@ private extension PositionTimeType {
             0
         case .after15:
             1
+        }
+    }
+}
+
+private struct MainPopoverNativeScrollConfiguration: NSViewRepresentable {
+    @MainActor
+    func makeNSView(context: Context) -> NativeScrollConfigurationView {
+        NativeScrollConfigurationView(frame: .zero)
+    }
+
+    @MainActor
+    func updateNSView(_ view: NativeScrollConfigurationView, context: Context) {
+        view.configureEnclosingScrollView()
+    }
+}
+
+@MainActor
+private final class NativeScrollConfigurationView: NSView {
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        configureEnclosingScrollView()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureEnclosingScrollView()
+    }
+
+    func configureEnclosingScrollView() {
+        var ancestor = superview
+        while let current = ancestor {
+            if let scrollView = current as? NSScrollView {
+                scrollView.drawsBackground = false
+                scrollView.hasVerticalScroller = true
+                scrollView.hasHorizontalScroller = false
+                scrollView.autohidesScrollers = true
+                scrollView.scrollerStyle = .overlay
+                scrollView.scrollerInsets = NSEdgeInsets(top: 7, left: 0, bottom: 7, right: 2)
+                scrollView.verticalScroller?.controlSize = .small
+                scrollView.verticalScroller?.knobStyle = .default
+                return
+            }
+            ancestor = current.superview
         }
     }
 }

@@ -236,7 +236,7 @@ final class PortfolioStore {
         guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == normalizedDraft.fromCode }) else {
             throw PortfolioStoreError.fundNotFound
         }
-        guard availableShares(for: snapshot.funds[fromIndex]) + 0.0001 >= normalizedDraft.shares else {
+        guard availableShares(for: snapshot.funds[fromIndex]) + PortfolioPrecision.shareAvailabilityTolerance >= normalizedDraft.shares else {
             throw PortfolioStoreError.insufficientShares
         }
 
@@ -1412,7 +1412,7 @@ final class PortfolioStore {
                 return lhs.incomeStartDate < rhs.incomeStartDate
             }
         let availableShares = lots.reduce(0) { $0 + $1.shares }
-        guard sellShares <= availableShares + 0.0001 else {
+        guard sellShares <= availableShares + PortfolioPrecision.shareAvailabilityTolerance else {
             throw PortfolioStoreError.insufficientShares
         }
 
@@ -1795,7 +1795,7 @@ final class PortfolioStore {
             return lhs.incomeStartDate < rhs.incomeStartDate
         }
         let availableShares = lots.reduce(0) { $0 + $1.shares }
-        guard sellShares <= availableShares + 0.0001 else {
+        guard sellShares <= availableShares + PortfolioPrecision.shareAvailabilityTolerance else {
             throw PortfolioStoreError.insufficientShares
         }
 
