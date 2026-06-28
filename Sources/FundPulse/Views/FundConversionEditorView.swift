@@ -697,7 +697,7 @@ struct FundConversionEditorView: View {
         !targetCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && targetCode.trimmingCharacters(in: .whitespacesAndNewlines) != sourceFund.code
             && (inputShares ?? 0) > 0
-            && (inputShares ?? 0) <= (sourceFund.migratedShares ?? 0) + 0.0001
+            && (inputShares ?? 0) <= (sourceFund.migratedShares ?? 0) + PortfolioPrecision.shareAvailabilityTolerance
             && inputSellFeeValue != nil
             && inputBuyFeeRate != nil
     }

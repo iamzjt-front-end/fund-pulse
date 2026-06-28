@@ -26,6 +26,7 @@ Swift 版应用产物会生成在 `dist/fund-pulse.app`，发布包会生成在 
 
 - 基金实时净值、估值和基础信息：东方财富 / 天天基金相关接口
 - Swift 版当前使用 `fundgz.1234567.com.cn` 作为实时估值源
+- 养基宝小程序接口链路和板块字段维护记录见 [docs/yangjibao-api.md](docs/yangjibao-api.md)
 
 ## 数据文件
 

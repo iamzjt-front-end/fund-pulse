@@ -2314,6 +2314,57 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testFullConversionAllowsDisplayedShareRoundingAboveStoredShares() async throws {
+        let now = try chinaDate("2026-06-22 16:00")
+        let service = multiTradeQuoteService([
+            Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
+            "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-rounded-full-conversion-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 2_615.35765, cost: 1),
+                    conversionFund(code: "290008", name: "泰信发展主题混合", shares: 50, cost: 1)
+                ],
+                migration: nil
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try await store.convertFundPosition(
+            FundConversionDraft(
+                fromCode: Self.tradeTestCode,
+                toCode: "290008",
+                toName: "泰信发展主题混合",
+                shares: 2_615.36,
+                tradeDate: "2026-06-22",
+                tradeTimeType: .before15
+            )
+        )
+
+        XCTAssertNil(store.snapshot.pendingConversions)
+        let sourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
+        XCTAssertEqual(sourceFund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        let outRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.kind == .conversionOut })
+        XCTAssertEqual(outRecord.confirmedShares ?? 0, 2_615.36, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testPendingConversionWaitsWhenEitherConfirmedNetValueIsMissing() async throws {
         var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
