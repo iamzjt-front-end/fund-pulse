@@ -248,7 +248,25 @@ struct SettingsView: View {
                     }
 
                     PanelSection(title: "主弹窗") {
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .center, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("显示大盘指数")
+                                        .font(.system(size: 11, weight: .semibold))
+                                    Text("在主弹窗底部展示一行指数行情，可展开查看更多。")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 8)
+                                FocuslessSwitch(isOn: marketIndexesShownBinding)
+                                    .frame(width: 54, height: 30)
+                            }
+
+                            Divider()
+                                .overlay(.secondary.opacity(0.14))
+
                             HStack {
                                 Text("高度")
                                     .font(.system(size: 11, weight: .medium))
@@ -263,6 +281,19 @@ struct SettingsView: View {
                                 step: Double(AppSettings.mainPanelHeightSliderStep)
                             )
                             .controlSize(.small)
+
+                            if settingsStore.settings.showsMarketIndexes {
+                                Divider()
+                                    .overlay(.secondary.opacity(0.14))
+
+                                HStack {
+                                    Text("默认显示的指数")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    defaultMarketIndexPicker
+                                }
+                            }
                         }
                         .padding(9)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -446,6 +477,51 @@ struct SettingsView: View {
                 onSettingsChanged?()
             }
         )
+    }
+
+    private var marketIndexesShownBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.showsMarketIndexes },
+            set: { isShown in
+                settingsStore.setShowsMarketIndexes(isShown)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    private var defaultMarketIndexPicker: some View {
+        Menu {
+            ForEach(MarketIndexID.allCases) { indexID in
+                Button {
+                    settingsStore.setDefaultMarketIndexID(indexID)
+                    onSettingsChanged?()
+                } label: {
+                    HStack {
+                        Text(indexID.title)
+                        if indexID == settingsStore.settings.defaultMarketIndexID {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(settingsStore.settings.defaultMarketIndexID.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .frame(width: 130, height: 26)
+            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 7))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     private var mainPanelHeightInput: some View {

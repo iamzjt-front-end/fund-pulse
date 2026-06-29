@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 10
+    static let currentSchemaVersion = 11
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
@@ -10,6 +10,7 @@ struct AppSettings: Codable, Equatable {
     static let defaultThresholdReminderInterval: FundThresholdReminderInterval = .thirtyMinutes
     static let defaultAutoRefreshInterval: AutoRefreshInterval = .fiveSeconds
     static let defaultMarketClosedAutoRefreshInterval: AutoRefreshInterval = .tenMinutes
+    static let defaultMarketIndexIdentifier: MarketIndexID = .shanghaiComposite
 
     var settingsSchemaVersion: Int? = Self.currentSchemaVersion
     var menuBarDisplayMode: MenuBarDisplayMode = .color
@@ -21,6 +22,8 @@ struct AppSettings: Codable, Equatable {
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
     var thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval
     var appearanceMode: AppAppearanceMode = .system
+    var showsMarketIndexes: Bool = true
+    var defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -32,7 +35,9 @@ struct AppSettings: Codable, Equatable {
         operationReminderEnabled: Bool = true,
         operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
         thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
-        appearanceMode: AppAppearanceMode = .system
+        appearanceMode: AppAppearanceMode = .system,
+        showsMarketIndexes: Bool = true,
+        defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -44,6 +49,8 @@ struct AppSettings: Codable, Equatable {
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
         self.thresholdReminderInterval = thresholdReminderInterval
         self.appearanceMode = appearanceMode
+        self.showsMarketIndexes = showsMarketIndexes
+        self.defaultMarketIndexID = defaultMarketIndexID
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,6 +64,8 @@ struct AppSettings: Codable, Equatable {
         case operationReminderTimeMinutes
         case thresholdReminderInterval
         case appearanceMode
+        case showsMarketIndexes
+        case defaultMarketIndexID
     }
 
     init(from decoder: Decoder) throws {
@@ -88,6 +97,11 @@ struct AppSettings: Codable, Equatable {
             forKey: .thresholdReminderInterval
         ) ?? Self.defaultThresholdReminderInterval
         appearanceMode = try container.decodeIfPresent(AppAppearanceMode.self, forKey: .appearanceMode) ?? .system
+        showsMarketIndexes = try container.decodeIfPresent(Bool.self, forKey: .showsMarketIndexes) ?? true
+        let decodedMarketIndexID = try container.decodeIfPresent(String.self, forKey: .defaultMarketIndexID)
+        defaultMarketIndexID = decodedMarketIndexID
+            .flatMap(MarketIndexID.init(rawValue:))
+            ?? Self.defaultMarketIndexIdentifier
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {

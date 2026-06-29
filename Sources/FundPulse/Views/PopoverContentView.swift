@@ -3,6 +3,8 @@ import SwiftUI
 
 struct MainPanelWindowView: View {
     let store: PortfolioStore
+    let settingsStore: AppSettingsStore
+    let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
     let uiState: PopoverUIState
     let mainPanelHeight: CGFloat
@@ -39,6 +41,8 @@ struct MainPanelWindowView: View {
             
             PopoverContentView(
                 store: store,
+                settingsStore: settingsStore,
+                marketIndexStore: marketIndexStore,
                 updateStore: updateStore,
                 selectedFundCode: selectedFundCode,
                 onRefresh: onRefresh,
@@ -101,6 +105,8 @@ private struct PopoverChromeShape: Shape {
 
 struct PopoverContentView: View {
     let store: PortfolioStore
+    let settingsStore: AppSettingsStore
+    let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
@@ -129,6 +135,7 @@ struct PopoverContentView: View {
     @State private var filter: FundListFilter = .holding
     @State private var sortMode: FundSortMode = .todayRate
     @State private var isSortMenuPresented = false
+    @State private var isMarketIndexExpanded = false
     @State private var deletingPendingActivity: PendingTradeActivity?
     @Namespace private var filterSwitchNamespace
 
@@ -140,6 +147,10 @@ struct PopoverContentView: View {
                 .zIndex(3)
             fundList
                 .zIndex(0)
+            if settingsStore.settings.showsMarketIndexes {
+                marketIndexFooter
+                    .zIndex(1)
+            }
         }
         .background(panelSurfaceBackground)
         .alert("删除待确认记录", isPresented: deletePendingActivityConfirmationBinding, presenting: deletingPendingActivity) { activity in
@@ -844,6 +855,195 @@ struct PopoverContentView: View {
         }
     }
 
+    private var marketIndexFooter: some View {
+        VStack(spacing: 0) {
+            if isMarketIndexExpanded {
+                marketIndexExpandedContent
+            } else {
+                marketIndexCollapsedRow
+            }
+        }
+        .background(marketIndexFooterBackground)
+        .overlay(alignment: .top) {
+            Divider()
+                .opacity(colorScheme == .dark ? 0.62 : 0.72)
+        }
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.10), radius: 8, x: 0, y: -3)
+        .onChange(of: settingsStore.settings.showsMarketIndexes) { _, isShown in
+            if !isShown {
+                isMarketIndexExpanded = false
+            }
+        }
+    }
+
+    private var marketIndexCollapsedRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.16)) {
+                isMarketIndexExpanded = true
+            }
+        } label: {
+            HStack(spacing: 7) {
+                if let quote = primaryMarketIndexQuote {
+                    Text(marketIndexDisplayName(quote))
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(width: 70, alignment: .leading)
+
+                    Spacer(minLength: 6)
+
+                    Text(marketIndexValueText(quote.value))
+                        .font(.system(size: 12, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(toneColor(for: quote.changeRate))
+                        .lineLimit(1)
+
+                    Text(marketIndexChangeText(quote.change))
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(toneColor(for: quote.changeRate))
+                        .lineLimit(1)
+                        .frame(width: 52, alignment: .trailing)
+
+                    Text(MoneyFormatter.percent(quote.changeRate, signed: true))
+                        .font(.system(size: 11, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(toneColor(for: quote.changeRate))
+                        .lineLimit(1)
+                        .frame(width: 48, alignment: .trailing)
+                } else {
+                    Text(marketIndexStore.isRefreshing ? "指数加载中" : "指数暂无数据")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, height: 14)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("展开大盘指数")
+    }
+
+    private var marketIndexExpandedContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    isMarketIndexExpanded = false
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Text("大盘指数")
+                        .font(.system(size: 11, weight: .semibold))
+                    if marketIndexStore.isRefreshing {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.64)
+                            .frame(width: 14, height: 14)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: 30)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("收起大盘指数")
+
+            if marketIndexQuotes.isEmpty {
+                Text(marketIndexStore.isRefreshing ? "指数加载中" : "指数暂无数据")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 72)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 7) {
+                        ForEach(marketIndexQuotes) { quote in
+                            marketIndexCard(quote)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 9)
+                }
+                .scrollIndicators(.hidden)
+                .frame(height: 86)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    private var marketIndexQuotes: [MarketIndexQuote] {
+        marketIndexStore.orderedQuotes()
+    }
+
+    private var primaryMarketIndexQuote: MarketIndexQuote? {
+        marketIndexStore.primaryQuote(defaultID: settingsStore.settings.defaultMarketIndexID)
+    }
+
+    private func marketIndexCard(_ quote: MarketIndexQuote) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(marketIndexDisplayName(quote))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+
+            Text(marketIndexValueText(quote.value))
+                .font(.system(size: 16, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(toneColor(for: quote.changeRate))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            HStack(spacing: 5) {
+                Text(marketIndexChangeText(quote.change))
+                Text(MoneyFormatter.percent(quote.changeRate, signed: true))
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .monospacedDigit()
+            .foregroundStyle(toneColor(for: quote.changeRate))
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+        }
+        .padding(.horizontal, 9)
+        .frame(width: 104, height: 74, alignment: .leading)
+        .background(marketIndexCardBackground(for: quote), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(toneColor(for: quote.changeRate).opacity(colorScheme == .dark ? 0.20 : 0.14), lineWidth: 0.65)
+        )
+    }
+
+    private func marketIndexDisplayName(_ quote: MarketIndexQuote) -> String {
+        quote.id.title
+    }
+
+    private func marketIndexValueText(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    private func marketIndexChangeText(_ value: Double) -> String {
+        let sign = value > 0 ? "+" : ""
+        return "\(sign)\(value.formatted(.number.precision(.fractionLength(2))))"
+    }
+
+    private func marketIndexCardBackground(for quote: MarketIndexQuote) -> Color {
+        toneColor(for: quote.changeRate).opacity(colorScheme == .dark ? 0.16 : 0.10)
+    }
+
     private var refreshStatusIndicator: some View {
         ZStack {
             if isManualRefreshFeedbackVisible {
@@ -1454,6 +1654,12 @@ struct PopoverContentView: View {
         Color(red: colorScheme == .dark ? 15 / 255 : 250 / 255,
               green: colorScheme == .dark ? 17 / 255 : 248 / 255,
               blue: colorScheme == .dark ? 21 / 255 : 243 / 255)
+    }
+
+    private var marketIndexFooterBackground: some View {
+        Color(red: colorScheme == .dark ? 17 / 255 : 252 / 255,
+              green: colorScheme == .dark ? 19 / 255 : 250 / 255,
+              blue: colorScheme == .dark ? 23 / 255 : 246 / 255)
     }
 
     private func metricCardBackground(_ tone: Double?, isTotal: Bool = false) -> some ShapeStyle {

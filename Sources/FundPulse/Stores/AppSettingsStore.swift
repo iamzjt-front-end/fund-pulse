@@ -79,6 +79,16 @@ final class AppSettingsStore {
         try? save()
     }
 
+    func setShowsMarketIndexes(_ isShown: Bool) {
+        settings.showsMarketIndexes = isShown
+        try? save()
+    }
+
+    func setDefaultMarketIndexID(_ id: MarketIndexID) {
+        settings.defaultMarketIndexID = id
+        try? save()
+    }
+
     var settingsFileURL: URL {
         dataDirectory.appending(path: "settings.json")
     }
