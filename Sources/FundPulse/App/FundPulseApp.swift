@@ -18,6 +18,7 @@ struct FundPulseApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     let portfolioStore = PortfolioStore()
     let settingsStore = AppSettingsStore()
+    let marketIndexStore = MarketIndexStore()
     let updateStore = AppUpdateStore()
     private var statusBarController: StatusBarController?
 
@@ -32,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusBarController = StatusBarController(
             store: portfolioStore,
             settingsStore: settingsStore,
+            marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             appVersion: appVersion,
             onCheckUpdate: { [weak self] in
@@ -57,6 +59,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func refreshPortfolioAndStatusTitle() async {
         await portfolioStore.refreshQuotes()
+        if settingsStore.settings.showsMarketIndexes {
+            await marketIndexStore.refresh()
+        }
         refreshStatusTitle()
     }
 

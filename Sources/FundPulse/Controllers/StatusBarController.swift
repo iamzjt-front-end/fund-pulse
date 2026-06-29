@@ -317,6 +317,7 @@ final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let store: PortfolioStore
     private let settingsStore: AppSettingsStore
+    private let marketIndexStore: MarketIndexStore
     private let updateStore: AppUpdateStore
     private let appVersion: String
     private let popoverState = PopoverUIState()
@@ -357,6 +358,7 @@ final class StatusBarController: NSObject {
     init(
         store: PortfolioStore,
         settingsStore: AppSettingsStore,
+        marketIndexStore: MarketIndexStore,
         updateStore: AppUpdateStore,
         appVersion: String,
         onCheckUpdate: @escaping () async -> Void,
@@ -364,6 +366,7 @@ final class StatusBarController: NSObject {
     ) {
         self.store = store
         self.settingsStore = settingsStore
+        self.marketIndexStore = marketIndexStore
         self.updateStore = updateStore
         self.appVersion = appVersion
         self.onCheckUpdate = onCheckUpdate
@@ -593,6 +596,8 @@ final class StatusBarController: NSObject {
     private func makeMainPanelRootView() -> MainPanelWindowView {
         MainPanelWindowView(
             store: store,
+            settingsStore: settingsStore,
+            marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             uiState: popoverState,
             mainPanelHeight: mainPanelHeight,
@@ -1482,6 +1487,11 @@ final class StatusBarController: NSObject {
         configureAutoRefreshTimer()
         configureOperationReminder()
         sendFundThresholdRemindersIfNeeded()
+        if settingsStore.settings.showsMarketIndexes {
+            Task { [weak self] in
+                await self?.refreshMarketIndexesIfNeeded(force: true)
+            }
+        }
     }
 
     private func refreshQuotesAndStatusTitleAsync() async {
@@ -1490,8 +1500,14 @@ final class StatusBarController: NSObject {
         defer { isRefreshingQuotes = false }
 
         await store.refreshQuotes()
+        await refreshMarketIndexesIfNeeded()
         updateStatusTitle()
         sendFundThresholdRemindersIfNeeded()
+    }
+
+    private func refreshMarketIndexesIfNeeded(force: Bool = false) async {
+        guard settingsStore.settings.showsMarketIndexes else { return }
+        await marketIndexStore.refresh(force: force)
     }
 
     private func configureAutoRefreshTimer() {

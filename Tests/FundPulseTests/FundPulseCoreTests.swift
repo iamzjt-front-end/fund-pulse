@@ -200,6 +200,9 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(settings.thresholdReminderInterval.seconds, 30 * 60)
         XCTAssertEqual(settings.appearanceMode, .system)
         XCTAssertEqual(AppAppearanceMode.allCases.map(\.title), ["跟随系统", "浅色", "深色"])
+        XCTAssertTrue(settings.showsMarketIndexes)
+        XCTAssertEqual(settings.defaultMarketIndexID, .shanghaiComposite)
+        XCTAssertFalse(MarketIndexID.allCases.map(\.title).contains("恒生科技"))
     }
 
     @MainActor
@@ -393,6 +396,8 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(store.settings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(store.settings.appearanceMode, .system)
+        XCTAssertTrue(store.settings.showsMarketIndexes)
+        XCTAssertEqual(store.settings.defaultMarketIndexID, .shanghaiComposite)
 
         let savedData = try Data(contentsOf: settingsURL)
         let savedSettings = try JSONDecoder().decode(AppSettings.self, from: savedData)
@@ -406,6 +411,33 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(savedSettings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(savedSettings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(savedSettings.appearanceMode, .system)
+        XCTAssertTrue(savedSettings.showsMarketIndexes)
+        XCTAssertEqual(savedSettings.defaultMarketIndexID, .shanghaiComposite)
+    }
+
+    @MainActor
+    func testSettingsFallsBackToDefaultMarketIndexWhenStoredValueIsInvalid() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-market-index-invalid-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let settingsURL = tempDirectory.appending(path: "settings.json")
+        let settings = """
+        {
+          "settingsSchemaVersion": 10,
+          "showsMarketIndexes": false,
+          "defaultMarketIndexID": "hangSengTech"
+        }
+        """
+        try Data(settings.utf8).write(to: settingsURL, options: .atomic)
+
+        let store = AppSettingsStore(dataDirectory: tempDirectory)
+
+        XCTAssertFalse(store.settings.showsMarketIndexes)
+        XCTAssertEqual(store.settings.defaultMarketIndexID, .shanghaiComposite)
     }
 
     @MainActor
@@ -470,11 +502,46 @@ final class FundPulseCoreTests: XCTestCase {
         store.setMarketClosedAutoRefreshInterval(.threeMinutes)
         XCTAssertEqual(store.settings.autoRefreshInterval, .twoSeconds)
         XCTAssertEqual(store.settings.marketClosedAutoRefreshInterval, .threeMinutes)
+        store.setShowsMarketIndexes(false)
+        store.setDefaultMarketIndexID(.csi300)
+        XCTAssertFalse(store.settings.showsMarketIndexes)
+        XCTAssertEqual(store.settings.defaultMarketIndexID, .csi300)
 
         let refreshedData = try Data(contentsOf: tempDirectory.appending(path: "settings.json"))
         let refreshedSettings = try JSONDecoder().decode(AppSettings.self, from: refreshedData)
         XCTAssertEqual(refreshedSettings.autoRefreshInterval, .twoSeconds)
         XCTAssertEqual(refreshedSettings.marketClosedAutoRefreshInterval, .threeMinutes)
+        XCTAssertFalse(refreshedSettings.showsMarketIndexes)
+        XCTAssertEqual(refreshedSettings.defaultMarketIndexID, .csi300)
+    }
+
+    func testMarketIndexServiceFetchesEastmoneyIndexQuotes() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            "https://push2.eastmoney.com/api/qt/stock/get": """
+            {"rc":0,"rt":4,"data":{"f43":4926.92,"f57":"000300","f58":"沪深300","f169":58.7,"f170":1.21}}
+            """
+        ])
+
+        let quotes = await service.fetchQuotes(for: [.csi300])
+
+        let quote = try XCTUnwrap(quotes[.csi300])
+        XCTAssertEqual(quote.id, .csi300)
+        XCTAssertEqual(quote.name, "沪深300")
+        XCTAssertEqual(quote.value, 4926.92, accuracy: 0.0001)
+        XCTAssertEqual(quote.change, 58.7, accuracy: 0.0001)
+        XCTAssertEqual(quote.changeRate, 1.21, accuracy: 0.0001)
+    }
+
+    func testMarketIndexServiceSkipsMissingEastmoneyQuotes() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            "https://push2.eastmoney.com/api/qt/stock/get": """
+            {"rc":0,"rt":4,"data":null}
+            """
+        ])
+
+        let quotes = await service.fetchQuotes(for: [.hangSengIndex])
+
+        XCTAssertTrue(quotes.isEmpty)
     }
 
     func testEastmoneyCoreSourceUsesBatchQuoteFields() async throws {
@@ -4850,6 +4917,13 @@ final class FundPulseCoreTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         return FundQuoteService(session: URLSession(configuration: configuration))
+    }
+
+    private func marketIndexServiceWithMockResponses(_ responses: [String: String]) -> MarketIndexService {
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        return MarketIndexService(session: URLSession(configuration: configuration))
     }
 
     private func tradeQuoteService(
