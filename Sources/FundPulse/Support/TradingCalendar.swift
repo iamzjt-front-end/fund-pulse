@@ -81,6 +81,36 @@ enum TradingCalendar {
         marketSessionState(now: now) == .open
     }
 
+    static func nextMarketSessionBoundary(after now: Date = .now) -> Date? {
+        let calendar = chinaCalendar
+        var day = calendar.startOfDay(for: now)
+
+        for _ in 0..<366 {
+            defer {
+                day = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+            }
+
+            guard isFundTradingDay(day) else { continue }
+
+            for minutes in [9 * 60 + 30, 11 * 60 + 30, 13 * 60, 15 * 60] {
+                guard let boundary = calendar.date(
+                    bySettingHour: minutes / 60,
+                    minute: minutes % 60,
+                    second: 0,
+                    of: day
+                ),
+                    boundary > now
+                else {
+                    continue
+                }
+
+                return boundary
+            }
+        }
+
+        return nil
+    }
+
     static func isMarketOpenReminderTime(minutes: Int) -> Bool {
         marketSessionState(minutes: minutes, isTradingDay: true) == .open
     }

@@ -1,18 +1,21 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 9
+    static let currentSchemaVersion = 10
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
     static let mainPanelHeightSliderStep = 10
     static let defaultOperationReminderTimeMinutes = 14 * 60 + 30
     static let defaultThresholdReminderInterval: FundThresholdReminderInterval = .thirtyMinutes
+    static let defaultAutoRefreshInterval: AutoRefreshInterval = .fiveSeconds
+    static let defaultMarketClosedAutoRefreshInterval: AutoRefreshInterval = .tenMinutes
 
     var settingsSchemaVersion: Int? = Self.currentSchemaVersion
     var menuBarDisplayMode: MenuBarDisplayMode = .color
     var menuBarContentMode: MenuBarContentMode = .amount
-    var autoRefreshInterval: AutoRefreshInterval = .tenSeconds
+    var autoRefreshInterval: AutoRefreshInterval = Self.defaultAutoRefreshInterval
+    var marketClosedAutoRefreshInterval: AutoRefreshInterval = Self.defaultMarketClosedAutoRefreshInterval
     var mainPanelHeight: Int = Self.defaultMainPanelHeight
     var operationReminderEnabled: Bool = true
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
@@ -23,7 +26,8 @@ struct AppSettings: Codable, Equatable {
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
         menuBarDisplayMode: MenuBarDisplayMode = .color,
         menuBarContentMode: MenuBarContentMode = .amount,
-        autoRefreshInterval: AutoRefreshInterval = .tenSeconds,
+        autoRefreshInterval: AutoRefreshInterval = Self.defaultAutoRefreshInterval,
+        marketClosedAutoRefreshInterval: AutoRefreshInterval = Self.defaultMarketClosedAutoRefreshInterval,
         mainPanelHeight: Int = Self.defaultMainPanelHeight,
         operationReminderEnabled: Bool = true,
         operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
@@ -33,7 +37,8 @@ struct AppSettings: Codable, Equatable {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
         self.menuBarContentMode = menuBarContentMode
-        self.autoRefreshInterval = autoRefreshInterval
+        self.autoRefreshInterval = Self.validMarketOpenAutoRefreshInterval(autoRefreshInterval)
+        self.marketClosedAutoRefreshInterval = Self.validMarketClosedAutoRefreshInterval(marketClosedAutoRefreshInterval)
         self.mainPanelHeight = Self.clampedMainPanelHeight(mainPanelHeight)
         self.operationReminderEnabled = operationReminderEnabled
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
@@ -46,6 +51,7 @@ struct AppSettings: Codable, Equatable {
         case menuBarDisplayMode
         case menuBarContentMode
         case autoRefreshInterval
+        case marketClosedAutoRefreshInterval
         case mainPanelHeight
         case operationReminderEnabled
         case operationReminderTimeMinutes
@@ -58,7 +64,18 @@ struct AppSettings: Codable, Equatable {
         settingsSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .settingsSchemaVersion)
         menuBarDisplayMode = try container.decodeIfPresent(MenuBarDisplayMode.self, forKey: .menuBarDisplayMode) ?? .color
         menuBarContentMode = try container.decodeIfPresent(MenuBarContentMode.self, forKey: .menuBarContentMode) ?? .amount
-        autoRefreshInterval = try container.decodeIfPresent(AutoRefreshInterval.self, forKey: .autoRefreshInterval) ?? .tenSeconds
+        let decodedAutoRefreshInterval = try container.decodeIfPresent(
+            AutoRefreshInterval.self,
+            forKey: .autoRefreshInterval
+        ) ?? Self.defaultAutoRefreshInterval
+        autoRefreshInterval = Self.validMarketOpenAutoRefreshInterval(decodedAutoRefreshInterval)
+        let decodedMarketClosedAutoRefreshInterval = try container.decodeIfPresent(
+            AutoRefreshInterval.self,
+            forKey: .marketClosedAutoRefreshInterval
+        ) ?? Self.defaultMarketClosedAutoRefreshInterval
+        marketClosedAutoRefreshInterval = Self.validMarketClosedAutoRefreshInterval(
+            decodedMarketClosedAutoRefreshInterval
+        )
         let decodedMainPanelHeight = try container.decodeIfPresent(Int.self, forKey: .mainPanelHeight)
             ?? Self.defaultMainPanelHeight
         mainPanelHeight = Self.clampedMainPanelHeight(decodedMainPanelHeight)
@@ -79,6 +96,27 @@ struct AppSettings: Codable, Equatable {
 
     static func clampedReminderTimeMinutes(_ minutes: Int) -> Int {
         min(max(minutes, 0), 23 * 60 + 59)
+    }
+
+    static func validMarketOpenAutoRefreshInterval(_ interval: AutoRefreshInterval) -> AutoRefreshInterval {
+        AutoRefreshInterval.marketOpenIntervals.contains(interval) ? interval : defaultAutoRefreshInterval
+    }
+
+    static func validMarketClosedAutoRefreshInterval(_ interval: AutoRefreshInterval) -> AutoRefreshInterval {
+        AutoRefreshInterval.marketClosedIntervals.contains(interval) ? interval : defaultMarketClosedAutoRefreshInterval
+    }
+
+    func effectiveAutoRefreshInterval(now: Date = .now) -> AutoRefreshInterval {
+        effectiveAutoRefreshInterval(for: TradingCalendar.marketSessionState(now: now))
+    }
+
+    func effectiveAutoRefreshInterval(for state: MarketSessionState) -> AutoRefreshInterval {
+        switch state {
+        case .open:
+            autoRefreshInterval
+        case .middayBreak, .closed:
+            marketClosedAutoRefreshInterval
+        }
     }
 
     var operationReminderTimeText: String {
@@ -235,6 +273,26 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
     case oneMinute = "1m"
     case threeMinutes = "3m"
     case fiveMinutes = "5m"
+    case tenMinutes = "10m"
+    case thirtyMinutes = "30m"
+
+    static let marketOpenIntervals: [AutoRefreshInterval] = [
+        .twoSeconds,
+        .fiveSeconds,
+        .tenSeconds,
+        .thirtySeconds,
+        .oneMinute,
+        .threeMinutes,
+        .fiveMinutes
+    ]
+
+    static let marketClosedIntervals: [AutoRefreshInterval] = [
+        .oneMinute,
+        .threeMinutes,
+        .fiveMinutes,
+        .tenMinutes,
+        .thirtyMinutes
+    ]
 
     var id: String { rawValue }
 
@@ -243,8 +301,13 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
     }
 
     static func interval(atSliderIndex index: Int) -> AutoRefreshInterval {
+        interval(atSliderIndex: index, in: allCases)
+    }
+
+    static func interval(atSliderIndex index: Int, in intervals: [AutoRefreshInterval]) -> AutoRefreshInterval {
+        guard !intervals.isEmpty else { return .fiveSeconds }
         let clampedIndex = min(max(index, 0), allCases.count - 1)
-        return allCases[clampedIndex]
+        return intervals[min(clampedIndex, intervals.count - 1)]
     }
 
     var seconds: TimeInterval {
@@ -263,6 +326,10 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
             180
         case .fiveMinutes:
             300
+        case .tenMinutes:
+            600
+        case .thirtyMinutes:
+            1_800
         }
     }
 
@@ -282,10 +349,14 @@ enum AutoRefreshInterval: String, Codable, CaseIterable, Identifiable, Equatable
             "3分"
         case .fiveMinutes:
             "5分"
+        case .tenMinutes:
+            "10分"
+        case .thirtyMinutes:
+            "30分"
         }
     }
 
     var detail: String {
-        "后台每 \(title) 自动刷新基金数据，并同步更新菜单栏收益。"
+        "每 \(title) 自动刷新基金数据，并同步更新菜单栏收益。"
     }
 }
