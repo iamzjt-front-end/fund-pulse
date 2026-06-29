@@ -1491,7 +1491,6 @@ final class StatusBarController: NSObject {
 
         await store.refreshQuotes()
         updateStatusTitle()
-        refreshVisiblePanels()
         sendFundThresholdRemindersIfNeeded()
     }
 
