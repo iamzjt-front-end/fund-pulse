@@ -52,6 +52,7 @@ struct SettingsView: View {
     let onClose: (() -> Void)?
 
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
+    @State private var selectedMarketClosedAutoRefreshInterval: AutoRefreshInterval
     @State private var mainPanelHeightText: String
     @State private var operationReminderTimeText: String
     @State private var operationReminderDraftHour: Int
@@ -87,6 +88,9 @@ struct SettingsView: View {
         self.onCheckUpdate = onCheckUpdate
         self.onClose = onClose
         _selectedAutoRefreshInterval = State(initialValue: settingsStore.settings.autoRefreshInterval)
+        _selectedMarketClosedAutoRefreshInterval = State(
+            initialValue: settingsStore.settings.marketClosedAutoRefreshInterval
+        )
         _mainPanelHeightText = State(initialValue: "\(settingsStore.settings.mainPanelHeight)")
         _operationReminderTimeText = State(initialValue: settingsStore.settings.operationReminderTimeText)
         _operationReminderDraftHour = State(initialValue: settingsStore.settings.operationReminderTimeMinutes / 60)
@@ -217,31 +221,25 @@ struct SettingsView: View {
                     }
 
                     PanelSection(title: "自动刷新") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("间隔")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Text(selectedAutoRefreshInterval.title)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .monospacedDigit()
-                                    .padding(.horizontal, 8)
-                                    .frame(height: 26)
-                                    .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                    .overlay(PanelDesign.border(cornerRadius: 7))
-                            }
-
-                            Slider(
-                                value: autoRefreshIntervalSliderBinding,
-                                in: 0...Double(AutoRefreshInterval.allCases.count - 1),
-                                step: 1
+                        VStack(alignment: .leading, spacing: 10) {
+                            autoRefreshIntervalControl(
+                                title: "开市间隔",
+                                selectedInterval: selectedAutoRefreshInterval,
+                                binding: autoRefreshIntervalSliderBinding,
+                                intervals: AutoRefreshInterval.marketOpenIntervals,
+                                detail: "开市时每 \(selectedAutoRefreshInterval.title) 刷新基金数据。"
                             )
-                            .controlSize(.small)
 
-                            Text(selectedAutoRefreshInterval.detail)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
+                            Divider()
+                                .overlay(.secondary.opacity(0.14))
+
+                            autoRefreshIntervalControl(
+                                title: "休市间隔",
+                                selectedInterval: selectedMarketClosedAutoRefreshInterval,
+                                binding: marketClosedAutoRefreshIntervalSliderBinding,
+                                intervals: AutoRefreshInterval.marketClosedIntervals,
+                                detail: "午休、盘前、盘后、周末和节假日每 \(selectedMarketClosedAutoRefreshInterval.title) 刷新。"
+                            )
                         }
                         .padding(9)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -285,6 +283,7 @@ struct SettingsView: View {
         .background(PanelDesign.panelBackground)
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
+            selectedMarketClosedAutoRefreshInterval = settingsStore.settings.marketClosedAutoRefreshInterval
             displayedAppearanceMode = settingsStore.settings.appearanceMode
             displayedMenuBarContentMode = settingsStore.settings.menuBarContentMode
             displayedMenuBarDisplayMode = settingsStore.settings.menuBarDisplayMode
@@ -302,6 +301,9 @@ struct SettingsView: View {
         }
         .onChange(of: settingsStore.settings.autoRefreshInterval) { _, interval in
             selectedAutoRefreshInterval = interval
+        }
+        .onChange(of: settingsStore.settings.marketClosedAutoRefreshInterval) { _, interval in
+            selectedMarketClosedAutoRefreshInterval = interval
         }
         .onChange(of: settingsStore.settings.mainPanelHeight) { _, _ in
             if !isMainPanelHeightFocused {
@@ -348,6 +350,41 @@ struct SettingsView: View {
         }
     }
 
+    private func autoRefreshIntervalControl(
+        title: String,
+        selectedInterval: AutoRefreshInterval,
+        binding: Binding<Double>,
+        intervals: [AutoRefreshInterval],
+        detail: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(selectedInterval.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 8)
+                    .frame(height: 26)
+                    .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(PanelDesign.border(cornerRadius: 7))
+            }
+
+            Slider(
+                value: binding,
+                in: 0...Double(max(intervals.count - 1, 0)),
+                step: 1
+            )
+            .controlSize(.small)
+
+            Text(detail)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var operationReminderEnabledBinding: Binding<Bool> {
         Binding(
             get: { settingsStore.settings.operationReminderEnabled },
@@ -360,12 +397,41 @@ struct SettingsView: View {
 
     private var autoRefreshIntervalSliderBinding: Binding<Double> {
         Binding(
-            get: { Double(selectedAutoRefreshInterval.sliderIndex) },
+            get: {
+                Double(
+                    AutoRefreshInterval.marketOpenIntervals.firstIndex(of: selectedAutoRefreshInterval) ?? 0
+                )
+            },
             set: { index in
-                let interval = AutoRefreshInterval.interval(atSliderIndex: Int(index.rounded()))
+                let interval = AutoRefreshInterval.interval(
+                    atSliderIndex: Int(index.rounded()),
+                    in: AutoRefreshInterval.marketOpenIntervals
+                )
                 guard interval != selectedAutoRefreshInterval else { return }
                 selectedAutoRefreshInterval = interval
                 settingsStore.setAutoRefreshInterval(interval)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    private var marketClosedAutoRefreshIntervalSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                Double(
+                    AutoRefreshInterval.marketClosedIntervals.firstIndex(
+                        of: selectedMarketClosedAutoRefreshInterval
+                    ) ?? 0
+                )
+            },
+            set: { index in
+                let interval = AutoRefreshInterval.interval(
+                    atSliderIndex: Int(index.rounded()),
+                    in: AutoRefreshInterval.marketClosedIntervals
+                )
+                guard interval != selectedMarketClosedAutoRefreshInterval else { return }
+                selectedMarketClosedAutoRefreshInterval = interval
+                settingsStore.setMarketClosedAutoRefreshInterval(interval)
                 onSettingsChanged?()
             }
         )

@@ -122,17 +122,51 @@ final class FundPulseCoreTests: XCTestCase {
     }
     #endif
 
-    func testDefaultAutoRefreshIntervalIsTenSeconds() {
+    func testDefaultAutoRefreshIntervalsUseMarketOpenAndClosedDefaults() throws {
         let settings = AppSettings()
 
-        XCTAssertEqual(settings.autoRefreshInterval, .tenSeconds)
-        XCTAssertEqual(settings.autoRefreshInterval.seconds, 10)
+        XCTAssertEqual(settings.autoRefreshInterval, .fiveSeconds)
+        XCTAssertEqual(settings.marketClosedAutoRefreshInterval, .tenMinutes)
+        XCTAssertEqual(settings.autoRefreshInterval.seconds, 5)
+        XCTAssertEqual(settings.marketClosedAutoRefreshInterval.seconds, 10 * 60)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(for: .open), .fiveSeconds)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(for: .middayBreak), .tenMinutes)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(for: .closed), .tenMinutes)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(now: try chinaDate("2026-06-22 10:35")), .fiveSeconds)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(now: try chinaDate("2026-06-22 12:00")), .tenMinutes)
+        XCTAssertEqual(settings.effectiveAutoRefreshInterval(now: try chinaDate("2026-06-22 15:01")), .tenMinutes)
         XCTAssertEqual(AutoRefreshInterval.twoSeconds.seconds, 2)
         XCTAssertEqual(AutoRefreshInterval.fiveSeconds.seconds, 5)
+        XCTAssertEqual(AutoRefreshInterval.tenMinutes.seconds, 10 * 60)
+        XCTAssertEqual(AutoRefreshInterval.thirtyMinutes.seconds, 30 * 60)
+        XCTAssertEqual(
+            AutoRefreshInterval.marketOpenIntervals,
+            [.twoSeconds, .fiveSeconds, .tenSeconds, .thirtySeconds, .oneMinute, .threeMinutes, .fiveMinutes]
+        )
+        XCTAssertEqual(
+            AutoRefreshInterval.marketClosedIntervals,
+            [.oneMinute, .threeMinutes, .fiveMinutes, .tenMinutes, .thirtyMinutes]
+        )
         XCTAssertEqual(Array(AutoRefreshInterval.allCases.prefix(3)), [.twoSeconds, .fiveSeconds, .tenSeconds])
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 0), .twoSeconds)
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 1), .fiveSeconds)
         XCTAssertEqual(AutoRefreshInterval.interval(atSliderIndex: 2), .tenSeconds)
+        XCTAssertEqual(
+            AutoRefreshInterval.interval(atSliderIndex: 0, in: AutoRefreshInterval.marketClosedIntervals),
+            .oneMinute
+        )
+        XCTAssertEqual(
+            AutoRefreshInterval.interval(atSliderIndex: 4, in: AutoRefreshInterval.marketClosedIntervals),
+            .thirtyMinutes
+        )
+        XCTAssertEqual(
+            AppSettings(autoRefreshInterval: .thirtyMinutes).autoRefreshInterval,
+            .fiveSeconds
+        )
+        XCTAssertEqual(
+            AppSettings(marketClosedAutoRefreshInterval: .twoSeconds).marketClosedAutoRefreshInterval,
+            .tenMinutes
+        )
         XCTAssertEqual(settings.menuBarDisplayMode, .color)
         XCTAssertTrue(settings.menuBarDisplayMode.usesGrowthColor)
         XCTAssertEqual(MenuBarDisplayMode.allCases.map(\.title), ["红绿", "单色"])
@@ -333,6 +367,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.menuBarDisplayMode, .sign)
         XCTAssertEqual(store.settings.menuBarContentMode, .amount)
         XCTAssertEqual(store.settings.autoRefreshInterval, .thirtySeconds)
+        XCTAssertEqual(store.settings.marketClosedAutoRefreshInterval, .tenMinutes)
         XCTAssertEqual(store.settings.mainPanelHeight, AppSettings.defaultMainPanelHeight)
         XCTAssertTrue(store.settings.operationReminderEnabled)
         XCTAssertEqual(store.settings.operationReminderTimeMinutes, 14 * 60 + 30)
@@ -345,11 +380,37 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(savedSettings.menuBarDisplayMode, .sign)
         XCTAssertEqual(savedSettings.menuBarContentMode, .amount)
         XCTAssertEqual(savedSettings.autoRefreshInterval, .thirtySeconds)
+        XCTAssertEqual(savedSettings.marketClosedAutoRefreshInterval, .tenMinutes)
         XCTAssertEqual(savedSettings.mainPanelHeight, AppSettings.defaultMainPanelHeight)
         XCTAssertTrue(savedSettings.operationReminderEnabled)
         XCTAssertEqual(savedSettings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(savedSettings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(savedSettings.appearanceMode, .system)
+    }
+
+    @MainActor
+    func testSettingsMigrationClampsRefreshIntervalsToSessionOptions() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-refresh-interval-clamp-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        let settingsURL = tempDirectory.appending(path: "settings.json")
+        let settings = """
+        {
+          "settingsSchemaVersion": 10,
+          "autoRefreshInterval": "30m",
+          "marketClosedAutoRefreshInterval": "2s"
+        }
+        """
+        try Data(settings.utf8).write(to: settingsURL, options: .atomic)
+
+        let store = AppSettingsStore(dataDirectory: tempDirectory)
+
+        XCTAssertEqual(store.settings.autoRefreshInterval, .fiveSeconds)
+        XCTAssertEqual(store.settings.marketClosedAutoRefreshInterval, .tenMinutes)
     }
 
     @MainActor
@@ -384,6 +445,16 @@ final class FundPulseCoreTests: XCTestCase {
         store.setMenuBarDisplayMode(.sign)
         XCTAssertEqual(store.settings.menuBarDisplayMode, .sign)
         XCTAssertFalse(store.settings.menuBarDisplayMode.usesGrowthColor)
+
+        store.setAutoRefreshInterval(.twoSeconds)
+        store.setMarketClosedAutoRefreshInterval(.threeMinutes)
+        XCTAssertEqual(store.settings.autoRefreshInterval, .twoSeconds)
+        XCTAssertEqual(store.settings.marketClosedAutoRefreshInterval, .threeMinutes)
+
+        let refreshedData = try Data(contentsOf: tempDirectory.appending(path: "settings.json"))
+        let refreshedSettings = try JSONDecoder().decode(AppSettings.self, from: refreshedData)
+        XCTAssertEqual(refreshedSettings.autoRefreshInterval, .twoSeconds)
+        XCTAssertEqual(refreshedSettings.marketClosedAutoRefreshInterval, .threeMinutes)
     }
 
     func testEastmoneyCoreSourceUsesBatchQuoteFields() async throws {
@@ -3870,6 +3941,18 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(TradingCalendar.marketSessionState(now: try chinaDate("2026-06-22 12:00")), .middayBreak)
         XCTAssertEqual(TradingCalendar.marketSessionState(now: try chinaDate("2026-06-22 15:01")), .closed)
         XCTAssertEqual(TradingCalendar.marketSessionState(now: try chinaDate("2026-06-21 10:35")), .closed)
+        XCTAssertEqual(
+            TradingCalendar.nextMarketSessionBoundary(after: try chinaDate("2026-06-22 12:59")),
+            try chinaDate("2026-06-22 13:00")
+        )
+        XCTAssertEqual(
+            TradingCalendar.nextMarketSessionBoundary(after: try chinaDate("2026-06-22 15:01")),
+            try chinaDate("2026-06-23 09:30")
+        )
+        XCTAssertEqual(
+            TradingCalendar.nextMarketSessionBoundary(after: try chinaDate("2026-06-26 15:01")),
+            try chinaDate("2026-06-29 09:30")
+        )
     }
 
     func testOperationReminderDatesOnlyUseMarketOpenTradingDays() throws {

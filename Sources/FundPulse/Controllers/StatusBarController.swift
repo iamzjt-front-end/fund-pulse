@@ -1499,15 +1499,29 @@ final class StatusBarController: NSObject {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
 
-        let interval = settingsStore.settings.autoRefreshInterval.seconds
-        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+        let interval = nextAutoRefreshInterval()
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                await self?.refreshQuotesAndStatusTitleAsync()
+                guard let self else { return }
+                await self.refreshQuotesAndStatusTitleAsync()
+                self.configureAutoRefreshTimer()
             }
         }
         timer.tolerance = min(interval * 0.2, 5)
         RunLoop.main.add(timer, forMode: .common)
         autoRefreshTimer = timer
+    }
+
+    private func nextAutoRefreshInterval(now: Date = .now) -> TimeInterval {
+        let interval = settingsStore.settings.effectiveAutoRefreshInterval(now: now).seconds
+
+        guard let boundary = TradingCalendar.nextMarketSessionBoundary(after: now) else {
+            return interval
+        }
+
+        let boundaryInterval = boundary.timeIntervalSince(now)
+        guard boundaryInterval > 0 else { return interval }
+        return min(interval, boundaryInterval)
     }
 
     private func configureOperationReminder() {

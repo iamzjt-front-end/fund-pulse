@@ -45,7 +45,12 @@ final class AppSettingsStore {
     }
 
     func setAutoRefreshInterval(_ interval: AutoRefreshInterval) {
-        settings.autoRefreshInterval = interval
+        settings.autoRefreshInterval = AppSettings.validMarketOpenAutoRefreshInterval(interval)
+        try? save()
+    }
+
+    func setMarketClosedAutoRefreshInterval(_ interval: AutoRefreshInterval) {
+        settings.marketClosedAutoRefreshInterval = AppSettings.validMarketClosedAutoRefreshInterval(interval)
         try? save()
     }
 
