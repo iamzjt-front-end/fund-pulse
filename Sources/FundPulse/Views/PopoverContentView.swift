@@ -163,7 +163,6 @@ struct PopoverContentView: View {
                 HStack(spacing: 6) {
                     refreshStatusIndicator
                     Text(refreshStatusText)
-                        .contentTransition(.opacity)
                 }
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -568,10 +567,10 @@ struct PopoverContentView: View {
         if case .failed = store.loadState {
             toolbarRefreshStateButton
         } else {
-            toolbarIconButton("arrow.clockwise", isRefreshInProgress ? "刷新中" : "刷新") {
+            toolbarIconButton("arrow.clockwise", isManualRefreshFeedbackVisible ? "刷新中" : "刷新") {
                 refresh()
             }
-            .disabled(isRefreshInProgress)
+            .disabled(isManualRefreshFeedbackVisible)
         }
     }
 
@@ -591,7 +590,7 @@ struct PopoverContentView: View {
             }
             .buttonStyle(.plain)
             .focusable(false)
-            .disabled(isRefreshInProgress)
+            .disabled(isManualRefreshFeedbackVisible)
             .help("基金数据刷新失败：\(reason)。点击重试")
         }
     }
@@ -846,7 +845,7 @@ struct PopoverContentView: View {
 
     private var refreshStatusIndicator: some View {
         ZStack {
-            if isRefreshInProgress {
+            if isManualRefreshFeedbackVisible {
                 Circle()
                     .stroke(refreshStatusColor.opacity(colorScheme == .dark ? 0.52 : 0.36), lineWidth: 1)
                     .frame(width: 14, height: 14)
@@ -866,9 +865,9 @@ struct PopoverContentView: View {
             .shadow(color: refreshStatusColor.opacity(0.28), radius: 3, x: 0, y: 1)
             .help(refreshStatusHelp)
             .onAppear {
-                updateRefreshStatusPulse(isRefreshInProgress)
+                updateRefreshStatusPulse(isManualRefreshFeedbackVisible)
             }
-            .onChange(of: isRefreshInProgress) { _, isRefreshing in
+            .onChange(of: isManualRefreshFeedbackVisible) { _, isRefreshing in
                 updateRefreshStatusPulse(isRefreshing)
             }
     }
@@ -1011,19 +1010,23 @@ struct PopoverContentView: View {
         }
     }
 
-    private var isRefreshInProgress: Bool {
+    private var isRefreshRequestInProgress: Bool {
         isRefreshing || store.isRefreshingQuotes
     }
 
+    private var isManualRefreshFeedbackVisible: Bool {
+        isRefreshing
+    }
+
     private var refreshStatusText: String {
-        if isRefreshInProgress {
+        if isManualRefreshFeedbackVisible {
             return "正在刷新基金数据..."
         }
         return "刷新 \(refreshTimeText(store.snapshot.updateTime))"
     }
 
     private var refreshStatusColor: Color {
-        if isRefreshInProgress { return .orange }
+        if isManualRefreshFeedbackVisible { return .orange }
         switch store.loadState {
         case .loaded:
             return .fundPulseGreen
@@ -1037,7 +1040,7 @@ struct PopoverContentView: View {
     }
 
     private var refreshStatusHelp: String {
-        if isRefreshInProgress { return "正在刷新基金数据" }
+        if isManualRefreshFeedbackVisible { return "正在刷新基金数据" }
         switch store.loadState {
         case .loaded:
             return "基金数据刷新正常"
@@ -1830,7 +1833,7 @@ struct PopoverContentView: View {
     }
 
     private func refresh() {
-        guard !isRefreshInProgress else { return }
+        guard !isRefreshRequestInProgress else { return }
         Task {
             await refreshWithFeedback()
         }
@@ -1838,7 +1841,7 @@ struct PopoverContentView: View {
 
     @MainActor
     private func refreshWithFeedback() async {
-        guard !isRefreshInProgress else { return }
+        guard !isRefreshRequestInProgress else { return }
 
         isRefreshing = true
         let startedAt = Date()
