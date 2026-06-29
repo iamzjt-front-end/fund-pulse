@@ -103,6 +103,26 @@ final class FundPulseCoreTests: XCTestCase {
         )
     }
 
+    func testFundRowAmountPrivacyMasksOnlyMoneyFields() {
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.plainMoney(16_069.12, isMasked: true),
+            "***"
+        )
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.signedCompactMoney(69.12, isMasked: true),
+            "***"
+        )
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.plainMoney(16_069.12, isMasked: false),
+            "¥ 16,069.12"
+        )
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.signedCompactMoney(69.12, isMasked: false),
+            "+69.12"
+        )
+        XCTAssertEqual(MoneyFormatter.percent(3.78, signed: true), "+3.78%")
+    }
+
     #if canImport(AppKit)
     func testStatusBarToneMenuBarColorsUseFundBabyStyleDepth() throws {
         XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0)), "#8E8E93")
