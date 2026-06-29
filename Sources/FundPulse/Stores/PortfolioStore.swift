@@ -6,6 +6,7 @@ import Observation
 final class PortfolioStore {
     private(set) var snapshot: PortfolioSnapshot = .empty
     private(set) var loadState: LoadState = .loading
+    private(set) var isRefreshingQuotes = false
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
     private let nowProvider: () -> Date
@@ -83,6 +84,9 @@ final class PortfolioStore {
     }
 
     func refreshQuotes() async {
+        isRefreshingQuotes = true
+        defer { isRefreshingQuotes = false }
+
         if case .loading = loadState {
             load()
         }
