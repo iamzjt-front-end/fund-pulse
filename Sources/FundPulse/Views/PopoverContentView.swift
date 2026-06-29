@@ -207,7 +207,7 @@ struct PopoverContentView: View {
                     metricCard(
                         "持有收益率",
                         headerPercentText(store.snapshot.holdingIncomeRate),
-                        tone: headerMetricTone(store.snapshot.holdingIncomeRate)
+                        tone: store.snapshot.holdingIncomeRate
                     )
                 }
                 .buttonStyle(.plain)
@@ -265,7 +265,7 @@ struct PopoverContentView: View {
                         Text(headerPercentText(store.snapshot.todayIncomeRate))
                             .font(.system(size: 16, weight: .semibold))
                             .monospacedDigit()
-                            .foregroundStyle(headerMetricColor(store.snapshot.todayIncomeRate))
+                            .foregroundStyle(toneColor(for: store.snapshot.todayIncomeRate))
                     }
                     .padding(.bottom, 3)
                     .contentShape(Rectangle())
@@ -813,6 +813,7 @@ struct PopoverContentView: View {
                 FundRowView(
                     fund: fund,
                     isSelected: selectedFundCode == fund.code,
+                    masksAmounts: hidesHeaderAmounts,
                     onOpen: {
                         onOpenFundDetail(fund)
                     }
@@ -925,7 +926,6 @@ struct PopoverContentView: View {
     }
 
     private var hiddenMoneyPlaceholder: String { "***" }
-    private var hiddenPercentPlaceholder: String { "***" }
 
     private func headerMoneyText(_ value: Double) -> String {
         hidesHeaderAmounts ? hiddenMoneyPlaceholder : MoneyFormatter.plainMoney(value)
@@ -936,7 +936,7 @@ struct PopoverContentView: View {
     }
 
     private func headerPercentText(_ value: Double) -> String {
-        hidesHeaderAmounts ? hiddenPercentPlaceholder : MoneyFormatter.percent(value, signed: true)
+        MoneyFormatter.percent(value, signed: true)
     }
 
     private func headerMetricTone(_ value: Double) -> Double? {
@@ -3639,6 +3639,7 @@ private struct PendingTradeActivityRow: View {
 struct FundRowView: View {
     let fund: FundPosition
     let isSelected: Bool
+    let masksAmounts: Bool
     let onOpen: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
@@ -3686,7 +3687,7 @@ struct FundRowView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
                         .padding(.leading, showsUpdateStar ? 5 : 2)
-                    Text(compactMoney(rowConfirmedHoldingIncome))
+                    Text(rowConfirmedHoldingIncomeText)
                         .foregroundStyle(toneColor(for: rowConfirmedHoldingIncome))
                         .lineLimit(1)
                         .minimumScaleFactor(0.82)
@@ -3816,7 +3817,11 @@ struct FundRowView: View {
     }
 
     private var rowHoldingAmountText: String {
-        MoneyFormatter.plainMoney(rowHoldingAmount)
+        FundRowAmountPrivacyFormatter.plainMoney(rowHoldingAmount, isMasked: masksAmounts)
+    }
+
+    private var rowConfirmedHoldingIncomeText: String {
+        FundRowAmountPrivacyFormatter.signedCompactMoney(rowConfirmedHoldingIncome, isMasked: masksAmounts)
     }
 
     private var rowHoldingAmount: Double {
@@ -3836,13 +3841,6 @@ struct FundRowView: View {
             return 0
         }
         return shares * cost
-    }
-
-    private func compactMoney(_ value: Double) -> String {
-        MoneyFormatter.money(value, signed: true)
-            .replacingOccurrences(of: "¥ ", with: "")
-            .replacingOccurrences(of: "+¥", with: "+")
-            .replacingOccurrences(of: "-¥", with: "-")
     }
 
     private func tag(_ title: String, color: Color) -> some View {
@@ -4200,6 +4198,22 @@ struct FundDailyIncomePanelView: View {
         supplement = next
         didLoadSupplement = true
         isSupplementLoading = false
+    }
+}
+
+enum FundRowAmountPrivacyFormatter {
+    static let maskedText = "***"
+
+    static func plainMoney(_ value: Double, isMasked: Bool) -> String {
+        isMasked ? maskedText : MoneyFormatter.plainMoney(value)
+    }
+
+    static func signedCompactMoney(_ value: Double, isMasked: Bool) -> String {
+        guard !isMasked else { return maskedText }
+        return MoneyFormatter.money(value, signed: true)
+            .replacingOccurrences(of: "¥ ", with: "")
+            .replacingOccurrences(of: "+¥", with: "+")
+            .replacingOccurrences(of: "-¥", with: "-")
     }
 }
 
