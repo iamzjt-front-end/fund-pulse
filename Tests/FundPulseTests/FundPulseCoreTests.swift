@@ -148,6 +148,50 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(AppAppearanceMode.allCases.map(\.title), ["跟随系统", "浅色", "深色"])
     }
 
+    @MainActor
+    func testRefreshQuotesPublishesRefreshingState() async throws {
+        let now = try chinaDate("2026-06-24 10:00")
+        let service = tradeQuoteService(date: "2026-06-23", netValue: 2.5)
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 180_000_000)
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-refresh-state-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 100, cost: 1)
+                ],
+                migration: nil
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        XCTAssertFalse(store.isRefreshingQuotes)
+
+        let refreshTask = Task {
+            await store.refreshQuotes()
+        }
+        try await Task.sleep(nanoseconds: 40_000_000)
+
+        XCTAssertTrue(store.isRefreshingQuotes)
+
+        await refreshTask.value
+
+        XCTAssertFalse(store.isRefreshingQuotes)
+    }
+
     func testFundThresholdReminderEvaluatorTriggersDailyGrowthRange() throws {
         let date = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
         let snapshot = thresholdReminderSnapshot(
@@ -5091,6 +5135,7 @@ private func XCTAssertThrowsErrorAsync(
 private final class MockResponseStore: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
+    private var delayNanoseconds: UInt64 = 0
 
     func set(_ responses: [String: Data]) {
         lock.lock()
@@ -5098,9 +5143,16 @@ private final class MockResponseStore: @unchecked Sendable {
         lock.unlock()
     }
 
+    func setResponseDelay(nanoseconds: UInt64) {
+        lock.lock()
+        delayNanoseconds = nanoseconds
+        lock.unlock()
+    }
+
     func reset() {
         lock.lock()
         storage = [:]
+        delayNanoseconds = 0
         lock.unlock()
     }
 
@@ -5111,6 +5163,12 @@ private final class MockResponseStore: @unchecked Sendable {
             .filter { url.hasPrefix($0.key) }
             .max { lhs, rhs in lhs.key.count < rhs.key.count }?
             .value
+    }
+
+    func responseDelayNanoseconds() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return delayNanoseconds
     }
 }
 
@@ -5137,6 +5195,11 @@ private final class MockURLProtocol: URLProtocol {
         else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
+        }
+
+        let delayNanoseconds = Self.responseStore.responseDelayNanoseconds()
+        if delayNanoseconds > 0 {
+            Thread.sleep(forTimeInterval: Double(delayNanoseconds) / 1_000_000_000)
         }
 
         let response = HTTPURLResponse(
