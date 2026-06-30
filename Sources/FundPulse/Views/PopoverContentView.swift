@@ -912,10 +912,18 @@ struct PopoverContentView: View {
                         .lineLimit(1)
                         .frame(width: 48, alignment: .trailing)
                 } else {
-                    Text(marketIndexStore.isRefreshing ? "指数加载中" : "指数暂无数据")
+                    Text(settingsStore.settings.defaultMarketIndexID.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .frame(width: 70, alignment: .leading)
+
+                    Spacer(minLength: 6)
+
+                    Text(marketIndexStore.isRefreshing ? "加载中" : "暂无数据")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Spacer()
+                        .lineLimit(1)
                 }
 
                 Image(systemName: "chevron.up")

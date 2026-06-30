@@ -515,33 +515,94 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(refreshedSettings.defaultMarketIndexID, .csi300)
     }
 
-    func testMarketIndexServiceFetchesEastmoneyIndexQuotes() async throws {
+    func testMarketIndexServiceFetchesEastmoneyBatchIndexQuotes() async throws {
         let service = marketIndexServiceWithMockResponses([
-            "https://push2.eastmoney.com/api/qt/stock/get": """
-            {"rc":0,"rt":4,"data":{"f43":4926.92,"f57":"000300","f58":"沪深300","f169":58.7,"f170":1.21}}
+            "https://push2delay.eastmoney.com/api/qt/ulist.np/get": """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38},{"f12":"000300","f14":"沪深300","f2":4969.71,"f3":0.87,"f4":42.79}]}}
             """
         ])
 
-        let quotes = await service.fetchQuotes(for: [.csi300])
+        let quotes = await service.fetchQuotes(for: [.shanghaiComposite, .csi300])
 
-        let quote = try XCTUnwrap(quotes[.csi300])
-        XCTAssertEqual(quote.id, .csi300)
-        XCTAssertEqual(quote.name, "沪深300")
-        XCTAssertEqual(quote.value, 4926.92, accuracy: 0.0001)
-        XCTAssertEqual(quote.change, 58.7, accuracy: 0.0001)
-        XCTAssertEqual(quote.changeRate, 1.21, accuracy: 0.0001)
+        let shanghaiQuote = try XCTUnwrap(quotes[.shanghaiComposite])
+        let csi300Quote = try XCTUnwrap(quotes[.csi300])
+        XCTAssertEqual(shanghaiQuote.name, "上证指数")
+        XCTAssertEqual(shanghaiQuote.value, 4080.28, accuracy: 0.0001)
+        XCTAssertEqual(shanghaiQuote.change, 6.38, accuracy: 0.0001)
+        XCTAssertEqual(shanghaiQuote.changeRate, 0.16, accuracy: 0.0001)
+        XCTAssertEqual(csi300Quote.name, "沪深300")
+        XCTAssertEqual(csi300Quote.value, 4969.71, accuracy: 0.0001)
+        XCTAssertEqual(csi300Quote.change, 42.79, accuracy: 0.0001)
+        XCTAssertEqual(csi300Quote.changeRate, 0.87, accuracy: 0.0001)
     }
 
-    func testMarketIndexServiceSkipsMissingEastmoneyQuotes() async throws {
+    func testMarketIndexServiceKeepsOnlyIndexesReturnedByBatchEndpoint() async throws {
         let service = marketIndexServiceWithMockResponses([
-            "https://push2.eastmoney.com/api/qt/stock/get": """
-            {"rc":0,"rt":4,"data":null}
+            "https://push2delay.eastmoney.com/api/qt/ulist.np/get": """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000300","f14":"沪深300","f2":4969.71,"f3":0.87,"f4":42.79}]}}
             """
         ])
 
-        let quotes = await service.fetchQuotes(for: [.hangSengIndex])
+        let quotes = await service.fetchQuotes(for: [.shanghaiComposite, .csi300])
 
-        XCTAssertTrue(quotes.isEmpty)
+        XCTAssertNil(quotes[.shanghaiComposite])
+        let csi300Quote = try XCTUnwrap(quotes[.csi300])
+        XCTAssertEqual(csi300Quote.name, "沪深300")
+        XCTAssertEqual(csi300Quote.value, 4969.71, accuracy: 0.0001)
+    }
+
+    func testMarketIndexServiceFallsBackToDelayBatchHostWhenRealtimeBatchHostFails() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            "https://push2delay.eastmoney.com/api/qt/ulist.np/get": """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38}]}}
+            """
+        ])
+
+        let quotes = await service.fetchQuotes(for: [.shanghaiComposite])
+
+        let quote = try XCTUnwrap(quotes[.shanghaiComposite])
+        XCTAssertEqual(quote.name, "上证指数")
+        XCTAssertEqual(quote.value, 4080.28, accuracy: 0.0001)
+        XCTAssertEqual(quote.change, 6.38, accuracy: 0.0001)
+        XCTAssertEqual(quote.changeRate, 0.16, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testMarketIndexStoreMergesPartialRefreshesIntoExistingQuotes() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            Self.marketIndexBatchQuoteEndpoint(): """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38},{"f12":"000300","f14":"沪深300","f2":4969.71,"f3":0.87,"f4":42.79}]}}
+            """
+        ])
+        let store = MarketIndexStore(service: service, minimumRefreshInterval: 0)
+
+        await store.refresh(ids: [.shanghaiComposite, .csi300], force: true)
+        MockURLProtocol.responseStore.set([
+            Self.marketIndexBatchQuoteEndpoint(): Data("""
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000300","f14":"沪深300","f2":4970.00,"f3":0.87,"f4":43.08}]}}
+            """.utf8)
+        ])
+        await store.refresh(ids: [.shanghaiComposite, .csi300], force: true)
+
+        let shanghaiQuote = try XCTUnwrap(store.quotes[.shanghaiComposite])
+        let csi300Quote = try XCTUnwrap(store.quotes[.csi300])
+        XCTAssertEqual(shanghaiQuote.value, 4080.28, accuracy: 0.0001)
+        XCTAssertEqual(csi300Quote.value, 4970.00, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testMarketIndexStoreDoesNotFallbackWhenDefaultIndexIsMissing() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            Self.marketIndexBatchQuoteEndpoint(): """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000300","f14":"沪深300","f2":4926.92,"f3":1.21,"f4":58.7}]}}
+            """
+        ])
+        let store = MarketIndexStore(service: service, minimumRefreshInterval: 0)
+
+        await store.refresh(ids: [.csi300], force: true)
+
+        XCTAssertNotNil(store.primaryQuote(defaultID: .csi300))
+        XCTAssertNil(store.primaryQuote(defaultID: .shanghaiComposite))
     }
 
     func testEastmoneyCoreSourceUsesBatchQuoteFields() async throws {
@@ -4924,6 +4985,12 @@ final class FundPulseCoreTests: XCTestCase {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [MockURLProtocol.self]
         return MarketIndexService(session: URLSession(configuration: configuration))
+    }
+
+    private static func marketIndexBatchQuoteEndpoint(
+        host: String = "push2.eastmoney.com"
+    ) -> String {
+        "https://\(host)/api/qt/ulist.np/get"
     }
 
     private func tradeQuoteService(

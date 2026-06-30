@@ -37,7 +37,7 @@ final class MarketIndexStore {
 
         let nextQuotes = await service.fetchQuotes(for: ids)
         if !nextQuotes.isEmpty {
-            quotes = nextQuotes
+            quotes.merge(nextQuotes) { _, new in new }
         }
         lastRefreshAt = now
     }
@@ -47,6 +47,6 @@ final class MarketIndexStore {
     }
 
     func primaryQuote(defaultID: MarketIndexID) -> MarketIndexQuote? {
-        quotes[defaultID] ?? orderedQuotes().first
+        quotes[defaultID]
     }
 }

@@ -1,6 +1,11 @@
 import Foundation
 
 struct MarketIndexService {
+    private static let eastmoneyBatchQuoteEndpoints = [
+        URL(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")!,
+        URL(string: "https://push2delay.eastmoney.com/api/qt/ulist.np/get")!
+    ]
+
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -15,70 +20,99 @@ struct MarketIndexService {
         }
         guard !uniqueIDs.isEmpty else { return [:] }
 
-        var quotes: [MarketIndexID: MarketIndexQuote] = [:]
-        for id in uniqueIDs {
-            if let quote = try? await fetchEastmoneyQuote(for: id) {
-                quotes[id] = quote
-            }
-        }
-        return quotes
+        return (try? await fetchEastmoneyBatchQuotes(for: uniqueIDs)) ?? [:]
     }
 
-    private func fetchEastmoneyQuote(for id: MarketIndexID) async throws -> MarketIndexQuote {
-        var components = URLComponents(string: "https://push2.eastmoney.com/api/qt/stock/get")!
+    private func fetchEastmoneyBatchQuotes(for ids: [MarketIndexID]) async throws -> [MarketIndexID: MarketIndexQuote] {
+        var lastError: Error?
+        for endpoint in Self.eastmoneyBatchQuoteEndpoints {
+            do {
+                return try await fetchEastmoneyBatchQuotes(for: ids, endpoint: endpoint)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.badServerResponse)
+    }
+
+    private func fetchEastmoneyBatchQuotes(
+        for ids: [MarketIndexID],
+        endpoint: URL
+    ) async throws -> [MarketIndexID: MarketIndexQuote] {
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [
             URLQueryItem(name: "ut", value: "fa5fd1943c7b386f172d6893dbfba10b"),
             URLQueryItem(name: "fltt", value: "2"),
             URLQueryItem(name: "invt", value: "2"),
-            URLQueryItem(name: "fields", value: "f57,f58,f43,f169,f170"),
-            URLQueryItem(name: "secid", value: id.eastmoneySecID)
+            URLQueryItem(name: "fields", value: "f12,f14,f2,f3,f4"),
+            URLQueryItem(name: "secids", value: ids.map(\.eastmoneySecID).joined(separator: ","))
         ]
         guard let url = components.url else { throw URLError(.badURL) }
 
+        let (data, _) = try await session.data(for: marketIndexRequest(url: url))
+        let response = try JSONDecoder().decode(EastmoneyMarketIndexListResponse.self, from: data)
+        guard response.rc == 0, let items = response.data?.items else {
+            throw URLError(.badServerResponse)
+        }
+
+        let idsByQuoteCode = Dictionary(uniqueKeysWithValues: ids.map { ($0.eastmoneyQuoteCode, $0) })
+        var quotes: [MarketIndexID: MarketIndexQuote] = [:]
+        for item in items {
+            guard let code = item.code,
+                  let id = idsByQuoteCode[code],
+                  let value = item.value?.value,
+                  let change = item.change?.value,
+                  let changeRate = item.changeRate?.value
+            else { continue }
+            quotes[id] = MarketIndexQuote(
+                id: id,
+                name: item.name?.nilIfBlank ?? id.title,
+                value: value,
+                change: change,
+                changeRate: changeRate
+            )
+        }
+        guard !quotes.isEmpty else { throw URLError(.badServerResponse) }
+        return quotes
+    }
+
+    private func marketIndexRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
-
-        let (data, _) = try await session.data(for: request)
-        let response = try JSONDecoder().decode(EastmoneyMarketIndexResponse.self, from: data)
-        guard response.rc == 0,
-              let payload = response.data,
-              let value = payload.value?.value,
-              let change = payload.change?.value,
-              let changeRate = payload.changeRate?.value
-        else {
-            throw URLError(.badServerResponse)
-        }
-
-        return MarketIndexQuote(
-            id: id,
-            name: payload.name?.nilIfBlank ?? id.title,
-            value: value,
-            change: change,
-            changeRate: changeRate
-        )
+        return request
     }
 }
 
-private struct EastmoneyMarketIndexResponse: Decodable {
+private struct EastmoneyMarketIndexListResponse: Decodable {
     var rc: Int
-    var data: EastmoneyMarketIndexPayload?
+    var data: EastmoneyMarketIndexListPayload?
 }
 
-private struct EastmoneyMarketIndexPayload: Decodable {
+private struct EastmoneyMarketIndexListPayload: Decodable {
+    var items: [EastmoneyMarketIndexListItem]?
+
+    enum CodingKeys: String, CodingKey {
+        case items = "diff"
+    }
+}
+
+private struct EastmoneyMarketIndexListItem: Decodable {
+    var code: String?
     var name: String?
     var value: LossyMarketIndexNumber?
     var change: LossyMarketIndexNumber?
     var changeRate: LossyMarketIndexNumber?
 
     enum CodingKeys: String, CodingKey {
-        case name = "f58"
-        case value = "f43"
-        case change = "f169"
-        case changeRate = "f170"
+        case code = "f12"
+        case name = "f14"
+        case value = "f2"
+        case changeRate = "f3"
+        case change = "f4"
     }
 }
 
