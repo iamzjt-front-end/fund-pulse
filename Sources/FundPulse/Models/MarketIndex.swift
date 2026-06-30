@@ -83,6 +83,10 @@ enum MarketIndexID: String, Codable, CaseIterable, Identifiable, Equatable {
             "100.SPX"
         }
     }
+
+    var eastmoneyQuoteCode: String {
+        eastmoneySecID.split(separator: ".").last.map(String.init) ?? eastmoneySecID
+    }
 }
 
 struct MarketIndexQuote: Codable, Equatable, Identifiable {
