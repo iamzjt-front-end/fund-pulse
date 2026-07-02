@@ -27,3 +27,7 @@ yarn-error.log
 .build
 dist
 release/swift
+
+# Local design previews and screenshots
+design
+output

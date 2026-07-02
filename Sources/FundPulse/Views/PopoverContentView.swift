@@ -146,6 +146,7 @@ struct PopoverContentView: View {
             toolbar
                 .zIndex(3)
             fundList
+                .layoutPriority(1)
                 .zIndex(0)
             if settingsStore.settings.showsMarketIndexes {
                 marketIndexFooter
@@ -811,6 +812,7 @@ struct PopoverContentView: View {
         .refreshable {
             await refreshWithFeedback()
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .background(listSurfaceBackground)
     }
 
@@ -821,9 +823,14 @@ struct PopoverContentView: View {
                 .frame(height: 300)
         } else {
             ForEach(filteredFunds) { fund in
+                let isClosedZeroPosition = PendingFundDisplayRules.isClosedZeroPosition(
+                    fund,
+                    tradeRecords: tradeRecords
+                )
                 FundRowView(
                     fund: fund,
                     isSelected: selectedFundCode == fund.code,
+                    isClosedZeroPosition: isClosedZeroPosition,
                     masksAmounts: hidesHeaderAmounts,
                     onOpen: {
                         onOpenFundDetail(fund)
@@ -840,17 +847,19 @@ struct PopoverContentView: View {
             ContentUnavailableView("暂无待确认交易", systemImage: "clock.badge.checkmark")
                 .frame(height: 300)
         } else {
-            ForEach(pendingActivities) { activity in
-                PendingTradeActivityRow(
-                    activity: activity,
-                    isSelected: selectedFundCode == activity.code,
-                    onDelete: activity.recordID == nil ? nil : {
-                        deletingPendingActivity = activity
+            VStack(spacing: 0) {
+                ForEach(pendingActivities) { activity in
+                    PendingTradeActivityRow(
+                        activity: activity,
+                        isSelected: selectedFundCode == activity.code,
+                        onDelete: activity.recordID == nil ? nil : {
+                            deletingPendingActivity = activity
+                        }
+                    ) {
+                        onOpenPendingActivity(activity)
                     }
-                ) {
-                    onOpenPendingActivity(activity)
+                    Divider()
                 }
-                Divider()
             }
         }
     }
@@ -1357,7 +1366,7 @@ struct PopoverContentView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 9) {
+                HStack(alignment: .top, spacing: 8) {
                     if impact.buyAmount > 0 {
                         pendingImpactToken("买入", pendingImpactSideText(amount: impact.buyAmount), color: .red)
                     }
@@ -1383,17 +1392,19 @@ struct PopoverContentView: View {
     }
 
     private func pendingImpactToken(_ title: String, _ value: String, color: Color) -> some View {
-        HStack(spacing: 2) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(title)
+                .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
             Text(value)
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.88)
+                .allowsTightening(true)
         }
-        .font(.system(size: 10, weight: .semibold))
         .monospacedDigit()
-        .lineLimit(1)
-        .minimumScaleFactor(0.76)
-        .allowsTightening(true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func pendingNetTitle(_ value: Double) -> String {
@@ -1700,14 +1711,13 @@ struct PopoverContentView: View {
     }
 
     private var filteredFunds: [FundPosition] {
-        let records = store.snapshot.tradeRecords ?? []
+        let records = tradeRecords
         let funds = store.snapshot.funds.filter { fund in
             switch filter {
             case .holding:
-                fund.status == .holding
+                FundListDisplayRules.isDisplayedHolding(fund, tradeRecords: records)
             case .pending:
-                isPendingStatus(fund.status)
-                    && !PendingFundDisplayRules.isClosedZeroPosition(fund, tradeRecords: records)
+                FundListDisplayRules.isDisplayedPending(fund, tradeRecords: records)
             }
         }
 
@@ -1775,9 +1785,12 @@ struct PopoverContentView: View {
     private func count(for value: FundListFilter) -> Int {
         switch value {
         case .holding:
-            store.snapshot.funds.filter { $0.status == .holding }.count
+            let records = tradeRecords
+            return store.snapshot.funds.filter {
+                FundListDisplayRules.isDisplayedHolding($0, tradeRecords: records)
+            }.count
         case .pending:
-            displayPendingCount
+            return displayPendingCount
         }
     }
 
@@ -1813,13 +1826,13 @@ struct PopoverContentView: View {
         FundListFilter.allCases
     }
 
-    private func isPendingStatus(_ status: FundHoldingStatus) -> Bool {
-        status.isPendingDisplay
+    private var tradeRecords: [FundTradeRecord] {
+        store.snapshot.tradeRecords ?? []
     }
 
     private var pendingActivities: [PendingTradeActivity] {
         let fundsByCode = Dictionary(uniqueKeysWithValues: store.snapshot.funds.map { ($0.code, $0) })
-        let records = store.snapshot.tradeRecords ?? []
+        let records = tradeRecords
         let pendingTrades = store.snapshot.pendingTrades ?? []
         let pendingTradeRecordIDs = Set(pendingTrades.compactMap(\.recordID))
         let pendingConversionTargetCodes = Set((store.snapshot.pendingConversions ?? []).map(\.toCode))
@@ -1840,6 +1853,8 @@ struct PopoverContentView: View {
                 kind: record?.kind ?? tradeKind(for: pendingTrade.action),
                 code: pendingTrade.code,
                 name: record?.name ?? fund?.name ?? pendingTrade.code,
+                linkedCode: record?.linkedCode,
+                linkedName: record?.linkedName,
                 mode: record?.mode ?? pendingTrade.mode,
                 amount: record?.amount ?? pendingTrade.amount,
                 shares: record?.shares ?? pendingTrade.shares,
@@ -1871,6 +1886,8 @@ struct PopoverContentView: View {
                 kind: record.kind,
                 code: record.code,
                 name: record.name,
+                linkedCode: record.linkedCode,
+                linkedName: record.linkedName,
                 mode: record.mode,
                 amount: record.amount,
                 shares: record.shares,
@@ -1895,10 +1912,9 @@ struct PopoverContentView: View {
                 .map(\.code)
         )
         let legacyPendingFunds = store.snapshot.funds.filter {
-            isPendingStatus($0.status)
+            FundListDisplayRules.isDisplayedPending($0, tradeRecords: records)
                 && !pendingNewFundCodes.contains($0.code)
                 && !pendingConversionTargetCodes.contains($0.code)
-                && !PendingFundDisplayRules.isClosedZeroPosition($0, tradeRecords: records)
         }
         activities.append(contentsOf: legacyPendingFunds.map { fund in
             let tradeDate = fund.positionDate ?? DateOnlyFormatter.string(from: .now)
@@ -1910,6 +1926,8 @@ struct PopoverContentView: View {
                 kind: .newFund,
                 code: fund.code,
                 name: fund.name,
+                linkedCode: nil,
+                linkedName: nil,
                 mode: fund.positionMode ?? .amount,
                 amount: fund.pendingAmount,
                 shares: fund.migratedShares,
@@ -2135,6 +2153,8 @@ struct PendingTradeActivity: Identifiable {
     var kind: FundTradeKind
     var code: String
     var name: String
+    var linkedCode: String?
+    var linkedName: String?
     var mode: PositionMode
     var amount: Double?
     var shares: Double?
@@ -3740,73 +3760,141 @@ private struct PendingTradeActivityRow: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Button(action: onOpen) {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 6) {
-                            tag(activity.kind.title, color: accentColor)
-                            Text(activity.name)
-                                .font(.system(size: 14, weight: .semibold))
-                                .lineLimit(1)
-                            tag("待确认", color: .orange)
-                        }
-
-                        HStack(alignment: .top, spacing: 7) {
-                            Text(FundCodeFormatter.display(activity.code))
-                                .fontWeight(.semibold)
-                                .frame(width: 58, alignment: .leading)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("\(activity.tradeDate) \(activity.tradeTimeType.title)")
-                                Text("确认 \(activity.acceptedDate)")
-                            }
-                        }
-                        .font(.system(size: 10, weight: .medium))
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(primaryValueText)
-                            .font(.system(size: 13, weight: .semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(accentColor)
-                        Text(activity.mode.title)
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+                rowContent
             }
             .buttonStyle(.plain)
             .focusable(false)
 
             if let onDelete {
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.red)
-                        .frame(width: 24, height: 24)
-                        .background(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .help(activity.isConversion ? "删除这笔转换待确认记录" : "删除这笔待确认记录")
+                deleteButton(action: onDelete)
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 64)
+        .padding(.vertical, verticalPadding)
+        .frame(minHeight: rowMinHeight)
         .background(selectionBackground)
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                 .fill(accentColor)
-                .frame(width: 3, height: 42)
+                .frame(width: 3, height: selectionBarHeight)
                 .opacity(isSelected ? 1 : 0)
                 .padding(.leading, 4)
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(alignment: .center, spacing: 12) {
+            leftColumn
+            Spacer(minLength: 6)
+            amountColumn
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+    }
+
+    private var leftColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            tagRow
+            titleBlock
+            metaContent
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .layoutPriority(1)
+    }
+
+    private var tagRow: some View {
+        HStack(spacing: 6) {
+            tag(kindTagTitle, color: kindTagColor)
+            tag("待确认", color: .orange)
+        }
+    }
+
+    private var amountColumn: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(primaryValueText)
+                .font(.system(size: 13, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(accentColor)
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .allowsTightening(true)
+            Text(valueCaption)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 98, alignment: .trailing)
+    }
+
+    private func deleteButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "trash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.red)
+                .frame(width: 24, height: 24)
+                .background(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help(activity.isConversion ? "删除这笔转换待确认记录" : "删除这笔待确认记录")
+    }
+
+    private var rowMinHeight: CGFloat {
+        activity.isConversion ? 118 : 74
+    }
+
+    private var verticalPadding: CGFloat {
+        activity.isConversion ? 9 : 6
+    }
+
+    private var selectionBarHeight: CGFloat {
+        activity.isConversion ? 80 : 46
+    }
+
+    @ViewBuilder
+    private var titleBlock: some View {
+        if let route = conversionRoute {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(route.sourceName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "arrow.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(kindTagColor)
+                    .frame(height: 10)
+                    .accessibilityHidden(true)
+                Text(route.targetName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .font(.system(size: 14, weight: .semibold))
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(titleText)
+                .font(.system(size: 14, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    @ViewBuilder
+    private var metaContent: some View {
+        if let route = conversionRoute {
+            Text(conversionMetaText(route))
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .allowsTightening(true)
+        } else {
+            Text(plainTradeMetaText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .allowsTightening(true)
         }
     }
 
@@ -3817,6 +3905,94 @@ private struct PendingTradeActivityRow: View {
         case .newFund, .buy, .conversionIn:
             .red
         }
+    }
+
+    private var kindTagColor: Color {
+        if activity.isConversion {
+            return Color.orange
+        }
+        if activity.kind == .newFund {
+            return .blue
+        }
+        return accentColor
+    }
+
+    private var kindTagTitle: String {
+        if activity.isConversion {
+            return "转换"
+        }
+        if activity.kind == .newFund {
+            return "新增"
+        }
+        return activity.kind.title
+    }
+
+    private var titleText: String {
+        guard let route = conversionRoute else {
+            return activity.name
+        }
+        return "\(route.sourceName)\n→ \(route.targetName)"
+    }
+
+    private var valueCaption: String {
+        guard activity.isConversion else {
+            return activity.mode.title
+        }
+        switch activity.displayAmount?.source {
+        case .estimatedNetValue, .latestNetValue:
+            return "估算金额"
+        case .confirmedNetValue:
+            return "确认金额"
+        case .enteredAmount, nil:
+            return "金额"
+        }
+    }
+
+    private var conversionSharesText: String? {
+        let shares = activity.shares ?? activity.displayAmount?.shares
+        guard let shares, shares > 0 else { return nil }
+        return "\(numberText(shares, places: 2))份"
+    }
+
+    private var plainTradeMetaText: String {
+        let tradeDate = shortDateText(activity.tradeDate)
+        let acceptedDate = shortDateText(activity.acceptedDate)
+        let prefix = "\(FundCodeFormatter.display(activity.code)) · \(tradeDate) \(activity.tradeTimeType.title)"
+        guard acceptedDate != tradeDate else {
+            return "\(prefix)确认"
+        }
+        return "\(prefix) · 确认 \(acceptedDate)"
+    }
+
+    private func conversionMetaText(_ route: (sourceName: String, sourceCode: String, targetName: String, targetCode: String)) -> String {
+        let routeText = "\(FundCodeFormatter.display(route.sourceCode)) → \(FundCodeFormatter.display(route.targetCode))"
+        guard let conversionSharesText else {
+            return routeText
+        }
+        return "\(routeText) · \(conversionSharesText)"
+    }
+
+    private var conversionRoute: (sourceName: String, sourceCode: String, targetName: String, targetCode: String)? {
+        guard activity.isConversion else { return nil }
+        let currentName = clean(activity.name) ?? FundCodeFormatter.display(activity.code)
+        let currentCode = clean(activity.code) ?? activity.code
+        let linkedCode = clean(activity.linkedCode) ?? "--"
+        let linkedName = clean(activity.linkedName) ?? FundCodeFormatter.display(linkedCode)
+
+        if activity.kind == .conversionIn {
+            return (
+                sourceName: linkedName,
+                sourceCode: linkedCode,
+                targetName: currentName,
+                targetCode: currentCode
+            )
+        }
+        return (
+            sourceName: currentName,
+            sourceCode: currentCode,
+            targetName: linkedName,
+            targetCode: linkedCode
+        )
     }
 
     private var selectionBackground: some View {
@@ -3842,7 +4018,18 @@ private struct PendingTradeActivityRow: View {
             .foregroundStyle(color)
             .padding(.horizontal, 5)
             .frame(height: 16)
+            .fixedSize()
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func shortDateText(_ value: String) -> String {
+        guard value.count >= 10 else { return value }
+        return String(value.dropFirst(5).prefix(5))
     }
 
     private func numberText(_ value: Double, places: Int) -> String {
@@ -3853,6 +4040,7 @@ private struct PendingTradeActivityRow: View {
 struct FundRowView: View {
     let fund: FundPosition
     let isSelected: Bool
+    let isClosedZeroPosition: Bool
     let masksAmounts: Bool
     let onOpen: () -> Void
 
@@ -3874,8 +4062,8 @@ struct FundRowView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
-                    tag(fund.status.title, color: fund.status.isPendingDisplay ? .orange : .blue)
-                    if fund.status == .holding {
+                    tag(statusTagTitle, color: statusTagColor)
+                    if !isClosedZeroPosition && fund.status == .holding {
                         tag(rowHoldingRateText, color: toneColor(for: rowHoldingRate ?? rowConfirmedHoldingIncome))
                     }
                 }
@@ -4000,6 +4188,17 @@ struct FundRowView: View {
 
     private var showsUpdateStar: Bool {
         fund.isUpdated
+    }
+
+    private var statusTagTitle: String {
+        isClosedZeroPosition ? "已清仓" : fund.status.title
+    }
+
+    private var statusTagColor: Color {
+        if isClosedZeroPosition {
+            return .secondary
+        }
+        return fund.status.isPendingDisplay ? .orange : .blue
     }
 
     private var rowHoldingIncome: Double {

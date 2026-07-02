@@ -60,17 +60,11 @@ private final class AppearanceTransitionOverlayView: NSView {
 private enum StatusItemPresentation {
     static let height: CGFloat = 24
     static let iconSize: CGFloat = 16
-    static let hiddenLength: CGFloat = iconSize
 
     static func visualLength(
         for text: String,
-        attributes: [NSAttributedString.Key: Any],
-        isHidden: Bool
+        attributes: [NSAttributedString.Key: Any]
     ) -> CGFloat {
-        if isHidden {
-            return hiddenLength
-        }
-
         let textWidth = (text as NSString).size(withAttributes: attributes).width
         return ceil(iconSize + textWidth)
     }
@@ -79,7 +73,6 @@ private enum StatusItemPresentation {
 private struct StatusTitlePresentation {
     let text: String
     let attributes: [NSAttributedString.Key: Any]
-    let isHidden: Bool
     let visualLength: CGFloat
 }
 
@@ -335,7 +328,6 @@ final class StatusBarController: NSObject {
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
     private var deactivateObserver: NSObjectProtocol?
-    private var amountPrivacyObserver: NSObjectProtocol?
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
     private var operationReminderConfigurationTask: Task<Void, Never>?
@@ -376,7 +368,6 @@ final class StatusBarController: NSObject {
 
         fundThresholdReminderLastSentAt = Self.loadFundThresholdReminderLastSentAt()
         configureStatusItem()
-        configureAmountPrivacyObserver()
         updateStatusTitle()
         configureAutoRefreshTimer()
         configureOperationReminder()
@@ -390,10 +381,6 @@ final class StatusBarController: NSObject {
         operationReminderConfigurationTask?.cancel()
         operationReminderConfigurationTask = nil
         removeEventMonitors()
-        if let amountPrivacyObserver {
-            NotificationCenter.default.removeObserver(amountPrivacyObserver)
-            self.amountPrivacyObserver = nil
-        }
     }
 
     private func configureStatusItem() {
@@ -406,25 +393,19 @@ final class StatusBarController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.wantsLayer = true
         button.layer?.backgroundColor = NSColor.clear.cgColor
-        statusItem.length = StatusItemPresentation.hiddenLength
+        statusItem.length = StatusItemPresentation.iconSize
     }
 
     func updateStatusTitle(animated: Bool = false) {
         let presentation = currentStatusTitlePresentation()
         guard let button = statusItem.button else { return }
-        button.toolTip = presentation.isHidden ? "显示金额" : "隐藏金额"
-        if presentation.isHidden {
-            button.image = hiddenStatusPulseImage()
-            button.imagePosition = .imageOnly
-            button.attributedTitle = NSAttributedString(string: "")
-        } else {
-            button.image = statusPulseImage
-            button.imagePosition = .imageLeft
-            button.attributedTitle = NSAttributedString(
-                string: presentation.text,
-                attributes: presentation.attributes
-            )
-        }
+        button.toolTip = "fund-pulse"
+        button.image = statusPulseImage
+        button.imagePosition = .imageLeft
+        button.attributedTitle = NSAttributedString(
+            string: presentation.text,
+            attributes: presentation.attributes
+        )
         setStatusItemLength(for: presentation)
     }
 
@@ -432,58 +413,33 @@ final class StatusBarController: NSObject {
         let contentMode = settingsStore.settings.menuBarContentMode
         let amountValue = store.snapshot.todayIncome
         let rateValue = store.snapshot.todayIncomeRate
-        let isHidden = UserDefaults.standard.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
-        let font = statusTitleFont(forHiddenState: isHidden)
+        let font = statusTitleFont()
         let statusText = MenuBarStatusFormatter.text(
             amount: amountValue,
             rate: rateValue,
             mode: contentMode
         )
         let toneValue = statusTitleToneValue(rate: rateValue)
-        let text = statusTitleText(for: statusText, isHidden: isHidden)
-        let attributes = statusTitleAttributes(for: toneValue, font: font, isHidden: isHidden)
+        let attributes = statusTitleAttributes(for: toneValue, font: font)
         let visualLength = StatusItemPresentation.visualLength(
-            for: text,
-            attributes: attributes,
-            isHidden: isHidden
+            for: statusText,
+            attributes: attributes
         )
 
         return StatusTitlePresentation(
-            text: text,
+            text: statusText,
             attributes: attributes,
-            isHidden: isHidden,
             visualLength: visualLength
         )
     }
 
     private func setStatusItemLength(for presentation: StatusTitlePresentation) {
-        let systemButtonPadding: CGFloat = presentation.isHidden ? 8 : 10
+        let systemButtonPadding: CGFloat = 10
         statusItem.length = ceil(presentation.visualLength + systemButtonPadding)
     }
 
-    private func statusTitleFont(forHiddenState isHidden: Bool) -> NSFont {
-        if isHidden {
-            return .systemFont(ofSize: 12, weight: .semibold)
-        }
+    private func statusTitleFont() -> NSFont {
         return .systemFont(ofSize: NSFont.systemFontSize)
-    }
-
-    private func statusTitleText(for amountText: String, isHidden: Bool) -> String {
-        if isHidden {
-            return ""
-        }
-        return amountText
-    }
-
-    private func hiddenStatusPulseImage() -> NSImage {
-        guard settingsStore.settings.menuBarDisplayMode.usesGrowthColor else {
-            return statusPulseImage
-        }
-
-        return makeStatusPulseImage(
-            size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize),
-            tintColor: StatusBarTone.menuBarColor(forRate: store.snapshot.todayIncomeRate).withAlphaComponent(0.96)
-        )
     }
 
     private func statusTitleToneValue(rate: Double) -> Double {
@@ -492,13 +448,12 @@ final class StatusBarController: NSObject {
 
     private func statusTitleAttributes(
         for value: Double,
-        font: NSFont,
-        isHidden: Bool
+        font: NSFont
     ) -> [NSAttributedString.Key: Any] {
         let color = statusTitleColor(for: value)
         return [
             .font: font,
-            .foregroundColor: isHidden ? color.withAlphaComponent(0.86) : color
+            .foregroundColor: color
         ]
     }
 
@@ -510,18 +465,6 @@ final class StatusBarController: NSObject {
         if value > 0 { return .systemRed }
         if value < 0 { return .systemGreen }
         return .secondaryLabelColor
-    }
-
-    private func configureAmountPrivacyObserver() {
-        amountPrivacyObserver = NotificationCenter.default.addObserver(
-            forName: .fundPulseAmountPrivacyDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.updateStatusTitle(animated: true)
-            }
-        }
     }
 
     private func toggleMainPanelFromStatusItem() {
@@ -1326,7 +1269,6 @@ final class StatusBarController: NSObject {
         menu.addItem(disabledMenuItem("fund-pulse v\(appVersion)"))
         menu.addItem(.separator())
 
-        menu.addItem(NSMenuItem(title: amountPrivacyMenuTitle, action: #selector(toggleAmountPrivacyFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "刷新基金数据", action: #selector(refreshFromMenu), keyEquivalent: "r"))
         menu.addItem(.separator())
 
@@ -1376,23 +1318,10 @@ final class StatusBarController: NSObject {
         return item
     }
 
-    private var amountPrivacyMenuTitle: String {
-        UserDefaults.standard.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
-            ? "显示金额"
-            : "隐藏金额"
-    }
-
     private func checkForUpdates() {
         Task { [weak self] in
             await self?.onCheckUpdate()
         }
-    }
-
-    @objc private func toggleAmountPrivacyFromMenu() {
-        let defaults = UserDefaults.standard
-        let shouldHideAmounts = !defaults.bool(forKey: AppPreferenceKey.hideHeaderAmounts)
-        defaults.set(shouldHideAmounts, forKey: AppPreferenceKey.hideHeaderAmounts)
-        NotificationCenter.default.post(name: .fundPulseAmountPrivacyDidChange, object: nil)
     }
 
     @objc private func refreshFromMenu() {
@@ -1549,17 +1478,17 @@ final class StatusBarController: NSObject {
             let pendingRequests = await center.pendingNotificationRequests()
             guard !Task.isCancelled else { return }
 
-            let pendingOperationReminderIDs = pendingRequests
-                .map(\.identifier)
-                .filter(Self.isOperationReminderNotificationID)
+            let pendingOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
+                from: pendingRequests.map(\.identifier)
+            )
             center.removePendingNotificationRequests(withIdentifiers: pendingOperationReminderIDs)
 
             let deliveredNotifications = await center.deliveredNotifications()
             guard !Task.isCancelled else { return }
 
-            let deliveredOperationReminderIDs = deliveredNotifications
-                .map(\.request.identifier)
-                .filter(Self.isOperationReminderNotificationID)
+            let deliveredOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
+                from: deliveredNotifications.map(\.request.identifier)
+            )
             center.removeDeliveredNotifications(withIdentifiers: deliveredOperationReminderIDs)
 
             guard isEnabled else { return }
@@ -1595,7 +1524,11 @@ final class StatusBarController: NSObject {
         }
     }
 
-    private static func isOperationReminderNotificationID(_ identifier: String) -> Bool {
+    nonisolated static func operationReminderNotificationIdentifiersToClear(from identifiers: [String]) -> [String] {
+        Set(identifiers.filter(isOperationReminderNotificationID) + [operationReminderNotificationID]).sorted()
+    }
+
+    nonisolated private static func isOperationReminderNotificationID(_ identifier: String) -> Bool {
         identifier == operationReminderNotificationID || identifier.hasPrefix(operationReminderNotificationPrefix)
     }
 

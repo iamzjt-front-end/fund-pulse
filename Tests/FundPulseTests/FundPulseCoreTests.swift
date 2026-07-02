@@ -2574,6 +2574,8 @@ final class FundPulseCoreTests: XCTestCase {
         let sourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
         XCTAssertEqual(sourceFund.migratedShares ?? 0, 0, accuracy: 0.0001)
         XCTAssertTrue(PendingFundDisplayRules.isClosedZeroPosition(sourceFund, tradeRecords: records))
+        XCTAssertTrue(FundListDisplayRules.isDisplayedHolding(sourceFund, tradeRecords: records))
+        XCTAssertFalse(FundListDisplayRules.isDisplayedPending(sourceFund, tradeRecords: records))
     }
 
     @MainActor
@@ -4127,6 +4129,21 @@ final class FundPulseCoreTests: XCTestCase {
                 limit: 2
             ).count,
             0
+        )
+    }
+
+    func testOperationReminderCleanupAlwaysIncludesLegacyRepeatingIdentifier() {
+        XCTAssertEqual(
+            StatusBarController.operationReminderNotificationIdentifiersToClear(
+                from: [
+                    "fund-pulse.operation-reminder.2026-07-01",
+                    "other.notification"
+                ]
+            ),
+            [
+                "fund-pulse.operation-reminder",
+                "fund-pulse.operation-reminder.2026-07-01"
+            ]
         )
     }
 

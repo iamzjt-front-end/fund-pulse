@@ -376,6 +376,24 @@ enum PendingFundDisplayRules {
     }
 }
 
+enum FundListDisplayRules {
+    static func isDisplayedHolding(
+        _ fund: FundPosition,
+        tradeRecords: [FundTradeRecord]
+    ) -> Bool {
+        fund.status == .holding
+            || PendingFundDisplayRules.isClosedZeroPosition(fund, tradeRecords: tradeRecords)
+    }
+
+    static func isDisplayedPending(
+        _ fund: FundPosition,
+        tradeRecords: [FundTradeRecord]
+    ) -> Bool {
+        fund.status.isPendingDisplay
+            && !PendingFundDisplayRules.isClosedZeroPosition(fund, tradeRecords: tradeRecords)
+    }
+}
+
 enum PositionMode: String, Codable, CaseIterable, Identifiable, Equatable {
     case amount
     case share
