@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 @preconcurrency import UserNotifications
@@ -8,6 +9,37 @@ private let operationReminderNotificationID = "fund-pulse.operation-reminder"
 private let fundThresholdReminderLastSentDefaultsKey = "fund-pulse.threshold-reminder.last-sent-times"
 private let operationReminderNotificationPrefix = "\(operationReminderNotificationID)."
 private let appearanceTransitionOverlayIdentifier = NSUserInterfaceItemIdentifier("fund-pulse.appearance-transition-overlay")
+private let statusBarUpdateLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "com.iamzjt.frontend.fund-pulse.swift",
+    category: "AppUpdate"
+)
+
+private final class ContextMenuUpdateCheckResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: AppUpdateCheckCompletion?
+
+    func set(_ completion: AppUpdateCheckCompletion) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard self.completion == nil else { return }
+        self.completion = completion
+    }
+
+    func take() -> AppUpdateCheckCompletion? {
+        lock.lock()
+        defer { lock.unlock() }
+        let completion = completion
+        self.completion = nil
+        return completion
+    }
+}
+
+private struct ContextMenuUpdateCheck {
+    var id: UUID
+    var request: AppUpdateCheckRequest
+    var resultBox: ContextMenuUpdateCheckResultBox
+    var task: Task<Void, Never>
+}
 
 private extension AppAppearanceMode {
     var nsAppearance: NSAppearance? {
@@ -317,7 +349,7 @@ final class StatusBarController: NSObject {
     private lazy var statusPulseImage = makeStatusPulseImage(
         size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize)
     )
-    private let onCheckUpdate: () async -> Void
+    private let onCheckUpdate: (AppUpdateCheckMode) async -> Void
     private let onOpenUpdate: () -> Void
 
     private var mainPanelWindow: FundPulsePanel?
@@ -330,6 +362,11 @@ final class StatusBarController: NSObject {
     private var deactivateObserver: NSObjectProtocol?
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
+    private weak var contextMenuUpdateItem: NSMenuItem?
+    private var contextMenuUpdateRefreshTimer: Timer?
+    private var contextMenuUpdateAnimationFrame = 2
+    private var contextMenuUpdateStatusOverride: AppUpdateStatus?
+    private var contextMenuUpdateCheck: ContextMenuUpdateCheck?
     private var operationReminderConfigurationTask: Task<Void, Never>?
     private var isRefreshingQuotes = false
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
@@ -353,7 +390,7 @@ final class StatusBarController: NSObject {
         marketIndexStore: MarketIndexStore,
         updateStore: AppUpdateStore,
         appVersion: String,
-        onCheckUpdate: @escaping () async -> Void,
+        onCheckUpdate: @escaping (AppUpdateCheckMode) async -> Void,
         onOpenUpdate: @escaping () -> Void
     ) {
         self.store = store
@@ -378,6 +415,7 @@ final class StatusBarController: NSObject {
     func invalidate() {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
+        stopContextMenuUpdateRefresh(cancelPendingCheck: true)
         operationReminderConfigurationTask?.cancel()
         operationReminderConfigurationTask = nil
         removeEventMonitors()
@@ -594,7 +632,7 @@ final class StatusBarController: NSObject {
                 await self?.deleteFund(fund)
             },
             onCheckUpdate: { [weak self] in
-                await self?.onCheckUpdate()
+                await self?.onCheckUpdate(.interactive)
             },
             onOpenUpdate: { [weak self] in
                 self?.onOpenUpdate()
@@ -656,7 +694,7 @@ final class StatusBarController: NSObject {
                     await self?.refreshQuotesAndStatusTitleAsync()
                 },
                 onCheckUpdate: { [weak self] in
-                    await self?.onCheckUpdate()
+                    await self?.onCheckUpdate(.interactive)
                 },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
@@ -1265,6 +1303,7 @@ final class StatusBarController: NSObject {
 
     private func showContextMenu(relativeTo sender: NSStatusBarButton) {
         let menu = NSMenu()
+        menu.delegate = self
 
         menu.addItem(disabledMenuItem("fund-pulse v\(appVersion)"))
         menu.addItem(.separator())
@@ -1276,38 +1315,206 @@ final class StatusBarController: NSObject {
 
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "设置", action: #selector(openSettingsFromMenu), keyEquivalent: ","))
+        addMenuBarConfigurationMenuItems(to: menu)
         menu.addItem(NSMenuItem(title: "导入基金配置", action: #selector(importFundConfigurationFromMenu), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "导出基金配置", action: #selector(exportFundConfigurationFromMenu), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出", action: #selector(quitFromMenu), keyEquivalent: "q"))
 
-        for item in menu.items {
+        for item in menu.items where item.action != nil {
             item.target = self
         }
 
         closeAllPanels()
+        startContextMenuUpdateRefresh()
+        let startedUpdateCheck = checkForUpdatesFromContextMenu()
+        if startedUpdateCheck {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.popUpContextMenu(menu)
+            }
+            return
+        }
+        popUpContextMenu(menu)
+    }
+
+    private func popUpContextMenu(_ menu: NSMenu) {
         let popUpMenuSelector = NSSelectorFromString("popUpStatusItemMenu:")
         _ = statusItem.perform(popUpMenuSelector, with: menu)
     }
 
+    private func addMenuBarConfigurationMenuItems(to menu: NSMenu) {
+        let contentItem = NSMenuItem(title: "显示内容", action: nil, keyEquivalent: "")
+        contentItem.submenu = makeMenuBarContentModeMenu()
+        contentItem.isEnabled = true
+        menu.addItem(contentItem)
+
+        let displayItem = NSMenuItem(title: "涨跌颜色", action: nil, keyEquivalent: "")
+        displayItem.submenu = makeMenuBarDisplayModeMenu()
+        displayItem.isEnabled = true
+        menu.addItem(displayItem)
+    }
+
+    private func makeMenuBarContentModeMenu() -> NSMenu {
+        let submenu = NSMenu(title: "显示内容")
+        for mode in MenuBarContentMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectMenuBarContentModeFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = settingsStore.settings.menuBarContentMode == mode ? .on : .off
+            item.toolTip = mode.detail
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
+    private func makeMenuBarDisplayModeMenu() -> NSMenu {
+        let submenu = NSMenu(title: "涨跌颜色")
+        for mode in MenuBarDisplayMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectMenuBarDisplayModeFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = settingsStore.settings.menuBarDisplayMode == mode ? .on : .off
+            item.toolTip = mode.detail
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
     private func addUpdateMenuItems(to menu: NSMenu) {
-        switch updateStore.status {
-        case .idle, .upToDate:
-            menu.addItem(NSMenuItem(title: "检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: ""))
-        case .available(let updateInfo):
-            menu.addItem(NSMenuItem(title: "下载新版本 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
-        case .downloading(let updateInfo):
-            menu.addItem(disabledMenuItem("正在下载 v\(updateInfo.version) · \(Int(updateStore.downloadProgress * 100))%"))
-        case .downloaded(let updateInfo, _):
-            menu.addItem(NSMenuItem(title: "现在更新 v\(updateInfo.version)", action: #selector(openUpdateFromMenu), keyEquivalent: ""))
-        case .installing:
-            menu.addItem(disabledMenuItem("正在更新，应用将自动重启"))
-        case .checking:
-            menu.addItem(disabledMenuItem("正在检查更新"))
-        case .failed(let reason):
-            let retryItem = NSMenuItem(title: "重新检查更新", action: #selector(checkUpdateFromMenu), keyEquivalent: "")
-            retryItem.toolTip = reason
-            menu.addItem(retryItem)
+        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        applyUpdateMenuPresentation(to: item)
+        contextMenuUpdateItem = item
+        menu.addItem(item)
+    }
+
+    private func applyUpdateMenuPresentation(to item: NSMenuItem) {
+        let presentation = AppUpdateMenuItemPresentation(
+            status: contextMenuUpdateStatusOverride ?? updateStore.status,
+            downloadProgress: updateStore.downloadProgress,
+            activityFrame: contextMenuUpdateAnimationFrame
+        )
+        item.view = nil
+        item.title = presentation.title
+        item.action = updateMenuActionSelector(for: presentation.action)
+        item.isEnabled = presentation.isEnabled
+        item.toolTip = presentation.toolTip
+        item.menu?.itemChanged(item)
+    }
+
+    private func startContextMenuUpdateRefresh() {
+        contextMenuUpdateRefreshTimer?.invalidate()
+        contextMenuUpdateRefreshTimer = nil
+        contextMenuUpdateStatusOverride = nil
+        contextMenuUpdateAnimationFrame = 2
+        refreshContextMenuUpdateItem()
+
+        let timer = Timer(
+            timeInterval: 0.35,
+            target: self,
+            selector: #selector(contextMenuUpdateRefreshTimerFired(_:)),
+            userInfo: nil,
+            repeats: true
+        )
+        contextMenuUpdateRefreshTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+        RunLoop.main.add(timer, forMode: .eventTracking)
+    }
+
+    @objc private func contextMenuUpdateRefreshTimerFired(_ timer: Timer) {
+        finishContextMenuUpdateCheckIfReady()
+        refreshContextMenuUpdateItem()
+    }
+
+    private func refreshContextMenuUpdateItem() {
+        guard let contextMenuUpdateItem else {
+            if contextMenuUpdateCheck == nil {
+                stopContextMenuUpdateRefresh()
+            }
+            return
+        }
+        applyUpdateMenuPresentation(to: contextMenuUpdateItem)
+        contextMenuUpdateAnimationFrame += 1
+    }
+
+    private func stopContextMenuUpdateRefresh(cancelPendingCheck: Bool = false) {
+        if cancelPendingCheck {
+            contextMenuUpdateCheck?.task.cancel()
+            contextMenuUpdateCheck = nil
+        }
+        if contextMenuUpdateCheck == nil {
+            contextMenuUpdateRefreshTimer?.invalidate()
+            contextMenuUpdateRefreshTimer = nil
+        }
+        contextMenuUpdateItem = nil
+        contextMenuUpdateStatusOverride = nil
+    }
+
+    private func checkForUpdatesFromContextMenu() -> Bool {
+        finishContextMenuUpdateCheckIfReady()
+        if contextMenuUpdateCheck != nil {
+            contextMenuUpdateStatusOverride = .checking
+            refreshContextMenuUpdateItem()
+            return true
+        }
+        guard updateStore.status.shouldCheckWhenOpeningContextMenu else { return false }
+        guard let request = updateStore.startCheck(currentVersion: appVersion, mode: .interactive) else { return false }
+        let checkID = UUID()
+        let resultBox = ContextMenuUpdateCheckResultBox()
+        let task = Task.detached(priority: .userInitiated) { [request, resultBox] in
+            let completion: AppUpdateCheckCompletion
+            do {
+                let status = try await request.service.check(
+                    currentVersion: request.currentVersion,
+                    mode: request.mode
+                )
+                completion = .success(status)
+            } catch {
+                completion = .failure(error.localizedDescription)
+            }
+            resultBox.set(completion)
+        }
+        contextMenuUpdateCheck = ContextMenuUpdateCheck(
+            id: checkID,
+            request: request,
+            resultBox: resultBox,
+            task: task
+        )
+        contextMenuUpdateStatusOverride = .checking
+        refreshContextMenuUpdateItem()
+        statusBarUpdateLogger.info("Start context menu update check generation=\(request.generation, privacy: .public)")
+        return true
+    }
+
+    @discardableResult
+    private func finishContextMenuUpdateCheckIfReady(id: UUID? = nil) -> Bool {
+        guard let check = contextMenuUpdateCheck,
+              id == nil || id == check.id,
+              let completion = check.resultBox.take()
+        else { return false }
+
+        contextMenuUpdateCheck = nil
+        contextMenuUpdateStatusOverride = nil
+        updateStore.finishCheck(check.request, completion: completion)
+        statusBarUpdateLogger.info("Finish context menu update check generation=\(check.request.generation, privacy: .public)")
+        return true
+    }
+
+    private func updateMenuActionSelector(for action: AppUpdateMenuItemAction?) -> Selector? {
+        switch action {
+        case .checkForUpdates:
+            #selector(checkUpdateFromMenu)
+        case .openUpdate:
+            #selector(openUpdateFromMenu)
+        case nil:
+            nil
         }
     }
 
@@ -1320,7 +1527,7 @@ final class StatusBarController: NSObject {
 
     private func checkForUpdates() {
         Task { [weak self] in
-            await self?.onCheckUpdate()
+            await self?.onCheckUpdate(.interactive)
         }
     }
 
@@ -1339,6 +1546,22 @@ final class StatusBarController: NSObject {
     @objc private func openSettingsFromMenu() {
         showMainPanel()
         showChildPanel(.settings)
+    }
+
+    @objc private func selectMenuBarContentModeFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = MenuBarContentMode(rawValue: rawValue)
+        else { return }
+        settingsStore.setMenuBarContentMode(mode)
+        handleSettingsChanged()
+    }
+
+    @objc private func selectMenuBarDisplayModeFromMenu(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let mode = MenuBarDisplayMode(rawValue: rawValue)
+        else { return }
+        settingsStore.setMenuBarDisplayMode(mode)
+        handleSettingsChanged()
     }
 
     @objc private func importFundConfigurationFromMenu() {
@@ -1644,5 +1867,11 @@ final class StatusBarController: NSObject {
         } catch {
             refreshVisiblePanels()
         }
+    }
+}
+
+extension StatusBarController: NSMenuDelegate {
+    func menuDidClose(_ menu: NSMenu) {
+        stopContextMenuUpdateRefresh()
     }
 }

@@ -36,8 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             appVersion: appVersion,
-            onCheckUpdate: { [weak self] in
-                await self?.checkForUpdates()
+            onCheckUpdate: { [weak self] mode in
+                await self?.checkForUpdates(mode: mode)
             },
             onOpenUpdate: { [weak self] in
                 self?.updateStore.openUpdate()
@@ -65,8 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         refreshStatusTitle()
     }
 
-    func checkForUpdates() async {
-        await updateStore.check(currentVersion: appVersion)
+    func checkForUpdates(mode: AppUpdateCheckMode = .background) async {
+        await updateStore.check(currentVersion: appVersion, mode: mode)
     }
 
     nonisolated func userNotificationCenter(

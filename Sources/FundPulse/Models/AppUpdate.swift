@@ -1,6 +1,6 @@
 import Foundation
 
-struct AppUpdateInfo: Codable, Equatable {
+struct AppUpdateInfo: Codable, Equatable, Sendable {
     var version: String
     var releaseName: String
     var releaseNotes: String
@@ -9,13 +9,18 @@ struct AppUpdateInfo: Codable, Equatable {
     var downloadURL: URL?
 }
 
-struct AppUpdatePackage: Equatable {
+struct AppUpdatePackage: Equatable, Sendable {
     var localURL: URL
     var stagedAppURL: URL
     var downloadedAt: Date
 }
 
-enum AppUpdateStatus: Equatable {
+enum AppUpdateCheckMode: Equatable, Sendable {
+    case background
+    case interactive
+}
+
+enum AppUpdateStatus: Equatable, Sendable {
     case idle
     case checking
     case available(AppUpdateInfo)

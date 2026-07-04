@@ -1,6 +1,6 @@
 import Foundation
 
-struct AppUpdateService {
+struct AppUpdateService: Sendable {
     enum UpdateError: LocalizedError {
         case invalidResponse
         case noReleaseURL
@@ -14,6 +14,7 @@ struct AppUpdateService {
         case installLocationNotWritable(String)
         case toolFailed(String)
         case installerLaunchFailed(String)
+        case checkTimedOut
 
         var errorDescription: String? {
             switch self {
@@ -41,6 +42,8 @@ struct AppUpdateService {
                 "更新工具执行失败：\(message)"
             case .installerLaunchFailed(let message):
                 "启动更新安装器失败：\(message)"
+            case .checkTimedOut:
+                "检查更新超时，请稍后重试"
             }
         }
     }
@@ -48,16 +51,44 @@ struct AppUpdateService {
     private let session: URLSession
     private let latestReleaseURL = URL(string: "https://github.com/iamzjt-front-end/fund-pulse/releases/latest")!
     private let releasesBaseURL = URL(string: "https://github.com/iamzjt-front-end/fund-pulse/releases")!
+    private let interactiveAPIRequestTimeout: TimeInterval
+    private let releaseFeedRequestTimeout: TimeInterval
+    private let backgroundAPIRequestTimeout: TimeInterval
 
-    init(session: URLSession = .shared) {
+    init(
+        session: URLSession = .shared,
+        interactiveAPIRequestTimeout: TimeInterval = 5,
+        releaseFeedRequestTimeout: TimeInterval = 4,
+        backgroundAPIRequestTimeout: TimeInterval = 8
+    ) {
         self.session = session
+        self.interactiveAPIRequestTimeout = interactiveAPIRequestTimeout
+        self.releaseFeedRequestTimeout = releaseFeedRequestTimeout
+        self.backgroundAPIRequestTimeout = backgroundAPIRequestTimeout
     }
 
-    func check(currentVersion: String) async throws -> AppUpdateStatus {
+    func check(currentVersion: String, mode: AppUpdateCheckMode = .background) async throws -> AppUpdateStatus {
+        switch mode {
+        case .interactive:
+            return try await withTimeout(seconds: interactiveAPIRequestTimeout) {
+                try await checkGitHubAPI(
+                    currentVersion: currentVersion,
+                    timeout: interactiveAPIRequestTimeout
+                )
+            }
+        case .background:
+            return try await checkWithBackgroundFallback(currentVersion: currentVersion)
+        }
+    }
+
+    private func checkWithBackgroundFallback(currentVersion: String) async throws -> AppUpdateStatus {
         do {
-            return try await checkMacReleaseFeed(currentVersion: currentVersion)
+            return try await checkGitHubAPI(
+                currentVersion: currentVersion,
+                timeout: backgroundAPIRequestTimeout
+            )
         } catch {
-            return try await checkGitHubAPI(currentVersion: currentVersion)
+            return try await checkMacReleaseFeed(currentVersion: currentVersion)
         }
     }
 
@@ -134,6 +165,7 @@ struct AppUpdateService {
             .appending(path: "latest-mac.yml")
         var request = URLRequest(url: feedURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = releaseFeedRequestTimeout
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await session.data(for: request)
@@ -169,11 +201,12 @@ struct AppUpdateService {
         return .upToDate(.now)
     }
 
-    private func checkGitHubAPI(currentVersion: String) async throws -> AppUpdateStatus {
+    private func checkGitHubAPI(currentVersion: String, timeout: TimeInterval) async throws -> AppUpdateStatus {
         let apiURL = URL(string: "https://api.github.com/repos/iamzjt-front-end/fund-pulse/releases/latest")!
         var request = URLRequest(url: latestReleaseURL)
         request.url = apiURL
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = timeout
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
 
@@ -212,9 +245,49 @@ struct AppUpdateService {
         return .upToDate(.now)
     }
 
+    private func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let race = TimeoutRace<T>()
+        let operationTask = Task {
+            do {
+                await race.resume(.success(try await operation()))
+            } catch {
+                await race.resume(.failure(error))
+            }
+        }
+        let timeoutTask = Task {
+            do {
+                let nanoseconds = UInt64(max(seconds, 0) * 1_000_000_000)
+                try await Task.sleep(nanoseconds: nanoseconds)
+                await race.resume(.failure(UpdateError.checkTimedOut))
+            } catch {
+                await race.resume(.failure(error))
+            }
+        }
+
+        defer {
+            operationTask.cancel()
+            timeoutTask.cancel()
+        }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                Task {
+                    await race.setContinuation(continuation)
+                }
+            }
+        } onCancel: {
+            operationTask.cancel()
+            timeoutTask.cancel()
+        }
+    }
+
     private func resolveLatestTag() async throws -> String {
         var request = URLRequest(url: latestReleaseURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = releaseFeedRequestTimeout
         request.setValue("fund-pulse-swift", forHTTPHeaderField: "User-Agent")
         let (_, response) = try await session.data(for: request)
         guard let finalURL = response.url,
@@ -459,6 +532,26 @@ struct AppUpdateService {
           fi
         } >> "$LOG_FILE" 2>&1
         """
+    }
+}
+
+private actor TimeoutRace<T: Sendable> {
+    private var continuation: CheckedContinuation<T, Error>?
+    private var result: Result<T, Error>?
+
+    func setContinuation(_ continuation: CheckedContinuation<T, Error>) {
+        if let result {
+            continuation.resume(with: result)
+        } else {
+            self.continuation = continuation
+        }
+    }
+
+    func resume(_ result: Result<T, Error>) {
+        guard self.result == nil else { return }
+        self.result = result
+        continuation?.resume(with: result)
+        continuation = nil
     }
 }
 

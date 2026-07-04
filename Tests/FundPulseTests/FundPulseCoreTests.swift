@@ -20,6 +20,236 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(VersionComparator.isVersion("0.0.11", newerThan: "0.0.12"))
     }
 
+    func testAppUpdateMenuItemPresentationShowsIdleCheckAction() {
+        let presentation = AppUpdateMenuItemPresentation(status: .idle, downloadProgress: 0)
+
+        XCTAssertEqual(presentation.title, "检查更新")
+        XCTAssertEqual(presentation.action, .checkForUpdates)
+        XCTAssertTrue(presentation.isEnabled)
+        XCTAssertNil(presentation.toolTip)
+        XCTAssertFalse(presentation.isActiveStatus)
+    }
+
+    func testAppUpdateMenuItemPresentationShowsUpToDateAsDisabledLatestStatus() {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let presentation = AppUpdateMenuItemPresentation(status: .upToDate(date), downloadProgress: 0)
+
+        XCTAssertEqual(presentation.title, "已是最新版本")
+        XCTAssertNil(presentation.action)
+        XCTAssertFalse(presentation.isEnabled)
+        XCTAssertNotNil(presentation.toolTip)
+        XCTAssertFalse(presentation.isActiveStatus)
+    }
+
+    func testAppUpdateMenuItemPresentationShowsAvailableVersionAsOpenUpdateAction() throws {
+        let info = try appUpdateInfo(version: "1.0.30")
+        let presentation = AppUpdateMenuItemPresentation(status: .available(info), downloadProgress: 0)
+
+        XCTAssertEqual(presentation.title, "检测到新版本")
+        XCTAssertEqual(presentation.action, .openUpdate)
+        XCTAssertTrue(presentation.isEnabled)
+        XCTAssertEqual(presentation.toolTip, "v1.0.30 · 点击下载")
+        XCTAssertFalse(presentation.isActiveStatus)
+    }
+
+    func testAppUpdateMenuItemPresentationKeepsTransientAndFailedStates() throws {
+        let info = try appUpdateInfo(version: "1.0.30")
+        let downloading = AppUpdateMenuItemPresentation(status: .downloading(info), downloadProgress: 0.42)
+        let checking = AppUpdateMenuItemPresentation(status: .checking, downloadProgress: 0, activityFrame: 2)
+        let failed = AppUpdateMenuItemPresentation(status: .failed("网络异常"), downloadProgress: 0)
+
+        XCTAssertEqual(downloading.title, "正在下载 v1.0.30 · 42%")
+        XCTAssertNil(downloading.action)
+        XCTAssertFalse(downloading.isEnabled)
+        XCTAssertTrue(downloading.isActiveStatus)
+        XCTAssertEqual(checking.title, "正在检查更新...")
+        XCTAssertNil(checking.action)
+        XCTAssertFalse(checking.isEnabled)
+        XCTAssertTrue(checking.isActiveStatus)
+        XCTAssertEqual(failed.title, "重新检查更新")
+        XCTAssertEqual(failed.action, .checkForUpdates)
+        XCTAssertEqual(failed.toolTip, "网络异常")
+        XCTAssertFalse(failed.isActiveStatus)
+    }
+
+    func testAppUpdateMenuItemPresentationAnimatesCheckingEllipsis() {
+        XCTAssertEqual(
+            AppUpdateMenuItemPresentation(status: .checking, downloadProgress: 0, activityFrame: 0).title,
+            "正在检查更新."
+        )
+        XCTAssertEqual(
+            AppUpdateMenuItemPresentation(status: .checking, downloadProgress: 0, activityFrame: 1).title,
+            "正在检查更新.."
+        )
+        XCTAssertEqual(
+            AppUpdateMenuItemPresentation(status: .checking, downloadProgress: 0, activityFrame: 2).title,
+            "正在检查更新..."
+        )
+    }
+
+    func testAppUpdateStatusContextMenuCheckPolicyPreservesActiveUpdateFlows() throws {
+        let info = try appUpdateInfo(version: "1.0.30")
+        let package = AppUpdatePackage(
+            localURL: try XCTUnwrap(URL(string: "file:///tmp/fund-pulse.zip")),
+            stagedAppURL: try XCTUnwrap(URL(string: "file:///tmp/fund-pulse.app")),
+            downloadedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+
+        XCTAssertTrue(AppUpdateStatus.idle.shouldCheckWhenOpeningContextMenu)
+        XCTAssertTrue(AppUpdateStatus.upToDate(Date()).shouldCheckWhenOpeningContextMenu)
+        XCTAssertTrue(AppUpdateStatus.available(info).shouldCheckWhenOpeningContextMenu)
+        XCTAssertTrue(AppUpdateStatus.failed("网络异常").shouldCheckWhenOpeningContextMenu)
+        XCTAssertTrue(AppUpdateStatus.checking.shouldCheckWhenOpeningContextMenu)
+        XCTAssertFalse(AppUpdateStatus.downloading(info).shouldCheckWhenOpeningContextMenu)
+        XCTAssertFalse(AppUpdateStatus.downloaded(info, package).shouldCheckWhenOpeningContextMenu)
+        XCTAssertFalse(AppUpdateStatus.installing(info).shouldCheckWhenOpeningContextMenu)
+    }
+
+    @MainActor
+    func testAppUpdateStoreStartAndFinishCheckCanApplyExternalCompletion() {
+        let store = AppUpdateStore(service: appUpdateServiceWithMockResponses([:]))
+        let checkedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let request = store.startCheck(currentVersion: "1.0.29", mode: .interactive)
+
+        XCTAssertEqual(store.status, .checking)
+        XCTAssertEqual(request?.currentVersion, "1.0.29")
+        XCTAssertEqual(request?.mode, .interactive)
+
+        guard let request else {
+            return XCTFail("Expected update check request")
+        }
+        store.finishCheck(request, completion: .success(.upToDate(checkedAt)))
+
+        XCTAssertEqual(store.status, .upToDate(checkedAt))
+        XCTAssertNotNil(store.lastCheckedAt)
+    }
+
+    @MainActor
+    func testAppUpdateStoreExternalCompletionIgnoresStaleGeneration() throws {
+        let store = AppUpdateStore(service: appUpdateServiceWithMockResponses([:]))
+        let olderRequest = try XCTUnwrap(store.startCheck(currentVersion: "1.0.29", mode: .background))
+        let newerRequest = try XCTUnwrap(store.startCheck(currentVersion: "1.0.29", mode: .interactive))
+        let staleInfo = try appUpdateInfo(version: "1.0.30")
+        let checkedAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        store.finishCheck(olderRequest, completion: .success(.available(staleInfo)))
+
+        XCTAssertEqual(store.status, .checking)
+
+        store.finishCheck(newerRequest, completion: .success(.upToDate(checkedAt)))
+
+        XCTAssertEqual(store.status, .upToDate(checkedAt))
+    }
+
+    func testAppUpdateServiceInteractiveCheckReportsUpToDateFromGitHubAPI() async throws {
+        let service = appUpdateServiceWithMockResponses([
+            Self.githubLatestReleaseAPIEndpoint(): Self.githubReleaseResponse(version: "1.0.29")
+        ])
+
+        let status = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+
+        guard case .upToDate = status else {
+            return XCTFail("Expected GitHub API response to report up-to-date, got \(status)")
+        }
+    }
+
+    func testAppUpdateServiceInteractiveCheckReportsAvailableVersionFromGitHubAPI() async throws {
+        let service = appUpdateServiceWithMockResponses([
+            Self.githubLatestReleaseAPIEndpoint(): Self.githubReleaseResponse(version: "1.0.30")
+        ])
+
+        let status = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+
+        guard case .available(let info) = status else {
+            return XCTFail("Expected GitHub API response to report available version, got \(status)")
+        }
+        XCTAssertEqual(info.version, "1.0.30")
+        XCTAssertEqual(info.downloadURL?.absoluteString, Self.githubZipDownloadURL(version: "1.0.30"))
+    }
+
+    func testAppUpdateServiceInteractiveCheckDoesNotFallbackToMacReleaseFeedWhenAPIFails() async {
+        let service = appUpdateServiceWithMockResponses(
+            [
+                Self.githubLatestReleaseWebEndpoint(): "",
+                Self.githubMacReleaseFeedEndpoint(version: "1.0.29"): Self.macReleaseFeedResponse(version: "1.0.29")
+            ],
+            finalURLs: [
+                Self.githubLatestReleaseWebEndpoint(): Self.githubReleaseTagURL(version: "1.0.29")
+            ]
+        )
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+        }
+    }
+
+    func testAppUpdateServiceInteractiveCheckUsesHardTimeout() async {
+        MockURLProtocol.responseStore.set([
+            Self.githubLatestReleaseAPIEndpoint(): Data(Self.githubReleaseResponse(version: "1.0.29").utf8)
+        ])
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 300_000_000)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let service = AppUpdateService(
+            session: URLSession(configuration: configuration),
+            interactiveAPIRequestTimeout: 0.05
+        )
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+        } errorHandler: { error in
+            XCTAssertEqual(error.localizedDescription, "检查更新超时，请稍后重试")
+        }
+    }
+
+    @MainActor
+    func testAppUpdateStoreInteractiveCheckSupersedesBackgroundChecking() async throws {
+        let service = appUpdateServiceWithMockResponses([
+            Self.githubLatestReleaseAPIEndpoint(): Self.githubReleaseResponse(version: "1.0.30")
+        ])
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 300_000_000)
+        let store = AppUpdateStore(service: service)
+
+        let backgroundTask = Task {
+            await store.check(currentVersion: "1.0.29", mode: .background)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(store.status, .checking)
+
+        MockURLProtocol.responseStore.set([
+            Self.githubLatestReleaseAPIEndpoint(): Data(Self.githubReleaseResponse(version: "1.0.29").utf8)
+        ])
+        await store.check(currentVersion: "1.0.29", mode: .interactive)
+
+        guard case .upToDate = store.status else {
+            return XCTFail("Expected interactive check to supersede background checking, got \(store.status)")
+        }
+
+        await backgroundTask.value
+        guard case .upToDate = store.status else {
+            return XCTFail("Expected stale background result to be ignored, got \(store.status)")
+        }
+    }
+
+    func testAppUpdateServiceBackgroundCheckFallsBackToMacReleaseFeedWhenAPIFails() async throws {
+        let service = appUpdateServiceWithMockResponses(
+            [
+                Self.githubLatestReleaseWebEndpoint(): "",
+                Self.githubMacReleaseFeedEndpoint(version: "1.0.29"): Self.macReleaseFeedResponse(version: "1.0.29")
+            ],
+            finalURLs: [
+                Self.githubLatestReleaseWebEndpoint(): Self.githubReleaseTagURL(version: "1.0.29")
+            ]
+        )
+
+        let status = try await service.check(currentVersion: "1.0.29", mode: .background)
+
+        guard case .upToDate = status else {
+            return XCTFail("Expected background check to fallback to mac release feed, got \(status)")
+        }
+    }
+
     func testFundCodeFormatterDisplaysCodeWithoutHashPrefix() {
         XCTAssertEqual(FundCodeFormatter.display("024418"), "024418")
         XCTAssertEqual(FundCodeFormatter.display("#024418"), "024418")
@@ -4990,6 +5220,77 @@ final class FundPulseCoreTests: XCTestCase {
         """
     }
 
+    private func appUpdateInfo(version: String) throws -> AppUpdateInfo {
+        AppUpdateInfo(
+            version: version,
+            releaseName: "fund-pulse \(version)",
+            releaseNotes: "",
+            publishedAt: nil,
+            htmlURL: try XCTUnwrap(URL(string: "https://example.com/releases/tag/v\(version)")),
+            downloadURL: try XCTUnwrap(URL(string: "https://example.com/fund-pulse-\(version).zip"))
+        )
+    }
+
+    private func appUpdateServiceWithMockResponses(
+        _ responses: [String: String],
+        finalURLs: [String: String] = [:]
+    ) -> AppUpdateService {
+        MockURLProtocol.responseStore.set(
+            responses.mapValues { Data($0.utf8) },
+            finalURLs: finalURLs.compactMapValues(URL.init(string:))
+        )
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        return AppUpdateService(session: URLSession(configuration: configuration))
+    }
+
+    private static func githubLatestReleaseAPIEndpoint() -> String {
+        "https://api.github.com/repos/iamzjt-front-end/fund-pulse/releases/latest"
+    }
+
+    private static func githubLatestReleaseWebEndpoint() -> String {
+        "https://github.com/iamzjt-front-end/fund-pulse/releases/latest"
+    }
+
+    private static func githubReleaseTagURL(version: String) -> String {
+        "https://github.com/iamzjt-front-end/fund-pulse/releases/tag/v\(version)"
+    }
+
+    private static func githubMacReleaseFeedEndpoint(version: String) -> String {
+        "https://github.com/iamzjt-front-end/fund-pulse/releases/download/v\(version)/latest-mac.yml"
+    }
+
+    private static func githubZipDownloadURL(version: String) -> String {
+        "https://github.com/iamzjt-front-end/fund-pulse/releases/download/v\(version)/fund-pulse-\(version)-arm64.zip"
+    }
+
+    private static func githubReleaseResponse(version: String) -> String {
+        """
+        {
+          "tag_name": "v\(version)",
+          "name": "fund-pulse v\(version)",
+          "body": "",
+          "html_url": "\(githubReleaseTagURL(version: version))",
+          "published_at": "2026-07-03T08:00:00Z",
+          "assets": [
+            {
+              "name": "fund-pulse-\(version)-arm64.zip",
+              "browser_download_url": "\(githubZipDownloadURL(version: version))"
+            }
+          ]
+        }
+        """
+    }
+
+    private static func macReleaseFeedResponse(version: String) -> String {
+        """
+        version: \(version)
+        files:
+          - url: fund-pulse-\(version)-arm64.zip
+        releaseDate: '2026-07-03T08:00:00.000Z'
+        """
+    }
+
     private func quoteServiceWithMockResponses(_ responses: [String: String]) -> FundQuoteService {
         MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
         let configuration = URLSessionConfiguration.ephemeral
@@ -5396,11 +5697,13 @@ private func XCTAssertThrowsErrorAsync(
 private final class MockResponseStore: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
+    private var finalURLStorage: [String: URL] = [:]
     private var delayNanoseconds: UInt64 = 0
 
-    func set(_ responses: [String: Data]) {
+    func set(_ responses: [String: Data], finalURLs: [String: URL] = [:]) {
         lock.lock()
         storage = responses
+        finalURLStorage = finalURLs
         lock.unlock()
     }
 
@@ -5413,6 +5716,7 @@ private final class MockResponseStore: @unchecked Sendable {
     func reset() {
         lock.lock()
         storage = [:]
+        finalURLStorage = [:]
         delayNanoseconds = 0
         lock.unlock()
     }
@@ -5421,6 +5725,15 @@ private final class MockResponseStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return storage
+            .filter { url.hasPrefix($0.key) }
+            .max { lhs, rhs in lhs.key.count < rhs.key.count }?
+            .value
+    }
+
+    func finalURL(for url: String) -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return finalURLStorage
             .filter { url.hasPrefix($0.key) }
             .max { lhs, rhs in lhs.key.count < rhs.key.count }?
             .value
@@ -5463,8 +5776,9 @@ private final class MockURLProtocol: URLProtocol {
             Thread.sleep(forTimeInterval: Double(delayNanoseconds) / 1_000_000_000)
         }
 
+        let responseURL = Self.responseStore.finalURL(for: url) ?? request.url!
         let response = HTTPURLResponse(
-            url: request.url!,
+            url: responseURL,
             statusCode: 200,
             httpVersion: nil,
             headerFields: nil
