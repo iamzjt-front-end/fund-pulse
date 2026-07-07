@@ -89,6 +89,11 @@ final class AppSettingsStore {
         try? save()
     }
 
+    func setBetaFeaturesEnabled(_ isEnabled: Bool) {
+        settings.betaFeaturesEnabled = isEnabled
+        try? save()
+    }
+
     var settingsFileURL: URL {
         dataDirectory.appending(path: "settings.json")
     }

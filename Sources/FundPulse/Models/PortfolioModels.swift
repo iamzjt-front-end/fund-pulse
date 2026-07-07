@@ -322,6 +322,12 @@ struct FundPositionDraft: Equatable {
     var requiresTradeConfirmation: Bool = true
 }
 
+struct FundAmountPositionSyncUpdate: Equatable {
+    var code: String
+    var amount: Double
+    var holdingIncome: Double?
+}
+
 struct MigrationInfo: Codable, Equatable {
     var source: String
     var currentWalletCode: String

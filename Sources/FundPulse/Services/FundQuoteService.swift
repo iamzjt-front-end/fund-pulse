@@ -83,6 +83,22 @@ struct FundQuoteService {
         return nil
     }
 
+    func lookupFundCode(name: String) async -> String? {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+
+        let searchKeys = Self.fundCodeSearchKeys(for: name)
+        for key in searchKeys {
+            guard let items = try? await searchFunds(key: key), !items.isEmpty else {
+                continue
+            }
+            if let matchedFund = Self.matchedFundSearchItem(in: items, queryNames: searchKeys) {
+                return matchedFund.code?.nilIfBlank
+            }
+        }
+        return nil
+    }
+
     func fetchFundDetailSupplement(code: String, now: Date = .now) async -> FundDetailSupplement {
         async let history = fetchNetValueHistorySafely(code: code)
         async let position = fetchPositionSupplementSafely(code: code)
@@ -137,7 +153,7 @@ struct FundQuoteService {
         ]
         guard let url = components.url else { throw QuoteError.invalidResponse }
 
-        var request = URLRequest(url: url)
+        var request = realtimeQuoteRequest(url: url)
         request.setValue("https://fund.eastmoney.com/", forHTTPHeaderField: "Referer")
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
@@ -403,12 +419,18 @@ struct FundQuoteService {
     }
 
     private func searchFundName(code: String) async throws -> String? {
+        let response = try await searchFunds(key: code)
+        let matchedFund = response.first { $0.code == code }
+        return matchedFund?.name?.nilIfBlank ?? matchedFund?.shortName?.nilIfBlank
+    }
+
+    private func searchFunds(key: String) async throws -> [FundSearchItem] {
         let timestamp = Int(Date().timeIntervalSince1970 * 1000)
         let callback = "FundPulseSuggest_\(timestamp)"
         var components = URLComponents(string: "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx")!
         components.queryItems = [
             URLQueryItem(name: "m", value: "1"),
-            URLQueryItem(name: "key", value: code),
+            URLQueryItem(name: "key", value: key),
             URLQueryItem(name: "callback", value: callback),
             URLQueryItem(name: "_", value: "\(timestamp)")
         ]
@@ -428,8 +450,43 @@ struct FundQuoteService {
         }
 
         let response = try JSONDecoder().decode(FundSearchResponse.self, from: payload)
-        let matchedFund = response.datas?.first { $0.code == code }
-        return matchedFund?.name?.nilIfBlank ?? matchedFund?.shortName?.nilIfBlank
+        return response.datas ?? []
+    }
+
+    private static func canonicalFundSearchName(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "板", with: "")
+            .lowercased()
+    }
+
+    private static func fundCodeSearchKeys(for name: String) -> [String] {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var keys: [String] = []
+        func append(_ value: String) {
+            let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty, !keys.contains(normalized) else { return }
+            keys.append(normalized)
+        }
+
+        append(trimmed)
+        append(trimmed.replacingOccurrences(of: "ETF", with: ""))
+        append(trimmed.replacingOccurrences(of: "交易型开放式指数证券投资基金", with: ""))
+        append(trimmed.replacingOccurrences(of: "板", with: ""))
+        append(trimmed.replacingOccurrences(of: "板", with: "").replacingOccurrences(of: "ETF", with: ""))
+        return keys
+    }
+
+    private static func matchedFundSearchItem(in items: [FundSearchItem], queryNames: [String]) -> FundSearchItem? {
+        let canonicalQueries = Set(queryNames.map(canonicalFundSearchName))
+        return items.first { item in
+            guard item.isFund else { return false }
+            let itemNames = [item.name, item.shortName].compactMap { $0 }
+            return itemNames
+                .map(canonicalFundSearchName)
+                .contains { canonicalQueries.contains($0) }
+        }
     }
 
     private func parseJSONP(_ text: String) -> Data? {
@@ -599,12 +656,19 @@ struct FundQuoteService {
     }
 
     private func eastmoneyMobileRequest(url: URL) -> URLRequest {
-        var request = URLRequest(url: url)
+        var request = realtimeQuoteRequest(url: url)
         request.setValue("https://fund.eastmoney.com/", forHTTPHeaderField: "Referer")
         request.setValue(
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
             forHTTPHeaderField: "User-Agent"
         )
+        return request
+    }
+
+    private func realtimeQuoteRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
         return request
     }
 
@@ -869,11 +933,17 @@ private struct FundSearchItem: Decodable {
     var code: String?
     var name: String?
     var shortName: String?
+    var categoryDescription: String?
+
+    var isFund: Bool {
+        categoryDescription == "基金"
+    }
 
     private enum CodingKeys: String, CodingKey {
         case code = "CODE"
         case name = "NAME"
         case shortName = "SHORTNAME"
+        case categoryDescription = "CATEGORYDESC"
     }
 }
 

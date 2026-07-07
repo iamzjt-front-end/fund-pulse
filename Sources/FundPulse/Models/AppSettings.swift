@@ -24,6 +24,7 @@ struct AppSettings: Codable, Equatable {
     var appearanceMode: AppAppearanceMode = .system
     var showsMarketIndexes: Bool = true
     var defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
+    var betaFeaturesEnabled: Bool = false
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -37,7 +38,8 @@ struct AppSettings: Codable, Equatable {
         thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
         appearanceMode: AppAppearanceMode = .system,
         showsMarketIndexes: Bool = true,
-        defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
+        defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier,
+        betaFeaturesEnabled: Bool = false
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -51,6 +53,7 @@ struct AppSettings: Codable, Equatable {
         self.appearanceMode = appearanceMode
         self.showsMarketIndexes = showsMarketIndexes
         self.defaultMarketIndexID = defaultMarketIndexID
+        self.betaFeaturesEnabled = betaFeaturesEnabled
     }
 
     enum CodingKeys: String, CodingKey {
@@ -66,6 +69,7 @@ struct AppSettings: Codable, Equatable {
         case appearanceMode
         case showsMarketIndexes
         case defaultMarketIndexID
+        case betaFeaturesEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -102,6 +106,7 @@ struct AppSettings: Codable, Equatable {
         defaultMarketIndexID = decodedMarketIndexID
             .flatMap(MarketIndexID.init(rawValue:))
             ?? Self.defaultMarketIndexIdentifier
+        betaFeaturesEnabled = try container.decodeIfPresent(Bool.self, forKey: .betaFeaturesEnabled) ?? false
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {

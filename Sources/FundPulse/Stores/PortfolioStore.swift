@@ -211,6 +211,74 @@ final class PortfolioStore {
         return await quoteService.fetchSmartNetValue(code: code, startDate: acceptedDate)
     }
 
+    func applyAmountPositionSyncUpdates(_ updates: [FundAmountPositionSyncUpdate]) async throws {
+        guard !updates.isEmpty else { return }
+
+        for update in updates {
+            let code = update.code.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !code.isEmpty else { throw PortfolioStoreError.invalidCode }
+            guard let index = snapshot.funds.firstIndex(where: { $0.code == code }) else {
+                throw PortfolioStoreError.fundNotFound
+            }
+
+            var fund = snapshot.funds[index]
+            guard fund.status == .holding else { continue }
+
+            let amount = roundedMoney(update.amount)
+            let holdingIncome = roundedMoney(update.holdingIncome ?? fund.holdingIncome ?? fund.confirmedHoldingIncome ?? 0)
+            let principal = roundedMoney(amount - holdingIncome)
+            guard amount > 0 else { throw PortfolioStoreError.invalidPosition }
+            guard principal > 0 else { throw PortfolioStoreError.invalidCost }
+
+            let quote = try? await quoteService.fetchQuote(code: code)
+            let netValue = quoteNetValue(quote)
+            let lot = try netValue.map {
+                try amountSyncLot(
+                    code: code,
+                    amount: amount,
+                    principal: principal,
+                    netValue: $0,
+                    fund: fund
+                )
+            }
+            let holdingRate = principal > 0 ? holdingIncome / principal * 100 : nil
+
+            if let quote {
+                fund.name = quote.name.isEmpty ? fund.name : quote.name
+                fund.dateText = dateText(for: quote, fallback: fund.dateText)
+                fund.todayRate = quote.growthRate
+                fund.isUpdated = quoteIsUpdated(quote)
+            }
+            fund.status = .holding
+            fund.isIncomeActive = true
+            fund.positionMode = .amount
+            fund.currentAmount = amount
+            fund.holdingIncome = holdingIncome
+            fund.holdingRate = holdingRate
+            fund.confirmedHoldingIncome = holdingIncome
+            fund.confirmedHoldingRate = holdingRate
+            fund.migratedPrincipal = principal
+            fund.lots = lot.map { [$0] } ?? []
+
+            if let lot {
+                fund.migratedShares = lot.shares
+                fund.migratedCost = lot.cost
+                fund.pendingAmount = nil
+                fund.pendingProfit = nil
+            } else {
+                fund.migratedShares = 0
+                fund.migratedCost = nil
+                fund.pendingAmount = amount
+                fund.pendingProfit = holdingIncome == 0 ? nil : holdingIncome
+            }
+
+            snapshot.funds[index] = fund
+        }
+
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
     func adjustFundPosition(_ draft: FundTradeDraft) async throws {
         let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
@@ -2325,6 +2393,33 @@ final class PortfolioStore {
             guard cost > 0 else { throw PortfolioStoreError.invalidCost }
             return (shares, cost, principal)
         }
+    }
+
+    private func amountSyncLot(
+        code: String,
+        amount: Double,
+        principal: Double,
+        netValue: Double,
+        fund: FundPosition
+    ) throws -> FundPositionLot {
+        guard amount > 0 else { throw PortfolioStoreError.invalidPosition }
+        guard principal > 0 else { throw PortfolioStoreError.invalidCost }
+        guard netValue > 0 else { throw PortfolioStoreError.missingNetValue }
+
+        let shares = roundedStoredShares(amount / netValue)
+        guard shares > 0 else { throw PortfolioStoreError.invalidPosition }
+        let cost = roundedCost(principal / shares)
+        guard cost > 0 else { throw PortfolioStoreError.invalidCost }
+
+        return FundPositionLot(
+            id: "\(code)-jd-finance-sync",
+            shares: shares,
+            cost: cost,
+            principal: principal,
+            incomeStartDate: fund.incomeStartDate ?? fund.positionDate ?? DateOnlyFormatter.string(from: nowProvider()),
+            positionDate: fund.positionDate ?? DateOnlyFormatter.string(from: nowProvider()),
+            positionTimeType: fund.positionTimeType ?? .before15
+        )
     }
 
     private func lotPrincipal(_ lot: FundPositionLot) -> Double {

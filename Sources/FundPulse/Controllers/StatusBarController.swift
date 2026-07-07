@@ -142,6 +142,9 @@ private func makeStatusPulseImage(size: NSSize, tintColor: NSColor? = nil) -> NS
 
 enum PopoverLayout {
     static let mainWidth: CGFloat = 360
+    static let jdFinanceLoginWidth: CGFloat = 1040
+    static let jdFinancePreviewWidth: CGFloat = 430
+    static let jdFinanceSyncHeight: CGFloat = 720
     static let settingsWidth: CGFloat = 320
     static let editorWidth: CGFloat = 360
     static let editorHeight: CGFloat = 600
@@ -163,6 +166,9 @@ enum PopoverLayout {
     static let mainSize = mainContentSize(forHeight: height)
     static let windowHeight: CGFloat = mainWindowHeight(forHeight: height)
     static let mainWindowSize = mainWindowFrameSize(forHeight: height)
+    static let jdFinanceLoginSize = NSSize(width: jdFinanceLoginWidth, height: jdFinanceSyncHeight)
+    static let jdFinanceNetworkProbeSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
+    static let jdFinanceSyncSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
     static let settingsSize = NSSize(width: settingsWidth, height: height)
     static let editorSize = NSSize(width: editorWidth, height: editorHeight)
     static let tradeEditorSize = NSSize(width: editorWidth, height: tradeEditorHeight)
@@ -187,6 +193,7 @@ enum PopoverLayout {
     static func mainWindowFrameSize(forHeight height: CGFloat) -> NSSize {
         NSSize(width: mainWidth, height: mainWindowHeight(forHeight: height))
     }
+
 }
 
 @Observable
@@ -197,6 +204,7 @@ final class PopoverUIState {
 
 private enum ChildPanelKind {
     case settings
+    case jdFinanceSync
     case portfolioBreakdown
     case incomeRanking(IncomeRankingKind, IncomeRankingMetric)
     case addFund
@@ -226,7 +234,7 @@ private enum ChildPanelKind {
              .editPendingConversion(let fund, _),
              .editFund(let fund):
             fund.code
-        case .settings, .portfolioBreakdown, .incomeRanking, .addFund:
+        case .settings, .jdFinanceSync, .portfolioBreakdown, .incomeRanking, .addFund:
             nil
         }
     }
@@ -354,9 +362,11 @@ final class StatusBarController: NSObject {
 
     private var mainPanelWindow: FundPulsePanel?
     private var childPanelWindow: FundPulsePanel?
+    private var jdFinanceLoginWindow: FundPulsePanel?
     private var mainPanelHostingView: NSHostingView<MainPanelWindowView>?
     private var activeChildPanel: ChildPanelKind?
     private var selectedFundCode: String?
+    private var jdFinanceLoginCompletion: ((String?) -> Void)?
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
     private var deactivateObserver: NSObjectProtocol?
@@ -413,6 +423,7 @@ final class StatusBarController: NSObject {
     }
 
     func invalidate() {
+        hideJDFinanceLoginPanel(reportCancellation: true)
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
         stopContextMenuUpdateRefresh(cancelPendingCheck: true)
@@ -589,6 +600,9 @@ final class StatusBarController: NSObject {
             onOpenSettings: { [weak self] in
                 self?.showChildPanel(.settings)
             },
+            onClose: { [weak self] in
+                self?.closeAllPanels()
+            },
             onOpenPortfolioBreakdown: { [weak self] in
                 self?.showChildPanel(.portfolioBreakdown)
             },
@@ -645,6 +659,12 @@ final class StatusBarController: NSObject {
             showMainPanel()
         }
 
+        if case .jdFinanceSync = activeChildPanel,
+           case .jdFinanceSync = kind {
+        } else if case .jdFinanceSync = activeChildPanel {
+            hideJDFinanceLoginPanel(reportCancellation: true)
+        }
+
         guard let (contentView, size) = makeChildPanelContent(for: kind) else { return }
         activeChildPanel = kind
         selectedFundCode = kind.selectedFundCode
@@ -663,6 +683,10 @@ final class StatusBarController: NSObject {
         installEventMonitorsIfNeeded()
     }
 
+    private func showJDFinanceSyncPanel() {
+        showChildPanel(.jdFinanceSync)
+    }
+
     private func createChildPanelWindow() -> FundPulsePanel {
         let window = FundPulsePanel()
         window.acceptsMouseMovedEvents = true
@@ -677,6 +701,92 @@ final class StatusBarController: NSObject {
         }
         childPanelWindow = window
         return window
+    }
+
+    private func showJDFinanceLoginPanel(onLoggedIn: @escaping (String?) -> Void) {
+        jdFinanceLoginCompletion = onLoggedIn
+
+        let window = jdFinanceLoginWindow ?? createJDFinanceLoginWindow()
+        let view = JDFinanceLoginPanelView(
+            onLoggedIn: { [weak self] cookieHeader in
+                self?.completeJDFinanceLogin(cookieHeader: cookieHeader)
+            },
+            onClose: { [weak self] in
+                self?.hideJDFinanceLoginPanel(reportCancellation: true)
+            }
+        )
+        let size = PopoverLayout.jdFinanceLoginSize
+        let container = PanelCardContainerView(contentView: NSHostingView(rootView: AnyView(view)))
+        container.frame = NSRect(origin: .zero, size: size)
+        container.applyAppearance(panelAppearance)
+        window.contentView = container
+        applyPanelAppearance(to: window)
+        window.setContentSize(size)
+        positionJDFinanceLoginPanel(window: window, size: size)
+        window.orderFrontRegardless()
+        window.makeKey()
+        installEventMonitorsIfNeeded()
+    }
+
+    private func showJDFinanceNetworkProbePanel(networkProbe: JDFinanceNetworkProbe) {
+        jdFinanceLoginCompletion = nil
+
+        let window = jdFinanceLoginWindow ?? createJDFinanceLoginWindow()
+        let view = JDFinanceLoginPanelView(
+            title: "京东金融网页调试",
+            initialURL: JDFinanceWebSession.tradeOrderURL,
+            reloadButtonTitle: "刷新网页",
+            autoCompleteLogin: false,
+            networkProbe: networkProbe,
+            onLoggedIn: { _ in },
+            onClose: { [weak self, weak networkProbe] in
+                networkProbe?.clear()
+                self?.hideJDFinanceLoginPanel(reportCancellation: false)
+            }
+        )
+        let size = PopoverLayout.jdFinanceNetworkProbeSize
+        let container = PanelCardContainerView(contentView: NSHostingView(rootView: AnyView(view)))
+        container.frame = NSRect(origin: .zero, size: size)
+        container.applyAppearance(panelAppearance)
+        window.contentView = container
+        applyPanelAppearance(to: window)
+        window.setContentSize(size)
+        positionJDFinanceLoginPanel(window: window, size: size)
+        window.orderFrontRegardless()
+        window.makeKey()
+        installEventMonitorsIfNeeded()
+    }
+
+    private func createJDFinanceLoginWindow() -> FundPulsePanel {
+        let window = FundPulsePanel()
+        window.acceptsMouseMovedEvents = true
+        window.onOrderOut = { [weak self] in
+            self?.jdFinanceLoginCompletion = nil
+        }
+        window.onClose = { [weak self] in
+            self?.hideJDFinanceLoginPanel(reportCancellation: true)
+        }
+        window.onCancel = { [weak self] in
+            self?.hideJDFinanceLoginPanel(reportCancellation: true)
+        }
+        jdFinanceLoginWindow = window
+        return window
+    }
+
+    private func completeJDFinanceLogin(cookieHeader: String) {
+        let completion = jdFinanceLoginCompletion
+        jdFinanceLoginCompletion = nil
+        jdFinanceLoginWindow?.orderOut(nil)
+        completion?(cookieHeader)
+    }
+
+    private func hideJDFinanceLoginPanel(reportCancellation: Bool = false) {
+        let completion = jdFinanceLoginCompletion
+        jdFinanceLoginCompletion = nil
+        jdFinanceLoginWindow?.orderOut(nil)
+        if reportCancellation {
+            completion?(nil)
+        }
     }
 
     private func makeChildPanelContent(for kind: ChildPanelKind) -> (NSView, NSSize)? {
@@ -696,11 +806,32 @@ final class StatusBarController: NSObject {
                 onCheckUpdate: { [weak self] in
                     await self?.onCheckUpdate(.interactive)
                 },
+                onOpenJDFinanceSync: { [weak self] in
+                    self?.showJDFinanceSyncPanel()
+                },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
                 }
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.settingsSize)
+
+        case .jdFinanceSync:
+            let view = JDFinanceHoldingsSyncView(
+                portfolioStore: store,
+                onRequestLogin: { [weak self] completion in
+                    self?.showJDFinanceLoginPanel(onLoggedIn: completion)
+                },
+                onRequestNetworkProbe: { [weak self] networkProbe in
+                    self?.showJDFinanceNetworkProbePanel(networkProbe: networkProbe)
+                },
+                onMainPanelRefreshNeeded: { [weak self] in
+                    self?.refreshVisiblePanels()
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.jdFinanceSyncSize)
 
         case .portfolioBreakdown:
             let view = PortfolioAllocationPanelView(
@@ -1004,6 +1135,9 @@ final class StatusBarController: NSObject {
     }
 
     private func hideChildPanel() {
+        if case .jdFinanceSync = activeChildPanel {
+            hideJDFinanceLoginPanel(reportCancellation: true)
+        }
         childPanelWindow?.orderOut(nil)
         clearChildPanelState()
     }
@@ -1019,6 +1153,7 @@ final class StatusBarController: NSObject {
     }
 
     private func handleMainPanelDidHide() {
+        hideJDFinanceLoginPanel(reportCancellation: true)
         childPanelWindow?.orderOut(nil)
         clearChildPanelState()
         mainPanelAnchorFrame = nil
@@ -1027,6 +1162,7 @@ final class StatusBarController: NSObject {
     }
 
     private func closeAllPanels() {
+        hideJDFinanceLoginPanel(reportCancellation: true)
         mainPanelWindow?.orderOut(nil)
         childPanelWindow?.orderOut(nil)
         clearChildPanelState()
@@ -1058,10 +1194,26 @@ final class StatusBarController: NSObject {
 
         guard let childPanelWindow, childPanelWindow.isVisible else { return }
         applyPanelAppearance(to: childPanelWindow, animated: animatedAppearance)
+        if let activeChildPanel,
+           let refreshedKind = refreshedDisplayPanelKind(for: activeChildPanel),
+           let (contentView, refreshedSize) = makeChildPanelContent(for: refreshedKind) {
+            self.activeChildPanel = refreshedKind
+            selectedFundCode = refreshedKind.selectedFundCode
+            let container = PanelCardContainerView(contentView: contentView)
+            container.frame = NSRect(origin: .zero, size: refreshedSize)
+            container.applyAppearance(panelAppearance)
+            childPanelWindow.contentView = container
+            childPanelWindow.setContentSize(refreshedSize)
+            positionChildPanel(window: childPanelWindow, size: refreshedSize)
+            return
+        }
+
         let size: NSSize
         switch activeChildPanel {
         case .settings:
             size = PopoverLayout.settingsSize
+        case .jdFinanceSync:
+            size = PopoverLayout.jdFinanceSyncSize
         case .portfolioBreakdown:
             size = PopoverLayout.portfolioBreakdownSize
         case .incomeRanking:
@@ -1081,6 +1233,42 @@ final class StatusBarController: NSObject {
         }
         childPanelWindow.setContentSize(size)
         positionChildPanel(window: childPanelWindow, size: size)
+    }
+
+    private func refreshedDisplayPanelKind(for kind: ChildPanelKind) -> ChildPanelKind? {
+        switch kind {
+        case .portfolioBreakdown, .incomeRanking:
+            return kind
+        case .fundDetail(let fund):
+            return .fundDetail(freshFund(for: fund))
+        case .fundDailyIncome(let fund):
+            return .fundDailyIncome(freshFund(for: fund))
+        case .tradeRecords(let fund):
+            return .tradeRecords(freshFund(for: fund))
+        case .settings,
+             .jdFinanceSync,
+             .addFund,
+             .buyFund,
+             .sellFund,
+             .convertFund,
+             .editTradeRecord,
+             .editConversion,
+             .editPendingTradeRecord,
+             .editPendingConversion,
+             .editFund:
+            return nil
+        }
+    }
+
+    private func freshFund(for fund: FundPosition) -> FundPosition {
+        store.snapshot.funds.first { $0.code == fund.code } ?? fund
+    }
+
+    private func resizeAndPositionMainPanel() {
+        guard let mainPanelWindow, mainPanelWindow.isVisible else { return }
+        let mainSize = mainPanelWindowSize
+        mainPanelWindow.setContentSize(mainSize)
+        positionMainPanel(window: mainPanelWindow, size: mainSize)
     }
 
     private func applyPanelAppearance(to window: FundPulsePanel) {
@@ -1214,6 +1402,9 @@ final class StatusBarController: NSObject {
         if let childPanelWindow, childPanelWindow.isVisible, childPanelWindow.frame.contains(point) {
             return true
         }
+        if let jdFinanceLoginWindow, jdFinanceLoginWindow.isVisible, jdFinanceLoginWindow.frame.contains(point) {
+            return true
+        }
         if let mainPanelWindow,
            let childPanelWindow,
            mainPanelWindow.isVisible,
@@ -1272,6 +1463,23 @@ final class StatusBarController: NSObject {
         originY = min(originY, visibleFrame.maxY - size.height - 8)
         originY = max(originY, visibleFrame.minY + 8)
 
+        window.setFrame(NSRect(origin: NSPoint(x: originX, y: originY), size: size), display: true)
+    }
+
+    private func positionJDFinanceLoginPanel(window: NSWindow, size: NSSize) {
+        let visibleFrame = mainPanelWindow?.screen?.visibleFrame
+            ?? statusItem.button?.window?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? .zero
+
+        let originX = min(
+            max(visibleFrame.midX - size.width / 2, visibleFrame.minX + 8),
+            visibleFrame.maxX - size.width - 8
+        )
+        let originY = min(
+            max(visibleFrame.midY - size.height / 2, visibleFrame.minY + 8),
+            visibleFrame.maxY - size.height - 8
+        )
         window.setFrame(NSRect(origin: NSPoint(x: originX, y: originY), size: size), display: true)
     }
 
@@ -1655,6 +1863,7 @@ final class StatusBarController: NSObject {
         await refreshMarketIndexesIfNeeded()
         updateStatusTitle()
         sendFundThresholdRemindersIfNeeded()
+        refreshVisiblePanels()
     }
 
     private func refreshMarketIndexesIfNeeded(force: Bool = false) async {

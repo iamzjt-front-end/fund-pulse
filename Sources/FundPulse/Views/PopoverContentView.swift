@@ -11,6 +11,7 @@ struct MainPanelWindowView: View {
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
+    let onClose: () -> Void
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
     let onOpenTodayRateRanking: () -> Void
@@ -29,7 +30,7 @@ struct MainPanelWindowView: View {
     let onOpenUpdate: (() -> Void)?
 
     var body: some View {
-        let contentHeight = PopoverLayout.clampedMainPanelHeight(mainPanelHeight)
+        let contentSize = mainPanelContentSize
 
         ZStack(alignment: .top) {
             PopoverChromeShape(arrowX: uiState.arrowX)
@@ -64,12 +65,23 @@ struct MainPanelWindowView: View {
                 onCheckUpdate: onCheckUpdate,
                 onOpenUpdate: onOpenUpdate
             )
-            .frame(width: PopoverLayout.mainWidth, height: contentHeight)
+            .frame(width: contentSize.width, height: contentSize.height)
             .clipShape(RoundedRectangle(cornerRadius: PopoverLayout.cornerRadius, style: .continuous))
             .offset(y: PopoverLayout.arrowHeight)
         }
-        .frame(width: PopoverLayout.mainWidth, height: PopoverLayout.mainWindowHeight(forHeight: contentHeight), alignment: .top)
+        .frame(
+            width: contentSize.width,
+            height: contentSize.height + PopoverLayout.arrowHeight,
+            alignment: .top
+        )
         .background(Color.clear)
+    }
+
+    private var mainPanelContentSize: NSSize {
+        NSSize(
+            width: PopoverLayout.mainWidth,
+            height: PopoverLayout.clampedMainPanelHeight(mainPanelHeight)
+        )
     }
 
     private var popoverChromeFillColor: Color {
@@ -567,7 +579,7 @@ struct PopoverContentView: View {
 
     private var toolbarActionGroup: some View {
         HStack(spacing: 6) {
-            addFundToolbarButton
+            toolbarIconButton("plus", "新增基金", tone: PanelDesign.accent, action: onAddFund)
             toolbarRefreshControl
             toolbarIconButton("gearshape", "设置", action: onOpenSettings)
         }
@@ -576,8 +588,16 @@ struct PopoverContentView: View {
 
     @ViewBuilder
     private var toolbarRefreshControl: some View {
-        if case .failed = store.loadState {
-            toolbarRefreshStateButton
+        if case .failed(let reason) = store.loadState {
+            Button {
+                refresh()
+            } label: {
+                toolbarIconLabel("exclamationmark.triangle.fill", tone: .orange)
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(isManualRefreshFeedbackVisible)
+            .help("基金数据刷新失败：\(reason)。点击重试")
         } else {
             toolbarIconButton("arrow.clockwise", isManualRefreshFeedbackVisible ? "刷新中" : "刷新") {
                 refresh()
@@ -586,82 +606,44 @@ struct PopoverContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var toolbarRefreshStateButton: some View {
-        if case .failed(let reason) = store.loadState {
-            Button {
-                refresh()
-            } label: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
-                    .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
-                    .overlay(toolbarControlBorder(cornerRadius: toolbarIconButtonCornerRadius))
-                    .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .focusable(false)
-            .disabled(isManualRefreshFeedbackVisible)
-            .help("基金数据刷新失败：\(reason)。点击重试")
-        }
-    }
-
-    private func toolbarIconButton(_ systemName: String, _ help: String, action: @escaping () -> Void) -> some View {
+    private func toolbarIconButton(
+        _ systemName: String,
+        _ help: String,
+        tone: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 14, weight: .medium))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(toolbarIconForeground)
-                .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
-                .background(toolbarControlBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
-                .overlay(toolbarControlBorder(cornerRadius: toolbarIconButtonCornerRadius))
-                .overlay(toolbarControlInnerHighlight(cornerRadius: toolbarIconButtonCornerRadius - 0.6))
-                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
+            toolbarIconLabel(systemName, tone: tone)
         }
         .buttonStyle(.plain)
         .focusable(false)
         .help(help)
+        .accessibilityLabel(help)
     }
 
-    private var addFundToolbarButton: some View {
-        Button(action: onAddFund) {
-            Image(systemName: "plus")
-                .font(.system(size: 14, weight: .semibold))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(PanelDesign.accent)
-                .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
-                .background(addFundToolbarButtonBackground, in: RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
-                .overlay(addFundToolbarButtonBorder)
-                .overlay(toolbarControlInnerHighlight(cornerRadius: toolbarIconButtonCornerRadius - 0.6))
-                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .help("新增基金")
-    }
+    private func toolbarIconLabel(_ systemName: String, tone: Color? = nil) -> some View {
+        let foreground = tone ?? toolbarIconForeground
 
-    private var addFundToolbarButtonBorder: some View {
-        RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous)
-            .stroke(PanelDesign.accent.opacity(colorScheme == .dark ? 0.68 : 0.52), lineWidth: 0.85)
-    }
+        return Image(systemName: systemName)
+            .font(.system(size: 14, weight: .semibold))
+            .symbolRenderingMode(tone == nil ? .hierarchical : .monochrome)
+            .foregroundStyle(foreground)
+            .frame(width: toolbarIconButtonSize, height: toolbarIconButtonSize)
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous)
+                        .fill(toolbarControlBackground)
 
-    private var addFundToolbarButtonBackground: some ShapeStyle {
-        LinearGradient(
-            colors: colorScheme == .dark
-                ? [
-                    PanelDesign.accent.opacity(0.18),
-                    PanelDesign.accent.opacity(0.10)
-                ]
-                : [
-                    PanelDesign.accent.opacity(0.10),
-                    PanelDesign.accent.opacity(0.05)
-                ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+                    if let tone {
+                        RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous)
+                            .fill(tone.opacity(colorScheme == .dark ? 0.12 : 0.06))
+                    }
+                }
+            }
+            .overlay(toolbarControlBorder(cornerRadius: toolbarIconButtonCornerRadius, tone: tone))
+            .overlay(toolbarControlInnerHighlight(cornerRadius: toolbarIconButtonCornerRadius - 0.6))
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.08 : 0.025), radius: 3, x: 0, y: 1)
+            .contentShape(RoundedRectangle(cornerRadius: toolbarIconButtonCornerRadius, style: .continuous))
     }
 
     private var filterSwitchControl: some View {
@@ -989,7 +971,7 @@ struct PopoverContentView: View {
                 ScrollView(.horizontal) {
                     HStack(spacing: 7) {
                         ForEach(marketIndexQuotes) { quote in
-                            marketIndexCard(quote)
+                            marketIndexCardButton(quote)
                         }
                     }
                     .padding(.horizontal, 14)
@@ -1010,8 +992,29 @@ struct PopoverContentView: View {
         marketIndexStore.primaryQuote(defaultID: settingsStore.settings.defaultMarketIndexID)
     }
 
+    private func marketIndexCardButton(_ quote: MarketIndexQuote) -> some View {
+        Button {
+            selectMarketIndex(quote.id)
+        } label: {
+            marketIndexCard(quote)
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .help("选择\(marketIndexDisplayName(quote))")
+        .accessibilityLabel("选择\(marketIndexDisplayName(quote))")
+    }
+
+    private func selectMarketIndex(_ id: MarketIndexID) {
+        settingsStore.setDefaultMarketIndexID(id)
+        withAnimation(.easeInOut(duration: 0.16)) {
+            isMarketIndexExpanded = false
+        }
+    }
+
     private func marketIndexCard(_ quote: MarketIndexQuote) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        let isSelected = quote.id == settingsStore.settings.defaultMarketIndexID
+
+        return VStack(alignment: .leading, spacing: 5) {
             Text(marketIndexDisplayName(quote))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.primary)
@@ -1037,10 +1040,28 @@ struct PopoverContentView: View {
         }
         .padding(.horizontal, 9)
         .frame(width: 104, height: 74, alignment: .leading)
-        .background(marketIndexCardBackground(for: quote), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(
+            marketIndexCardBackground(for: quote, isSelected: isSelected),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(toneColor(for: quote.changeRate).opacity(colorScheme == .dark ? 0.20 : 0.14), lineWidth: 0.65)
+                .stroke(
+                    toneColor(for: quote.changeRate).opacity(
+                        isSelected
+                            ? (colorScheme == .dark ? 0.52 : 0.34)
+                            : (colorScheme == .dark ? 0.20 : 0.14)
+                    ),
+                    lineWidth: isSelected ? 1.1 : 0.65
+                )
+        )
+        .shadow(
+            color: isSelected
+                ? toneColor(for: quote.changeRate).opacity(colorScheme == .dark ? 0.18 : 0.10)
+                : Color.clear,
+            radius: isSelected ? 4 : 0,
+            x: 0,
+            y: 1
         )
     }
 
@@ -1057,8 +1078,12 @@ struct PopoverContentView: View {
         return "\(sign)\(value.formatted(.number.precision(.fractionLength(2))))"
     }
 
-    private func marketIndexCardBackground(for quote: MarketIndexQuote) -> Color {
-        toneColor(for: quote.changeRate).opacity(colorScheme == .dark ? 0.16 : 0.10)
+    private func marketIndexCardBackground(for quote: MarketIndexQuote, isSelected: Bool) -> Color {
+        toneColor(for: quote.changeRate).opacity(
+            isSelected
+                ? (colorScheme == .dark ? 0.24 : 0.14)
+                : (colorScheme == .dark ? 0.16 : 0.10)
+        )
     }
 
     private var refreshStatusIndicator: some View {
@@ -1106,12 +1131,7 @@ struct PopoverContentView: View {
     }
 
     private var privacyToggleButton: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                hidesHeaderAmounts.toggle()
-            }
-            NotificationCenter.default.post(name: .fundPulseAmountPrivacyDidChange, object: nil)
-        } label: {
+        Button(action: toggleHeaderAmountPrivacy) {
             Image(systemName: hidesHeaderAmounts ? "eye.slash.fill" : "eye.fill")
                 .font(.system(size: 10, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
@@ -1140,6 +1160,13 @@ struct PopoverContentView: View {
         hidesHeaderAmounts
             ? Color.orange.opacity(colorScheme == .dark ? 0.18 : 0.12)
             : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05)
+    }
+
+    private func toggleHeaderAmountPrivacy() {
+        withAnimation(.easeInOut(duration: 0.16)) {
+            hidesHeaderAmounts.toggle()
+        }
+        NotificationCenter.default.post(name: .fundPulseAmountPrivacyDidChange, object: nil)
     }
 
     private var hiddenMoneyPlaceholder: String { "***" }
@@ -1342,74 +1369,91 @@ struct PopoverContentView: View {
     }
 
     private func pendingImpactBar(_ impact: PendingHeaderImpact) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Image(systemName: "clock.badge.exclamationmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.orange)
+        HStack(spacing: 9) {
+            Image(systemName: "clock.badge.exclamationmark")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 1) {
                 Text("待确认 \(impact.count) 笔")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
-                Text(impact.hasEstimatedAmount ? "含预估金额" : "净值已更新")
+
+                Text(pendingImpactActivityText(impact))
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.72))
+                    .minimumScaleFactor(0.82)
+                    .allowsTightening(true)
             }
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
 
             if hidesHeaderAmounts {
                 Text("***")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
             } else {
-                HStack(alignment: .top, spacing: 8) {
-                    if impact.buyAmount > 0 {
-                        pendingImpactToken("买入", pendingImpactSideText(amount: impact.buyAmount), color: .red)
-                    }
-                    if impact.sellAmount > 0 {
-                        pendingImpactToken("卖出", pendingImpactSideText(amount: impact.sellAmount), color: .fundPulseGreen)
-                    }
-                    pendingImpactToken(
-                        pendingNetTitle(impact.netAmount),
-                        signedCompactPendingMoney(impact.netAmount),
-                        color: pendingImpactNetColor(impact.netAmount)
-                    )
-                }
+                pendingImpactNetSummary(impact)
             }
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(.secondary.opacity(0.68))
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(Color.orange.opacity(colorScheme == .dark ? 0.13 : 0.075), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(height: 42)
+        .background(Color.orange.opacity(colorScheme == .dark ? 0.12 : 0.065), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.orange.opacity(colorScheme == .dark ? 0.24 : 0.16), lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.orange.opacity(colorScheme == .dark ? 0.22 : 0.14), lineWidth: 0.8)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private func pendingImpactToken(_ title: String, _ value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+    private func pendingImpactNetSummary(_ impact: PendingHeaderImpact) -> some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            Text(pendingNetTitle(impact.netAmount))
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(color)
                 .lineLimit(1)
-                .minimumScaleFactor(0.88)
+
+            Text(signedCompactPendingMoney(impact.netAmount))
+                .font(.system(size: 11, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(pendingImpactNetColor(impact.netAmount))
+                .lineLimit(1)
+                .minimumScaleFactor(0.76)
                 .allowsTightening(true)
         }
-        .monospacedDigit()
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: 86, alignment: .trailing)
+    }
+
+    private func pendingImpactActivityText(_ impact: PendingHeaderImpact) -> String {
+        let hasSubscription = impact.buyAmount > 0.5
+        let hasRedemption = impact.sellAmount > 0.5
+
+        switch (hasSubscription, hasRedemption) {
+        case (true, true):
+            return "申购 \(pendingMoneyText(impact.buyAmount)) · 赎回 \(pendingMoneyText(impact.sellAmount))"
+        case (true, false):
+            return "申购待确认 \(pendingMoneyText(impact.buyAmount))"
+        case (false, true):
+            return "赎回待确认 \(pendingMoneyText(impact.sellAmount))"
+        case (false, false):
+            if impact.conversionCount > 0 {
+                return "转换待确认 \(impact.conversionCount)笔"
+            }
+            return "交易待确认"
+        }
     }
 
     private func pendingNetTitle(_ value: Double) -> String {
-        if value > 0.5 { return "净买入" }
-        if value < -0.5 { return "净卖出" }
+        if value > 0.5 { return "净申购" }
+        if value < -0.5 { return "净赎回" }
         return "净额"
     }
 
@@ -1463,14 +1507,17 @@ struct PopoverContentView: View {
         )
     }
 
-    private func toolbarControlBorder(cornerRadius: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .stroke(
-                colorScheme == .dark
-                    ? Color.white.opacity(0.12)
-                    : Color(red: 213 / 255, green: 204 / 255, blue: 190 / 255).opacity(0.44),
-                lineWidth: 0.85
-            )
+    private func toolbarControlBorder(cornerRadius: CGFloat, tone: Color? = nil) -> some View {
+        let borderColor = tone.map {
+            $0.opacity(colorScheme == .dark ? 0.50 : 0.36)
+        } ?? (
+            colorScheme == .dark
+                ? Color.white.opacity(0.12)
+                : Color(red: 213 / 255, green: 204 / 255, blue: 190 / 255).opacity(0.44)
+        )
+
+        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(borderColor, lineWidth: 0.85)
     }
 
     private func toolbarControlInnerHighlight(cornerRadius: CGFloat) -> some View {
@@ -1799,27 +1846,7 @@ struct PopoverContentView: View {
     }
 
     private var pendingHeaderImpact: PendingHeaderImpact? {
-        var impact = PendingHeaderImpact(count: displayPendingCount)
-
-        for activity in pendingActivities {
-            guard let displayAmount = activity.displayAmount else {
-                continue
-            }
-            switch activity.kind {
-            case .newFund, .buy:
-                impact.buyAmount += displayAmount.value
-            case .sell, .conversionOut:
-                impact.sellAmount += displayAmount.value
-            case .conversionIn:
-                impact.buyAmount += displayAmount.value
-            }
-            if displayAmount.source == .estimatedNetValue {
-                impact.hasEstimatedAmount = true
-            }
-        }
-
-        guard impact.hasAmount else { return nil }
-        return impact
+        PendingHeaderImpact.make(activities: pendingActivities)
     }
 
     private var visibleFilters: [FundListFilter] {
@@ -2184,11 +2211,45 @@ struct PendingActivityAmount {
     var shares: Double?
 }
 
-private struct PendingHeaderImpact {
+struct PendingHeaderImpact {
     var count: Int
     var buyAmount: Double = 0
     var sellAmount: Double = 0
+    var conversionCount = 0
     var hasEstimatedAmount = false
+
+    static func make(activities: [PendingTradeActivity]) -> PendingHeaderImpact? {
+        var impact = PendingHeaderImpact(count: activities.count)
+        var conversionKeys = Set<String>()
+
+        for activity in activities {
+            if activity.isConversion {
+                conversionKeys.insert(activity.conversionID ?? activity.id)
+                continue
+            }
+
+            guard let displayAmount = activity.displayAmount else {
+                continue
+            }
+
+            switch activity.kind {
+            case .newFund, .buy:
+                impact.buyAmount += displayAmount.value
+            case .sell:
+                impact.sellAmount += displayAmount.value
+            case .conversionOut, .conversionIn:
+                conversionKeys.insert(activity.conversionID ?? activity.id)
+            }
+
+            if displayAmount.source == .estimatedNetValue {
+                impact.hasEstimatedAmount = true
+            }
+        }
+
+        impact.conversionCount = conversionKeys.count
+        guard impact.hasAmount || impact.conversionCount > 0 else { return nil }
+        return impact
+    }
 
     var hasAmount: Bool {
         buyAmount > 0 || sellAmount > 0

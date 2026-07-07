@@ -49,6 +49,7 @@ struct SettingsView: View {
     let onSettingsChanged: (() -> Void)?
     let onRefresh: (() async -> Void)?
     let onCheckUpdate: (() async -> Void)?
+    let onOpenJDFinanceSync: (() -> Void)?
     let onClose: (() -> Void)?
 
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
@@ -77,6 +78,7 @@ struct SettingsView: View {
         onSettingsChanged: (() -> Void)?,
         onRefresh: (() async -> Void)?,
         onCheckUpdate: (() async -> Void)?,
+        onOpenJDFinanceSync: (() -> Void)? = nil,
         onClose: (() -> Void)?
     ) {
         self.store = store
@@ -86,6 +88,7 @@ struct SettingsView: View {
         self.onSettingsChanged = onSettingsChanged
         self.onRefresh = onRefresh
         self.onCheckUpdate = onCheckUpdate
+        self.onOpenJDFinanceSync = onOpenJDFinanceSync
         self.onClose = onClose
         _selectedAutoRefreshInterval = State(initialValue: settingsStore.settings.autoRefreshInterval)
         _selectedMarketClosedAutoRefreshInterval = State(
@@ -116,6 +119,10 @@ struct SettingsView: View {
                             menuBarContentModeRow
                             menuBarDisplayModeRow
                         }
+                    }
+
+                    PanelSection(title: "Beta 功能") {
+                        betaFeaturesSection
                     }
 
                     PanelSection(title: "基金操作提醒") {
@@ -381,6 +388,59 @@ struct SettingsView: View {
         }
     }
 
+    private var betaFeaturesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("启用 Beta 功能")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("显示仍在验证中的功能入口。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                FocuslessSwitch(isOn: betaFeaturesEnabledBinding)
+                    .frame(width: 54, height: 30)
+            }
+
+            if settingsStore.settings.betaFeaturesEnabled {
+                Divider()
+                    .overlay(.secondary.opacity(0.14))
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("京东金融同步")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("从京东金融读取持仓并生成本地同步预览。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button {
+                        onOpenJDFinanceSync?()
+                    } label: {
+                        PanelButtonLabel(
+                            title: "同步京东",
+                            systemImage: "arrow.triangle.2.circlepath",
+                            style: .primary
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .disabled(onOpenJDFinanceSync == nil)
+                    .help("打开京东金融同步")
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .animation(.easeInOut(duration: 0.16), value: settingsStore.settings.betaFeaturesEnabled)
+    }
+
     private func autoRefreshIntervalControl(
         title: String,
         selectedInterval: AutoRefreshInterval,
@@ -421,6 +481,16 @@ struct SettingsView: View {
             get: { settingsStore.settings.operationReminderEnabled },
             set: { isEnabled in
                 settingsStore.setOperationReminderEnabled(isEnabled)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    private var betaFeaturesEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.betaFeaturesEnabled },
+            set: { isEnabled in
+                settingsStore.setBetaFeaturesEnabled(isEnabled)
                 onSettingsChanged?()
             }
         )

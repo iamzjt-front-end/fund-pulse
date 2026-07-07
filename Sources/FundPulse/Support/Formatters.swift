@@ -7,6 +7,7 @@ import AppKit
 
 enum MoneyFormatter {
     static func money(_ value: Double, signed: Bool = false) -> String {
+        let value = normalizedZero(value)
         let sign: String
         if signed {
             sign = value > 0 ? "+" : value < 0 ? "-" : ""
@@ -17,12 +18,17 @@ enum MoneyFormatter {
     }
 
     static func plainMoney(_ value: Double) -> String {
-        "¥ \(value.formatted(.number.precision(.fractionLength(2))))"
+        let value = normalizedZero(value)
+        return "¥ \(value.formatted(.number.precision(.fractionLength(2))))"
     }
 
     static func percent(_ value: Double, signed: Bool = false) -> String {
         let sign = signed && value > 0 ? "+" : ""
         return "\(sign)\(value.formatted(.number.precision(.fractionLength(2))))%"
+    }
+
+    private static func normalizedZero(_ value: Double) -> Double {
+        abs(value) < 0.005 ? 0 : value
     }
 }
 

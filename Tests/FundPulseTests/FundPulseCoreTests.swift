@@ -257,6 +257,2629 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(FundCodeFormatter.display(""), "--")
     }
 
+    func testJDFinanceFundCodeMapperInfersFundCodeFromSkuID() {
+        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "1024424"), "024424")
+        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "1008998"), "008998")
+        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "113687"), "013687")
+        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "024418"), "024418")
+    }
+
+    func testJDFinanceHoldingsParserReadsNestedFundHoldGroupResponse() throws {
+        let snapshot = try JDFinanceHoldingsParser.parse(data: Data(Self.jdFinanceHoldingsResponse.utf8))
+
+        XCTAssertEqual(snapshot.totalAssets ?? 0, 171_461.84, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.holdIncome ?? 0, -9_222.66, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.totalIncome ?? 0, -5_425.17, accuracy: 0.0001)
+        XCTAssertEqual(snapshot.products.count, 2)
+
+        let first = try XCTUnwrap(snapshot.products.first)
+        XCTAssertEqual(first.skuID, "1024424")
+        XCTAssertEqual(first.code, "024424")
+        XCTAssertEqual(first.name, "永赢先进制造智选混合发起A")
+        XCTAssertEqual(first.totalAmount, 19_907.79, accuracy: 0.0001)
+        XCTAssertEqual(first.yesterdayIncome ?? 0, -688.41, accuracy: 0.0001)
+        XCTAssertEqual(first.holdIncome ?? 0, -734.13, accuracy: 0.0001)
+        XCTAssertEqual(first.holdRate ?? 0, -3.56, accuracy: 0.0001)
+
+        let second = try XCTUnwrap(snapshot.products.last)
+        XCTAssertEqual(second.code, "011833")
+        XCTAssertEqual(second.transactionTipText, "买入确认中")
+    }
+
+    func testJDFinanceHoldingsParserPrefersExplicitFundCodeOverSkuID() throws {
+        let response = """
+        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{},"fundData":{"fundList":[{"productList":[{"skuId":"113687","fundCode":"011833","productName":"西部利得人工智能主题指数增强C","totalAmount":"7632.07"}]}]}}}}
+        """
+
+        let snapshot = try JDFinanceHoldingsParser.parse(data: Data(response.utf8))
+
+        XCTAssertEqual(snapshot.products.first?.skuID, "113687")
+        XCTAssertEqual(snapshot.products.first?.code, "011833")
+    }
+
+    func testJDFinanceHoldingsParserReadsTransactionTipObjectAndDetailRequest() throws {
+        let snapshot = try JDFinanceHoldingsParser.parse(data: Data(Self.jdFinancePendingHoldingsResponse.utf8))
+        let product = try XCTUnwrap(snapshot.products.first)
+
+        XCTAssertNil(product.yesterdayIncome)
+        XCTAssertEqual(product.yesterdayIncomeNotice, "预计08日更新")
+        XCTAssertEqual(product.transactionTip?.text, "交易：1笔买入中合计7632.07元")
+        XCTAssertEqual(product.transactionTip?.action, .buy)
+        XCTAssertEqual(product.transactionTip?.tradeCount, 1)
+        XCTAssertEqual(product.transactionTip?.totalAmount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(product.detailRequest?.extJSON, #"{"source":"pending-detail"}"#)
+    }
+
+    func testJDFinanceHoldingsServiceReportsNotLoggedIn() async {
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: """
+            {"success":false,"resultCode":3,"resultMsg":"请先登录您的京东账号","channelEncrypt":0}
+            """
+        ])
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await service.fetchSnapshot(cookieHeader: nil)
+        } errorHandler: { error in
+            XCTAssertEqual(error as? JDFinanceHoldingsError, .notLoggedIn)
+        }
+    }
+
+    func testJDFinanceHoldingsServiceFillsPendingDetailWhenAvailable() async throws {
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: Self.jdFinancePendingDetailResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.statusText, "买入确认中")
+    }
+
+    func testJDFinanceHoldingsServiceParsesApplyTimeAsBefore15TradeTime() async throws {
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "1000.00",
+                "applyTime": "2026-07-03 14:35:12",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceHoldingsServiceDoesNotInferTradeTimeFromExpectedUpdate() async throws {
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "1000.00",
+                "updateTime": "2026-07-08 09:00:00",
+                "expectedUpdateText": "预计08日更新",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertNil(detail.tradeDate)
+        XCTAssertNil(detail.tradeTimeType)
+    }
+
+    func testJDFinanceTradeOrderParserReadsBizTimeAndSkuDerivedCode() throws {
+        let response = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1024424",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "BUY",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "买入确认中",
+                  "orderId": "secret-order"
+                }
+              ]
+            }
+          }
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "024424")
+        XCTAssertEqual(record.productName, "东方阿尔法科技优选混合发起C")
+        XCTAssertEqual(record.action, .buy)
+        XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-03")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+        XCTAssertEqual(record.statusText, "买入确认中")
+    }
+
+    func testJDFinanceTradeOrderParserCombinesSplitTradeDateAndTime() throws {
+        let response = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1024424",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "BUY",
+                  "allAmount": "¥ 1,000.00",
+                  "tradeDate": "2026-07-03",
+                  "tradeTime": "14点35分",
+                  "statusName": "买入确认中"
+                }
+              ]
+            }
+          }
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "024424")
+        XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-03")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceTradeOrderParserReadsRowsFromStringWrappedResultData() throws {
+        let embedded = #"""
+        {"data":{"tradeOrderVoList":[{"productId":"1024424","productName":"东方阿尔法科技优选混合发起C","tradeTypeCode":"BUY","allAmount":"1000.00元","bizTime":"2026-07-03 14:35:12","statusName":"买入确认中"}]}}
+        """#
+        let response = """
+        {
+          "resultCode": 0,
+          "resultData": \(try jsonStringLiteral(embedded))
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "024424")
+        XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-03")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceTradeOrderEndpointMatchesWebTradeRecordPage() {
+        XCTAssertTrue(JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString.contains("/cfGateway/newna/m/queryTradeOrderList"))
+    }
+
+    func testJDFinanceTradeOrderProductScopedPayloadMatchesWebTradeRecordPage() throws {
+        let product = JDFinanceHoldingProduct(
+            skuID: "1025500",
+            code: "025500",
+            name: "东方阿尔法科技智选混合发起C",
+            totalAmount: 3_000,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：2笔买入中合计3000.00元",
+                action: .buy,
+                tradeCount: 2,
+                totalAmount: 3_000
+            )
+        )
+        let now = try chinaDate("2026-07-06 11:49")
+
+        let payload = try JDFinanceHoldingsService.tradeOrderRequestPayload(
+            page: 1,
+            now: now,
+            product: product
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["businessCode"] as? String, "FUND")
+        XCTAssertEqual(object["pageNo"] as? Int, 1)
+        XCTAssertEqual(object["busProductId"] as? String, "1025500")
+        XCTAssertEqual(object["productId"] as? String, "1025500")
+        XCTAssertEqual(object["productCode"] as? String, "025500")
+        XCTAssertEqual(object["fundCode"] as? String, "025500")
+    }
+
+    func testJDFinanceTradeOrderParserReadsGenericTradeRows() throws {
+        let response = """
+        {
+          "success": true,
+          "resultData": {
+            "data": {
+              "orderList": [
+                {
+                  "productCode": "025500",
+                  "fundName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "applyAmount": "¥ 3,000.00",
+                  "orderCreateTime": "2026/07/03 14:12:59",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "025500")
+        XCTAssertEqual(record.productName, "东方阿尔法科技智选混合发起C")
+        XCTAssertEqual(record.action, .buy)
+        XCTAssertEqual(record.amount ?? 0, 3_000, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-03")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+        XCTAssertEqual(record.statusText, "支付成功")
+    }
+
+    func testJDFinanceTradeOrderParserReadsConversionRows() throws {
+        let response = """
+        {
+          "success": true,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "109922",
+                  "productName": "转换-国泰中证全指通信设备ETF联接C",
+                  "sellProductName": "华夏上证科创板半导体材料设备主题ETF发起式联接C",
+                  "sellProductId": "113284",
+                  "tradeTypeName": "转换",
+                  "tradeTypeCode": "TRANSFORM",
+                  "allAmount": "¥ 971.77",
+                  "bizTime": "2026-07-07 15:00前",
+                  "statusName": "处理中"
+                }
+              ]
+            }
+          }
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "009922")
+        XCTAssertEqual(record.productName, "转换-国泰中证全指通信设备ETF联接C")
+        XCTAssertNil(record.conversionTargetCode)
+        XCTAssertEqual(record.conversionTargetName, "华夏上证科创板半导体材料设备主题ETF发起式联接C")
+        XCTAssertEqual(record.action, .conversion)
+        XCTAssertEqual(record.amount ?? 0, 971.77, accuracy: 0.0001)
+        XCTAssertEqual(record.shares ?? 0, 971.77, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-07")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+        XCTAssertEqual(record.statusText, "处理中")
+    }
+
+    func testJDFinanceTradeOrderParserTreatsRedeemAmountAsSharesWhenShareFieldIsMissing() throws {
+        let response = """
+        {
+          "success": true,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1008998",
+                  "productName": "转出-同泰竞争优势混合C",
+                  "tradeTypeName": "卖出",
+                  "tradeTypeCode": "TRANSFER_OUT",
+                  "allAmount": "¥ 7,171.54",
+                  "bizTime": "2026-07-07 15:00前",
+                  "statusName": "转出中"
+                }
+              ]
+            }
+          }
+        }
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+        let record = try XCTUnwrap(records.first)
+
+        XCTAssertEqual(record.code, "008998")
+        XCTAssertEqual(record.productName, "转出-同泰竞争优势混合C")
+        XCTAssertEqual(record.action, .sell)
+        XCTAssertEqual(record.amount ?? 0, 7_171.54, accuracy: 0.0001)
+        XCTAssertEqual(record.shares ?? 0, 7_171.54, accuracy: 0.0001)
+        XCTAssertEqual(record.tradeDate, "2026-07-07")
+        XCTAssertEqual(record.tradeTimeType, .before15)
+        XCTAssertEqual(record.statusText, "转出中")
+    }
+
+    func testJDFinanceHoldingsServiceFillsPendingTimeFromTradeOrderList() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "20,686.71" },
+                "holdIncome": { "text": "-919.26" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1024424",
+                        "fundCode": "024424",
+                        "productName": "东方阿尔法科技优选混合发起C",
+                        "totalAmount": { "text": "20,686.71" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "-919.26" },
+                        "transactionTip": { "text": "交易：1笔买入中合计1000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "1000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "113387",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "1000.00",
+                  "bizTime": "2026-07-02 14:35:12",
+                  "statusName": "退款完成"
+                },
+                {
+                  "productId": "113387",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026.07.03 14:35:12",
+                  "statusName": "支付成功"
+                },
+                {
+                  "productId": "1024424",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "BUY",
+                  "allAmount": "2000.00",
+                  "bizTime": "2026-07-02 14:35:12",
+                  "statusName": "买入确认中"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceHoldingsServiceFallsBackToLegacyTradeOrderEndpoint() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "20,686.71" },
+                "holdIncome": { "text": "-919.26" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1024424",
+                        "fundCode": "024424",
+                        "productName": "东方阿尔法科技优选混合发起C",
+                        "totalAmount": { "text": "20,686.71" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "-919.26" },
+                        "transactionTip": { "text": "交易：1笔买入中合计1000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "1000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let emptyTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": []
+            }
+          }
+        }
+        """
+        let legacyTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1024424",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: emptyTradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: legacyTradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceHoldingsServiceMergesLegacyTradeOrderWhenNewEndpointHasOtherRecords() async throws {
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "7632.07",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let newTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1024424",
+                  "productName": "东方阿尔法科技优选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let legacyTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productName": "西部利得人工智能主题指数增强C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 7,632.07",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: newTradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: legacyTradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.matchedTradeRecords.count, 1)
+    }
+
+    func testJDFinanceHoldingsServiceFillsPendingTimeFromProductScopedTradeOrderList() async throws {
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "7632.07",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let emptyTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": []
+            }
+          }
+        }
+        """
+        let productScopedTradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "113687",
+                  "productName": "西部利得人工智能主题指数增强C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 7,632.07",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses(
+            [
+                JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+                JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+                JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: emptyTradeOrderResponse,
+                JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: emptyTradeOrderResponse
+            ],
+            bodyResponses: [
+                MockBodyResponseRule(
+                    urlPrefix: JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString,
+                    bodyContains: "productId",
+                    data: Data(productScopedTradeOrderResponse.utf8)
+                )
+            ]
+        )
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.matchedTradeRecords.count, 1)
+    }
+
+    func testJDFinanceHoldingsServiceFillsPendingTimeFromGroupedTradeOrderList() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "3,000.00" },
+                "holdIncome": { "text": "0.00" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1025500",
+                        "fundCode": "025500",
+                        "productName": "东方阿尔法科技智选混合发起C",
+                        "totalAmount": { "text": "3,000.00" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：2笔买入中合计3000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "3000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026-07-03 14:21:12",
+                  "statusName": "支付成功"
+                },
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 2,000.00",
+                  "bizTime": "2026-07-03 14:35:12",
+                  "statusName": "支付成功"
+                },
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 3,000.00",
+                  "bizTime": "2026-07-02 10:35:12",
+                  "statusName": "退款完成"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 3_000, accuracy: 0.0001)
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.statusText, "匹配交易记录：2 笔，2026-07-03 15:00前")
+    }
+
+    func testJDFinanceHoldingsServiceFillsPendingTimeFromAggregateTradeOrderRecord() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "3,000.00" },
+                "holdIncome": { "text": "0.00" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1025500",
+                        "fundCode": "025500",
+                        "productName": "东方阿尔法科技智选混合发起C",
+                        "totalAmount": { "text": "3,000.00" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：2笔买入中合计3000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "3000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 3,000.00",
+                  "bizTime": "2026-07-03 14:18:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertEqual(detail.action, .buy)
+        XCTAssertEqual(detail.amount ?? 0, 3_000, accuracy: 0.0001)
+        XCTAssertEqual(detail.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.statusText, "买入确认中")
+    }
+
+    func testJDFinanceHoldingsServiceKeepsMultipleMatchedTradeOrderRecordsWhenTimesDiffer() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "3,000.00" },
+                "holdIncome": { "text": "0.00" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1025500",
+                        "fundCode": "025500",
+                        "productName": "东方阿尔法科技智选混合发起C",
+                        "totalAmount": { "text": "3,000.00" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：2笔买入中合计3000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "3000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 1,000.00",
+                  "bizTime": "2026-07-03 14:18:12",
+                  "statusName": "支付成功"
+                },
+                {
+                  "productId": "1025500",
+                  "productName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "¥ 2,000.00",
+                  "bizTime": "2026-07-04 15:18:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertNil(detail.tradeDate)
+        XCTAssertNil(detail.tradeTimeType)
+        XCTAssertEqual(detail.statusText, "匹配交易记录：2 笔")
+        XCTAssertEqual(detail.matchedTradeRecords.count, 2)
+        XCTAssertEqual(detail.matchedTradeRecords.map(\.tradeDate), ["2026-07-03", "2026-07-04"])
+        XCTAssertEqual(detail.matchedTradeRecords.map(\.tradeTimeType), [.before15, .after15])
+        XCTAssertEqual(detail.matchedTradeRecords.compactMap(\.amount).reduce(0, +), 3_000, accuracy: 0.0001)
+    }
+
+    func testJDFinanceHoldingsServiceExplainsUnmatchedGroupedTradeOrderList() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "3,000.00" },
+                "holdIncome": { "text": "0.00" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1025500",
+                        "fundCode": "025500",
+                        "productName": "东方阿尔法科技智选混合发起C",
+                        "totalAmount": { "text": "3,000.00" },
+                        "yesterdayIncome": { "text": "预计08日更新" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：2笔买入中合计3000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "3000.00",
+                "tradeStatus": "买入确认中"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "orderList": [
+                {
+                  "productCode": "025500",
+                  "fundName": "东方阿尔法科技智选混合发起C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "applyAmount": "¥ 1,000.00",
+                  "orderCreateTime": "2026-07-03 14:21:12",
+                  "statusName": "支付成功"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertNil(detail.tradeDate)
+        XCTAssertNil(detail.tradeTimeType)
+        XCTAssertTrue(detail.statusText?.contains("已查交易记录") ?? false)
+        XCTAssertTrue(detail.statusText?.contains("未匹配到 2 笔") ?? false)
+        XCTAssertEqual(detail.candidateTradeRecords.count, 1)
+        XCTAssertEqual(detail.candidateTradeRecords.first?.tradeDate, "2026-07-03")
+        XCTAssertEqual(detail.candidateTradeRecords.first?.tradeTimeType, .before15)
+        XCTAssertEqual(detail.candidateTradeRecords.first?.amount ?? 0, 1_000, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testJDFinanceNetworkProbeRedactsSensitiveFields() throws {
+        let probe = JDFinanceNetworkProbe()
+        let url = try XCTUnwrap(URL(
+            string: "https://ms.jr.jd.com/gw/generic/jj/newna/m/getNewFundPositionDetail?reqData=secret-ext-json"
+        ))
+        let response = """
+        {
+          "token": "secret-token",
+          "cookie": "pt_key=secret-cookie",
+          "orderId": "secret-order",
+          "resultData": {
+            "fundCode": "024424",
+            "tradeAmount": "1000.00",
+            "applyTime": "2026-07-03 14:35:12",
+            "tradeStatus": "买入确认中",
+            "extJson": "{\\"orderId\\":\\"secret\\"}"
+          }
+        }
+        """
+
+        probe.recordURLSession(
+            endpoint: "getNewFundPositionDetail",
+            url: url,
+            statusCode: 200,
+            data: Data(response.utf8)
+        )
+
+        let entry = try XCTUnwrap(probe.entries.first)
+        let joined = ([entry.path] + entry.topLevelKeys + entry.fieldSummaries).joined(separator: " ")
+
+        XCTAssertEqual(entry.statusCode, 200)
+        XCTAssertFalse(entry.path.contains("reqData"))
+        XCTAssertFalse(joined.contains("secret-token"))
+        XCTAssertFalse(joined.contains("secret-cookie"))
+        XCTAssertFalse(joined.contains("secret-order"))
+        XCTAssertFalse(joined.lowercased().contains("extjson"))
+        XCTAssertTrue(joined.contains("024424"))
+        XCTAssertTrue(joined.contains("1,000.00") || joined.contains("1000.00"))
+        XCTAssertTrue(joined.contains("2026-07-03"))
+        XCTAssertTrue(joined.contains("15:00前"))
+    }
+
+    @MainActor
+    func testJDFinanceNetworkProbeCapturesTradeOrderListFields() throws {
+        let probe = JDFinanceNetworkProbe()
+        let payload: [String: Any] = [
+            "url": "https://ms.jr.jd.com/gw2/generic/cfGateway/newna/m/queryTradeOrderList",
+            "method": "POST",
+            "status": 200,
+            "body": """
+            {
+              "success": true,
+              "data": {
+                "tradeOrderVoList": [
+                  {
+                    "bizTime": "2026-07-02 10:35:12",
+                    "productName": "无关基金A",
+                    "allAmount": "999.00",
+                    "statusName": "支付成功",
+                    "tradeTypeCode": "TRANSFER_IN"
+                  },
+                  {
+                    "bizTime": "2026-07-03 14:35:12",
+                    "currentTime": "07-03 14:35:12",
+                    "productId": "1025500",
+                    "productName": "东方阿尔法科技智选混合发起C",
+                    "allAmount": "1000.00",
+                    "statusName": "支付成功",
+                    "tradeTypeCode": "TRANSFER_IN",
+                    "orderId": "secret-order"
+                  },
+                  {
+                    "bizTime": "2026-07-03 14:42:12",
+                    "productId": "1025500",
+                    "productName": "东方阿尔法科技智选混合发起C",
+                    "allAmount": "2000.00",
+                    "statusName": "支付成功",
+                    "tradeTypeCode": "TRANSFER_IN"
+                  }
+                ]
+              }
+            }
+            """
+        ]
+
+        probe.setTargets([
+            JDFinanceNetworkProbeTarget(code: "025500", name: "东方阿尔法科技智选混合发起C", amount: 3_000)
+        ])
+        probe.recordWebViewPayload(payload)
+
+        let entry = try XCTUnwrap(probe.entries.first)
+        let joined = ([entry.path] + entry.topLevelKeys + entry.fieldSummaries).joined(separator: " ")
+
+        XCTAssertEqual(entry.method, "POST")
+        XCTAssertEqual(entry.statusCode, 200)
+        XCTAssertTrue(entry.isVisibleInCapturePanel)
+        XCTAssertTrue(entry.isTradeOrderEndpoint)
+        XCTAssertTrue(joined.contains("queryTradeOrderList"))
+        XCTAssertTrue(joined.contains("025500"))
+        XCTAssertTrue(joined.contains("东方阿尔法科技智选混合发起C"))
+        XCTAssertTrue(joined.contains("1,000.00") || joined.contains("1000.00"))
+        XCTAssertTrue(joined.contains("2,000.00") || joined.contains("2000.00"))
+        XCTAssertTrue(joined.contains("2026-07-03"))
+        XCTAssertTrue(joined.contains("15:00前"))
+        XCTAssertTrue(joined.contains("支付成功"))
+        XCTAssertTrue(joined.contains("TRANSFER_IN"))
+        XCTAssertFalse(joined.contains("无关基金A"))
+        XCTAssertFalse(joined.contains("secret-order"))
+        XCTAssertFalse(joined.lowercased().contains("orderid"))
+    }
+
+    @MainActor
+    func testJDFinanceNetworkProbeCapturesTradeOrderRequestFields() throws {
+        let probe = JDFinanceNetworkProbe()
+        let requestBody = try XCTUnwrap("""
+        reqData={"businessCode":"FUND","pageNo":1,"pageType":"na","busProductId":"1025500","productId":"1025500","productCode":"025500","fundCode":"025500","orderCreateStartDate":"2016-07-06 00:00:00","orderCreateEndDate":"2026-07-06 23:59:59","token":"secret-token","orderId":"secret-order"}
+        """.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed))
+        let payload: [String: Any] = [
+            "url": "https://ms.jr.jd.com/gw2/generic/cfGateway/newna/m/queryTradeOrderList",
+            "method": "POST",
+            "status": 200,
+            "requestBody": requestBody,
+            "body": #"{"resultCode":0,"data":{"tradeOrderVoList":[]}}"#
+        ]
+
+        probe.recordWebViewPayload(payload)
+
+        let entry = try XCTUnwrap(probe.entries.first)
+        let joined = ([entry.path] + entry.topLevelKeys + entry.fieldSummaries).joined(separator: " ")
+
+        XCTAssertTrue(joined.contains("请求.businessCode: FUND"))
+        XCTAssertTrue(joined.contains("请求.pageNo: 1"))
+        XCTAssertTrue(joined.contains("请求.busProductId: 1025500(025500)"))
+        XCTAssertTrue(joined.contains("请求.productId: 1025500(025500)"))
+        XCTAssertTrue(joined.contains("请求.productCode: 025500"))
+        XCTAssertTrue(joined.contains("请求.fundCode: 025500"))
+        XCTAssertTrue(joined.contains("请求.orderCreateStartDate: 2016-07-06"))
+        XCTAssertTrue(joined.contains("请求.orderCreateEndDate: 2026-07-06"))
+        XCTAssertFalse(joined.contains("secret-token"))
+        XCTAssertFalse(joined.contains("secret-order"))
+        XCTAssertFalse(joined.lowercased().contains("orderid"))
+    }
+
+    @MainActor
+    func testJDFinanceNetworkProbeIgnoresKeyOnlyNoise() throws {
+        let probe = JDFinanceNetworkProbe()
+        let url = try XCTUnwrap(URL(
+            string: "https://ms.jr.jd.com/gw/generic/jj/newna/m/getNewFundPositionDetail"
+        ))
+        let response = """
+        {"resultCode":"0","resultMsg":"success","success":true}
+        """
+
+        probe.recordURLSession(
+            endpoint: "getNewFundPositionDetail",
+            url: url,
+            statusCode: 200,
+            data: Data(response.utf8)
+        )
+
+        XCTAssertTrue(probe.entries.isEmpty)
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreRecordsNotLoggedInForLoginPrompt() async {
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: """
+            {"success":false,"resultCode":3,"resultMsg":"请先登录您的京东账号","channelEncrypt":0}
+            """
+        ])
+        let syncStore = JDFinanceHoldingsSyncStore(service: service)
+        let portfolioStore = PortfolioStore(
+            dataDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        )
+
+        await syncStore.synchronize(portfolioStore: portfolioStore, cookieHeader: nil)
+
+        XCTAssertEqual(syncStore.lastError, .notLoggedIn)
+        XCTAssertEqual(syncStore.errorMessage, JDFinanceHoldingsError.notLoggedIn.localizedDescription)
+        XCTAssertNil(syncStore.preview)
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreBuildsPreviewWhenCookieIsAvailable() async throws {
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceHoldingsResponse
+        ])
+        let syncStore = JDFinanceHoldingsSyncStore(service: service)
+        let portfolioStore = PortfolioStore(
+            dataDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        XCTAssertNil(syncStore.lastError)
+        XCTAssertNil(syncStore.errorMessage)
+        let preview = try XCTUnwrap(syncStore.preview)
+        XCTAssertEqual(preview.remoteSnapshot.products.count, 2)
+        XCTAssertEqual(syncStore.statusMessage, "已生成同步预览")
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreAppliesSelectedChangedHoldings() async throws {
+        let now = try chinaDate("2026-07-03 16:00")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-sync-apply-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceHoldingsResponse,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "024424",
+                name: "永赢先进制造智选混合发起A",
+                netValueDate: "2026-07-03",
+                netValue: 2,
+                estimatedNetValue: 2,
+                growthRate: 0,
+                estimateTime: "2026-07-03 15:00"
+            )
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 18_900,
+            holdingIncome: -500,
+            holdingIncomeRate: -2.58,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "024424",
+                    name: "永赢先进制造智选混合发起A",
+                    dateText: "07-03 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -500,
+                    holdingRate: -2.58,
+                    currentAmount: 18_900,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 19_400
+                )
+            ],
+            migration: nil
+        )
+        try seedPortfolio(localSnapshot, into: portfolioStore, directory: tempDirectory)
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+        XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), ["024424"])
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: true,
+            importPending: false
+        )
+
+        let fund = try XCTUnwrap(portfolioStore.snapshot.funds.first { $0.code == "024424" })
+        XCTAssertEqual(fund.currentAmount ?? 0, 19_907.79, accuracy: 0.01)
+        XCTAssertEqual(fund.holdingIncome ?? 0, -734.13, accuracy: 0.01)
+        XCTAssertEqual(fund.migratedPrincipal ?? 0, 20_641.92, accuracy: 0.01)
+        XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), [])
+        XCTAssertEqual(syncStore.statusMessage, "已同步 1 项数据")
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsPendingNoticeAsLocalPendingFund() async throws {
+        let now = try chinaDate("2026-07-03 10:00")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-sync-pending-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: Self.jdFinancePendingDetailResponse,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "011833",
+                name: "西部利得人工智能主题指数增强C",
+                netValueDate: "2026-07-02",
+                netValue: 2,
+                estimatedNetValue: 2,
+                growthRate: 0,
+                estimateTime: "2026-07-02 15:00"
+            )
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), ["011833"])
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: true
+        )
+
+        let fund = try XCTUnwrap(portfolioStore.snapshot.funds.first { $0.code == "011833" })
+        XCTAssertEqual(fund.status, .pending)
+        XCTAssertEqual(fund.pendingAmount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(fund.pendingProfit ?? 0, -88.88, accuracy: 0.0001)
+        XCTAssertEqual(fund.positionDate, "2026-07-03")
+        XCTAssertEqual(fund.positionTimeType, .before15)
+        let record = try XCTUnwrap(portfolioStore.snapshot.tradeRecords?.first { $0.code == "011833" })
+        XCTAssertEqual(record.status, .pending)
+        XCTAssertEqual(record.amount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(record.profit ?? 0, -88.88, accuracy: 0.0001)
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), [])
+        XCTAssertEqual(syncStore.statusMessage, "已同步 1 项数据")
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsHoldingTransactionTipAsPendingBuyTrade() async throws {
+        let now = try chinaDate("2026-07-03 10:00")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-sync-pending-trade-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinancePendingHoldingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: Self.jdFinancePendingDetailResponse,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "011833",
+                name: "西部利得人工智能主题指数增强C",
+                netValueDate: "2026-07-02",
+                netValue: 2,
+                estimatedNetValue: 2,
+                growthRate: 0,
+                estimateTime: "2026-07-02 15:00"
+            )
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 8_000,
+            holdingIncome: -200,
+            holdingIncomeRate: -2.44,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "011833",
+                    name: "西部利得人工智能主题指数增强C",
+                    dateText: "07-02 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -200,
+                    holdingRate: -2.44,
+                    currentAmount: 8_000,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedShares: 4_000,
+                    migratedCost: 2.05,
+                    migratedPrincipal: 8_200,
+                    lots: [
+                        FundPositionLot(
+                            id: "011833-initial",
+                            shares: 4_000,
+                            cost: 2.05,
+                            principal: 8_200,
+                            incomeStartDate: "2026-07-02",
+                            positionDate: "2026-07-02",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil
+        )
+        try seedPortfolio(localSnapshot, into: portfolioStore, directory: tempDirectory)
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+        XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), [])
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), ["011833"])
+        XCTAssertEqual(syncStore.preview?.pendingNotices.first?.importKind, .trade(.buy))
+        XCTAssertEqual(portfolioStore.snapshot.funds.first { $0.code == "011833" }?.status, .holding)
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: true
+        )
+
+        let fund = try XCTUnwrap(portfolioStore.snapshot.funds.first { $0.code == "011833" })
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertEqual(fund.currentAmount ?? 0, 8_000, accuracy: 0.0001)
+        let pendingTrade = try XCTUnwrap(portfolioStore.snapshot.pendingTrades?.first { $0.code == "011833" })
+        XCTAssertEqual(pendingTrade.action, .buy)
+        XCTAssertEqual(pendingTrade.amount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(pendingTrade.tradeDate, "2026-07-03")
+        XCTAssertEqual(pendingTrade.tradeTimeType, .before15)
+        let record = try XCTUnwrap(portfolioStore.snapshot.tradeRecords?.first { $0.code == "011833" && $0.kind == .buy })
+        XCTAssertEqual(record.status, .pending)
+        XCTAssertEqual(record.amount ?? 0, 7_632.07, accuracy: 0.0001)
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), [])
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsConversionPendingNotice() async throws {
+        let now = try chinaDate("2026-07-07 13:10")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-sync-conversion-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": { "totalAssets": { "text": "8,000.00" } },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1007818",
+                        "fundCode": "007818",
+                        "productName": "国泰中证全指通信设备ETF联接C",
+                        "totalAmount": { "text": "8,000.00" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：2笔转换中" }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "109922",
+                  "productName": "转换-国泰中证全指通信设备ETF联接C",
+                  "sellProductName": "华夏上证科创板半导体材料设备主题ETF发起式联接C",
+                  "tradeTypeName": "转换",
+                  "tradeTypeCode": "TRANSFORM",
+                  "allAmount": "¥ 971.77",
+                  "bizTime": "2026-07-07 15:00前",
+                  "statusName": "处理中",
+                  "statusCode": "PROCESS"
+                },
+                {
+                  "productId": "109922",
+                  "productName": "转换-国泰中证全指通信设备ETF联接C",
+                  "sellProductName": "华夏上证科创板半导体材料设备主题ETF发起式联接C",
+                  "tradeTypeName": "转换",
+                  "tradeTypeCode": "TRANSFORM",
+                  "allAmount": "¥ 971.78",
+                  "bizTime": "2026-07-07 15:00前",
+                  "statusName": "处理中",
+                  "statusCode": "PROCESS"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: """
+            {"resultCode":0,"resultData":{"data":{"tradeOrderVoList":[]}}}
+            """,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse([
+                CoreQuoteMock(
+                    code: "007818",
+                    name: "国泰中证全指通信设备ETF联接C",
+                    netValueDate: "2026-07-06",
+                    netValue: 1,
+                    estimatedNetValue: 1,
+                    growthRate: 0,
+                    estimateTime: "2026-07-07 13:10"
+                ),
+                CoreQuoteMock(
+                    code: "024418",
+                    name: "华夏上证科创板半导体材料设备主题ETF发起式联接C",
+                    netValueDate: "2026-07-06",
+                    netValue: 1,
+                    estimatedNetValue: 1,
+                    growthRate: 0,
+                    estimateTime: "2026-07-07 13:10"
+                )
+            ])
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    conversionFund(code: "007818", name: "国泰中证全指通信设备ETF联接C", shares: 2_000, cost: 1),
+                    conversionFund(code: "024418", name: "华夏上证科创板半导体材料设备主题ETF发起式联接C", shares: 50, cost: 1)
+                ],
+                migration: nil
+            ),
+            into: portfolioStore,
+            directory: tempDirectory
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        let notice = try XCTUnwrap(syncStore.preview?.pendingNotices.first { $0.code == "007818" })
+        XCTAssertEqual(notice.actionTitle, "转换")
+        XCTAssertEqual(notice.importKind, .conversion(toCode: "024418", toName: "华夏上证科创板半导体材料设备主题ETF发起式联接C"))
+        XCTAssertEqual(notice.matchedTradeRecords.count, 2)
+        XCTAssertEqual(notice.matchedTradeRecords.first?.shares ?? 0, 971.77, accuracy: 0.0001)
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), ["007818"])
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: true
+        )
+
+        let pendingConversions = try XCTUnwrap(portfolioStore.snapshot.pendingConversions)
+            .sorted { $0.shares < $1.shares }
+        XCTAssertEqual(pendingConversions.count, 2)
+        XCTAssertEqual(pendingConversions.map(\.fromCode), ["007818", "007818"])
+        XCTAssertEqual(pendingConversions.map(\.toCode), ["024418", "024418"])
+        XCTAssertEqual(pendingConversions.map(\.shares), [971.77, 971.78])
+        XCTAssertEqual(pendingConversions.map(\.tradeDate), ["2026-07-07", "2026-07-07"])
+        XCTAssertEqual(pendingConversions.map(\.tradeTimeType), [.before15, .before15])
+
+        let records = try XCTUnwrap(portfolioStore.snapshot.tradeRecords)
+        let outRecords = records.filter { $0.kind == .conversionOut }.sorted { ($0.shares ?? 0) < ($1.shares ?? 0) }
+        let inRecords = records.filter { $0.kind == .conversionIn }
+        XCTAssertEqual(outRecords.count, 2)
+        XCTAssertEqual(inRecords.count, 2)
+        XCTAssertEqual(outRecords.map(\.code), ["007818", "007818"])
+        XCTAssertEqual(outRecords.map(\.linkedCode), ["024418", "024418"])
+        XCTAssertEqual(outRecords.map { $0.shares ?? 0 }, [971.77, 971.78])
+        XCTAssertEqual(Set(records.compactMap(\.conversionID)), Set(pendingConversions.map(\.id)))
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), [])
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsConversionPendingNoticeWithLookedUpTargetCode() async throws {
+        let now = try chinaDate("2026-07-07 13:20")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-sync-conversion-lookup-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultCode": 0,
+            "resultMsg": "success",
+            "resultData": {
+              "headAssetsData": { "totalAssets": { "text": "18,000.00" } },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1011172",
+                        "fundCode": "011172",
+                        "productName": "广发利鑫混合C",
+                        "totalAmount": { "text": "14,639.00" },
+                        "holdIncome": { "text": "0.00" },
+                        "transactionTip": { "text": "交易：1笔转换中" }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "code": "0000",
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "productId": "111172",
+                  "productName": "转换-广发利鑫混合C",
+                  "sellProductName": "易方达上证科创50ETF联接C",
+                  "sellProductId": "113284",
+                  "tradeTypeName": "转换",
+                  "tradeTypeCode": "TRANSFORM",
+                  "allAmount": "¥ 2,773.85",
+                  "bizTime": "2026-07-07 15:00前",
+                  "statusName": "处理中",
+                  "statusCode": "PROCESS"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: """
+            {"resultCode":0,"resultData":{"data":{"tradeOrderVoList":[]}}}
+            """,
+            "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": """
+            FundPulseSuggest_123({"Datas":[{"CODE":"011609","NAME":"易方达上证科创板50成份交易型开放式指数证券投资基金联接基金","SHORTNAME":"易方达上证科创50ETF联接C","CATEGORYDESC":"基金"}]});
+            """,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse([
+                CoreQuoteMock(
+                    code: "011172",
+                    name: "广发利鑫灵活配置混合C",
+                    netValueDate: "2026-07-06",
+                    netValue: 1,
+                    estimatedNetValue: 1,
+                    growthRate: 0,
+                    estimateTime: "2026-07-07 13:20"
+                ),
+                CoreQuoteMock(
+                    code: "011609",
+                    name: "易方达上证科创50ETF联接C",
+                    netValueDate: "2026-07-06",
+                    netValue: 1,
+                    estimatedNetValue: 1,
+                    growthRate: 0,
+                    estimateTime: "2026-07-07 13:20"
+                ),
+                CoreQuoteMock(
+                    code: "013284",
+                    name: "上银价值增长3个月持有期混合A",
+                    netValueDate: "2026-07-06",
+                    netValue: 1,
+                    estimatedNetValue: 1,
+                    growthRate: 0,
+                    estimateTime: "2026-07-07 13:20"
+                )
+            ])
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    conversionFund(code: "011172", name: "广发利鑫灵活配置混合C", shares: 4_000, cost: 1),
+                    conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 0, cost: 1)
+                ],
+                migration: nil
+            ),
+            into: portfolioStore,
+            directory: tempDirectory
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        let notice = try XCTUnwrap(syncStore.preview?.pendingNotices.first { $0.code == "011172" })
+        XCTAssertEqual(notice.actionTitle, "转换")
+        XCTAssertEqual(notice.importKind, .conversion(toCode: "011609", toName: "易方达上证科创50ETF联接C"))
+        XCTAssertEqual(notice.matchedTradeRecords.first?.conversionTargetCode, "011609")
+        XCTAssertEqual(notice.matchedTradeRecords.first?.shares ?? 0, 2_773.85, accuracy: 0.0001)
+        XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), ["011172"])
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: true
+        )
+
+        let pendingConversion = try XCTUnwrap(portfolioStore.snapshot.pendingConversions?.first)
+        XCTAssertEqual(pendingConversion.fromCode, "011172")
+        XCTAssertEqual(pendingConversion.toCode, "011609")
+        XCTAssertEqual(pendingConversion.shares, 2_773.85, accuracy: 0.0001)
+
+        let targetFund = try XCTUnwrap(portfolioStore.snapshot.funds.first { $0.code == "011609" })
+        XCTAssertEqual(targetFund.name, "易方达上证科创50ETF联接C")
+        XCTAssertNil(portfolioStore.snapshot.pendingConversions?.first { $0.toCode == "013284" })
+    }
+
+    @MainActor
+    func testJDFinanceLoginURLUsesDirectMobileLoginPage() {
+        XCTAssertEqual(
+            JDFinanceWebSession.loginURL.absoluteString,
+            "https://plogin.m.jd.com/login/login?qqlogin=false&wxlogin=false&appid=2508&source=JDJR_PC&returnurl=https%3A%2F%2Fjdjr.jd.com%2F"
+        )
+    }
+
+    @MainActor
+    func testJDFinanceTradeOrderURLUsesFundTradeRecordPage() {
+        XCTAssertEqual(
+            JDFinanceWebSession.tradeOrderURL.absoluteString,
+            "https://roma.jd.com/wealth/tradeorder/list?pageShowType=1&businessCode=FUND&pageShowTitle=%E5%9F%BA%E9%87%91%E4%BA%A4%E6%98%93"
+        )
+    }
+
+    @MainActor
+    func testJDFinanceLoginCompletionRequiresJDFinanceReturnURLAndCookie() throws {
+        let returnURL = try XCTUnwrap(URL(string: "https://jdjr.jd.com/"))
+
+        XCTAssertTrue(
+            JDFinanceWebSession.didCompleteLoginNavigation(
+                url: returnURL,
+                cookieHeader: "pt_key=abc; pt_pin=test"
+            )
+        )
+    }
+
+    @MainActor
+    func testJDFinanceLoginCompletionIgnoresLoginPageURL() {
+        XCTAssertFalse(
+            JDFinanceWebSession.didCompleteLoginNavigation(
+                url: JDFinanceWebSession.loginURL,
+                cookieHeader: "pt_key=abc; pt_pin=test"
+            )
+        )
+    }
+
+    @MainActor
+    func testJDFinanceLoginCompletionRequiresAuthenticatedCookieHeader() throws {
+        let returnURL = try XCTUnwrap(URL(string: "https://jdjr.jd.com/"))
+
+        XCTAssertFalse(
+            JDFinanceWebSession.didCompleteLoginNavigation(
+                url: returnURL,
+                cookieHeader: nil
+            )
+        )
+        XCTAssertFalse(
+            JDFinanceWebSession.didCompleteLoginNavigation(
+                url: returnURL,
+                cookieHeader: "   "
+            )
+        )
+        XCTAssertFalse(
+            JDFinanceWebSession.didCompleteLoginNavigation(
+                url: returnURL,
+                cookieHeader: "__jdu=visitor; mba_muid=tracking"
+            )
+        )
+    }
+
+    @MainActor
+    func testJDFinanceUsableCookieHeaderRequiresAuthenticationCookie() {
+        XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader(nil))
+        XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader("   "))
+        XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader("__jdu=visitor; mba_muid=tracking"))
+        XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader("pt_pin=test"))
+        XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader("pt_key=; pt_pin=test"))
+        XCTAssertTrue(JDFinanceWebSession.hasUsableCookieHeader("pt_key=abc; pt_pin=test"))
+        XCTAssertTrue(JDFinanceWebSession.hasUsableCookieHeader("thor=abc; pin=test"))
+    }
+
+    func testJDFinanceHoldingsParserRejectsEmptyProductList() {
+        let response = """
+        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{},"fundData":{"fundList":[{"productList":[]}]}}}}
+        """
+
+        XCTAssertThrowsError(
+            try JDFinanceHoldingsParser.parse(data: Data(response.utf8))
+        ) { error in
+            XCTAssertEqual(error as? JDFinanceHoldingsError, .emptyHoldings)
+        }
+    }
+
+    func testJDFinanceSyncPreviewSeparatesNewChangedMissingAndPendingNotice() throws {
+        var remoteSnapshot = try JDFinanceHoldingsParser.parse(data: Data(Self.jdFinanceHoldingsResponse.utf8))
+        remoteSnapshot.products.append(
+            JDFinanceHoldingProduct(
+                skuID: "1008998",
+                code: "008998",
+                name: "同泰竞争优势混合A",
+                totalAmount: 1_234.56,
+                yesterdayIncome: 6.78,
+                todayIncome: nil,
+                holdIncome: 12.34,
+                holdRate: 1.01,
+                transactionTip: nil
+            )
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 2_400,
+            holdingIncome: -10,
+            holdingIncomeRate: -0.41,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 1,
+            funds: [
+                FundPosition(
+                    code: "024424",
+                    name: "永赢先进制造智选混合发起A",
+                    dateText: "07-03 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -500,
+                    holdingRate: -2.40,
+                    currentAmount: 18_900,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 19_400
+                ),
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "07-03 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: 50,
+                    holdingRate: 5,
+                    currentAmount: 1_050,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 1_000
+                ),
+                FundPosition(
+                    code: "025833",
+                    name: "天弘电网设备特高压指数C",
+                    dateText: "07-03 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 0,
+                    status: .pending,
+                    isUpdated: false,
+                    pendingAmount: 5_000
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertEqual(preview.newHoldings.map(\.code), ["008998"])
+        XCTAssertEqual(preview.changedHoldings.map(\.code), ["024424"])
+        XCTAssertEqual(preview.missingLocalHoldings.map(\.code), ["026210"])
+        XCTAssertEqual(preview.pendingNotices.map(\.code), ["011833"])
+
+        let draft = try XCTUnwrap(preview.newHoldings.first?.draft(positionDate: "2026-07-04"))
+        XCTAssertEqual(draft.code, "008998")
+        XCTAssertEqual(draft.positionMode, .amount)
+        XCTAssertEqual(draft.positionAmount ?? 0, 1_234.56, accuracy: 0.0001)
+        XCTAssertEqual(draft.positionProfit, 12.34, accuracy: 0.0001)
+        XCTAssertFalse(draft.requiresTradeConfirmation)
+    }
+
+    func testJDFinanceSyncPreviewMatchesLocalHoldingByExplicitFundCode() throws {
+        let remoteSnapshot = try JDFinanceHoldingsParser.parse(data: Data(Self.jdFinanceHoldingsResponse.utf8))
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 7_632.07,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "011833",
+                    name: "西部利得人工智能主题指数增强C",
+                    dateText: "07-04 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 8_888.88,
+                    status: .holding,
+                    isUpdated: true
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertFalse(preview.missingLocalHoldings.contains { $0.code == "011833" })
+        XCTAssertTrue(preview.pendingNotices.contains { $0.code == "011833" })
+    }
+
+    func testJDFinanceSyncPreviewResolvesSkuDerivedCodeByMatchingLocalName() {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 7_632.07,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "113687",
+                    code: "013687",
+                    name: "西部利得中证人工智能主题指数增强C",
+                    totalAmount: 7_632.07,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: nil,
+                    holdRate: nil,
+                    transactionTip: nil
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 7_632.07,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "011833",
+                    name: "西部利得人工智能主题指数增强C",
+                    dateText: "07-04 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 7_632.065,
+                    status: .holding,
+                    isUpdated: true
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertEqual(preview.remoteSnapshot.products.map(\.code), ["011833"])
+        XCTAssertTrue(preview.newHoldings.isEmpty)
+        XCTAssertFalse(preview.missingLocalHoldings.contains { $0.code == "011833" })
+    }
+
+    func testJDFinanceSyncPreviewTreatsLocalPendingFundAsPendingNotice() {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 3_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1025500",
+                    code: "025500",
+                    name: "东方阿尔法科技智选混合发起C",
+                    totalAmount: 3_000,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: 0,
+                    holdRate: nil,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：2笔买入中合计3000.00元",
+                        action: .buy,
+                        tradeCount: 2,
+                        totalAmount: 3_000
+                    )
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 1,
+            funds: [
+                FundPosition(
+                    code: "025500",
+                    name: "东方阿尔法科技智选混合发起C",
+                    dateText: "07-03 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 0,
+                    status: .pending,
+                    isUpdated: false,
+                    pendingAmount: 3_000
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertTrue(preview.newHoldings.isEmpty)
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertTrue(preview.missingLocalHoldings.isEmpty)
+        XCTAssertEqual(preview.pendingNotices.map(\.code), ["025500"])
+        XCTAssertEqual(preview.pendingNotices.first?.message, "本地已有待确认记录，确认后再参与金额对比")
+        XCTAssertNil(preview.pendingNotices.first?.importKind)
+        XCTAssertFalse(preview.pendingNotices.first?.isImportable ?? true)
+    }
+
+    func testJDFinanceSyncPreviewMovesHoldingTransactionTipToPendingNotice() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 20_686.71,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: -919.26,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1024424",
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    totalAmount: 20_686.71,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: -919.26,
+                    holdRate: -4.46,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：1笔买入中合计1000.00元",
+                        action: .buy,
+                        tradeCount: 1,
+                        totalAmount: 1_000
+                    )
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 19_686.71,
+            holdingIncome: -918.99,
+            holdingIncomeRate: -4.45,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    dateText: "07-04 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -918.99,
+                    holdingRate: -4.45,
+                    currentAmount: 19_686.71,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 20_605.70
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertEqual(preview.pendingNotices.map(\.code), ["024424"])
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertEqual(notice.amount, 1_000, accuracy: 0.0001)
+        XCTAssertTrue(notice.requiresManualCompletion)
+        XCTAssertFalse(notice.isImportable)
+        let manualCompletion = JDFinancePendingManualCompletion(
+            tradeDate: "2026-07-03",
+            tradeTimeType: .before15
+        )
+        let draft = try XCTUnwrap(notice.tradeDraft(manualCompletion: manualCompletion))
+        XCTAssertEqual(draft.action, .buy)
+        XCTAssertEqual(draft.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(draft.tradeDate, "2026-07-03")
+    }
+
+    func testJDFinanceSyncPreviewBuildsPendingTradeWhenDetailIsComplete() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 20_686.71,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: -919.26,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1024424",
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    totalAmount: 20_686.71,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: -919.26,
+                    holdRate: -4.46,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：1笔买入中合计1000.00元",
+                        action: .buy,
+                        tradeCount: 1,
+                        totalAmount: 1_000
+                    ),
+                    pendingDetail: JDFinancePendingTransactionDetail(
+                        action: .buy,
+                        amount: 1_000,
+                        shares: nil,
+                        tradeDate: "2026-07-03",
+                        tradeTimeType: .before15,
+                        statusText: "买入确认中"
+                    )
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 19_686.71,
+            holdingIncome: -918.99,
+            holdingIncomeRate: -4.45,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    dateText: "07-04 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -918.99,
+                    holdingRate: -4.45,
+                    currentAmount: 19_686.71,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 20_605.70
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertTrue(notice.isImportable)
+        let draft = try XCTUnwrap(notice.tradeDraft())
+        XCTAssertEqual(draft.action, .buy)
+        XCTAssertEqual(draft.amount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(draft.tradeDate, "2026-07-03")
+        XCTAssertEqual(draft.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceSyncPreviewBuildsMultiplePendingTradesFromMatchedRecords() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 3_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: 0,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1025500",
+                    code: "025500",
+                    name: "东方阿尔法科技智选混合发起C",
+                    totalAmount: 3_000,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: 0,
+                    holdRate: nil,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：2笔买入中合计3000.00元",
+                        action: .buy,
+                        tradeCount: 2,
+                        totalAmount: 3_000
+                    ),
+                    pendingDetail: JDFinancePendingTransactionDetail(
+                        action: .buy,
+                        amount: 3_000,
+                        shares: nil,
+                        tradeDate: nil,
+                        tradeTimeType: nil,
+                        statusText: "匹配交易记录：2 笔",
+                        matchedTradeRecords: [
+                            JDFinanceTradeOrderRecord(
+                                code: "025500",
+                                productName: "东方阿尔法科技智选混合发起C",
+                                action: .buy,
+                                amount: 1_000,
+                                shares: nil,
+                                tradeDate: "2026-07-03",
+                                tradeTimeType: .before15,
+                                statusText: "支付成功"
+                            ),
+                            JDFinanceTradeOrderRecord(
+                                code: "025500",
+                                productName: "东方阿尔法科技智选混合发起C",
+                                action: .buy,
+                                amount: 2_000,
+                                shares: nil,
+                                tradeDate: "2026-07-04",
+                                tradeTimeType: .after15,
+                                statusText: "支付成功"
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 10_000,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "025500",
+                    name: "东方阿尔法科技智选混合发起C",
+                    dateText: "07-02 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 10_000,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 10_000
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        let drafts = try XCTUnwrap(notice.tradeDrafts())
+
+        XCTAssertTrue(notice.isImportable)
+        XCTAssertFalse(notice.requiresManualCompletion)
+        XCTAssertEqual(notice.matchedTradeRecords.count, 2)
+        XCTAssertEqual(drafts.map(\.amount), [1_000, 2_000])
+        XCTAssertEqual(drafts.map(\.tradeDate), ["2026-07-03", "2026-07-04"])
+        XCTAssertEqual(drafts.map(\.tradeTimeType), [.before15, .after15])
+    }
+
+    func testJDFinanceSyncPreviewImportsMatchedPendingRedeemWithoutManualCompletion() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 7_171.54,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: 0,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1008998",
+                    code: "008998",
+                    name: "同泰竞争优势混合C",
+                    totalAmount: 7_171.54,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：1笔赎回中合计7171.54份",
+                        action: .sell,
+                        tradeCount: 1,
+                        totalAmount: 7_171.54
+                    ),
+                    pendingDetail: JDFinancePendingTransactionDetail(
+                        action: .sell,
+                        amount: 7_171.54,
+                        shares: 7_171.54,
+                        tradeDate: "2026-07-07",
+                        tradeTimeType: .before15,
+                        statusText: "转出中",
+                        matchedTradeRecords: [
+                            JDFinanceTradeOrderRecord(
+                                code: "008998",
+                                productName: "转出-同泰竞争优势混合C",
+                                action: .sell,
+                                amount: 7_171.54,
+                                shares: 7_171.54,
+                                tradeDate: "2026-07-07",
+                                tradeTimeType: .before15,
+                                statusText: "转出中"
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 20_000,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "008998",
+                    name: "同泰竞争优势混合C",
+                    dateText: "07-06 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    currentAmount: 20_000,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedShares: 8_000,
+                    migratedCost: 1,
+                    migratedPrincipal: 8_000,
+                    positionMode: .share,
+                    lots: [
+                        FundPositionLot(
+                            id: "008998-seed",
+                            shares: 8_000,
+                            cost: 1,
+                            incomeStartDate: "2026-07-06",
+                            positionDate: "2026-07-06",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertTrue(notice.isImportable)
+        XCTAssertFalse(notice.requiresManualCompletion)
+        let draft = try XCTUnwrap(notice.tradeDraft())
+        XCTAssertEqual(draft.action, .sell)
+        XCTAssertEqual(draft.mode, .share)
+        XCTAssertEqual(draft.shares ?? 0, 7_171.54, accuracy: 0.0001)
+        XCTAssertEqual(draft.tradeDate, "2026-07-07")
+        XCTAssertEqual(draft.tradeTimeType, .before15)
+    }
+
+    func testJDFinanceSyncPreviewIgnoresRateOnlyDifference() {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 19_686.71,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: -919.26,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1024424",
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    totalAmount: 19_686.71,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: -919.26,
+                    holdRate: -4.46,
+                    transactionTip: nil
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 19_686.71,
+            holdingIncome: -919.26,
+            holdingIncomeRate: -4.45,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "024424",
+                    name: "东方阿尔法科技优选混合发起C",
+                    dateText: "07-04 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: -919.26,
+                    holdingRate: -4.45,
+                    currentAmount: 19_686.71,
+                    status: .holding,
+                    isUpdated: true,
+                    migratedPrincipal: 20_605.97
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+    }
+
     func testInferredInitialTradeRecordUsesPrincipalForConfirmedAmountFund() throws {
         let fund = FundPosition(
             code: "290008",
@@ -432,6 +3055,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(AppAppearanceMode.allCases.map(\.title), ["跟随系统", "浅色", "深色"])
         XCTAssertTrue(settings.showsMarketIndexes)
         XCTAssertEqual(settings.defaultMarketIndexID, .shanghaiComposite)
+        XCTAssertFalse(settings.betaFeaturesEnabled)
         XCTAssertFalse(MarketIndexID.allCases.map(\.title).contains("恒生科技"))
     }
 
@@ -628,6 +3252,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.appearanceMode, .system)
         XCTAssertTrue(store.settings.showsMarketIndexes)
         XCTAssertEqual(store.settings.defaultMarketIndexID, .shanghaiComposite)
+        XCTAssertFalse(store.settings.betaFeaturesEnabled)
 
         let savedData = try Data(contentsOf: settingsURL)
         let savedSettings = try JSONDecoder().decode(AppSettings.self, from: savedData)
@@ -643,6 +3268,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(savedSettings.appearanceMode, .system)
         XCTAssertTrue(savedSettings.showsMarketIndexes)
         XCTAssertEqual(savedSettings.defaultMarketIndexID, .shanghaiComposite)
+        XCTAssertFalse(savedSettings.betaFeaturesEnabled)
     }
 
     @MainActor
@@ -734,8 +3360,10 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.marketClosedAutoRefreshInterval, .threeMinutes)
         store.setShowsMarketIndexes(false)
         store.setDefaultMarketIndexID(.csi300)
+        store.setBetaFeaturesEnabled(true)
         XCTAssertFalse(store.settings.showsMarketIndexes)
         XCTAssertEqual(store.settings.defaultMarketIndexID, .csi300)
+        XCTAssertTrue(store.settings.betaFeaturesEnabled)
 
         let refreshedData = try Data(contentsOf: tempDirectory.appending(path: "settings.json"))
         let refreshedSettings = try JSONDecoder().decode(AppSettings.self, from: refreshedData)
@@ -743,6 +3371,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(refreshedSettings.marketClosedAutoRefreshInterval, .threeMinutes)
         XCTAssertFalse(refreshedSettings.showsMarketIndexes)
         XCTAssertEqual(refreshedSettings.defaultMarketIndexID, .csi300)
+        XCTAssertTrue(refreshedSettings.betaFeaturesEnabled)
     }
 
     func testMarketIndexServiceFetchesEastmoneyBatchIndexQuotes() async throws {
@@ -795,6 +3424,21 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(quote.value, 4080.28, accuracy: 0.0001)
         XCTAssertEqual(quote.change, 6.38, accuracy: 0.0001)
         XCTAssertEqual(quote.changeRate, 0.16, accuracy: 0.0001)
+    }
+
+    func testMarketIndexServiceBypassesURLCacheForRealtimeQuotes() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            Self.marketIndexBatchQuoteEndpoint(): """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38}]}}
+            """
+        ])
+
+        _ = await service.fetchQuotes(for: [.shanghaiComposite])
+
+        let request = try XCTUnwrap(MockURLProtocol.responseStore.requests().last)
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
     }
 
     @MainActor
@@ -859,6 +3503,21 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(second.growthRate, -5.88, accuracy: 0.0001)
     }
 
+    func testEastmoneyCoreSourceBypassesURLCacheForRealtimeQuotes() async throws {
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": """
+            {"data":[{"NAV":"--","DWJZ":2.5626,"GZTIME":"2026-06-26 14:17","PTYPE":"F","SHORTNAME":"平安科技精选混合发起式A","QDCODE":"026210","FCODE":"026210","RZDF":4.75,"JZRQ":"--","FSRQ":"2026-06-25","GSZZL":-5.21,"GSZ":2.4292}],"errorCode":0,"success":true,"totalCount":1}
+            """
+        ])
+
+        _ = await service.fetchQuotes(codes: ["026210"])
+
+        let request = try XCTUnwrap(MockURLProtocol.responseStore.requests().last)
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Cache-Control"), "no-cache")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Pragma"), "no-cache")
+    }
+
     func testEastmoneyCoreUsesOfficialGrowthRateAfterNavDateCatchesEstimateDate() async throws {
         let service = quoteServiceWithMockResponses([
             "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": """
@@ -900,13 +3559,37 @@ final class FundPulseCoreTests: XCTestCase {
     func testLookupFundNameUsesEastmoneySuggest() async throws {
         let service = quoteServiceWithMockResponses([
             "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": """
-            FundPulseSuggest_123({"Datas":[{"CODE":"026210","NAME":"平安科技精选混合发起式A","SHORTNAME":"平安科技精选混合发起式A"}]});
+            FundPulseSuggest_123({"Datas":[{"CODE":"026210","NAME":"平安科技精选混合发起式A","SHORTNAME":"平安科技精选混合发起式A","CATEGORYDESC":"基金"}]});
             """
         ])
 
         let name = await service.lookupFundName(code: "026210")
 
         XCTAssertEqual(name, "平安科技精选混合发起式A")
+    }
+
+    func testLookupFundCodeUsesEastmoneySuggest() async throws {
+        let service = quoteServiceWithMockResponses([
+            "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": """
+            FundPulseSuggest_123({"Datas":[{"CODE":"011609","NAME":"易方达上证科创板50成份交易型开放式指数证券投资基金联接基金","SHORTNAME":"易方达上证科创50ETF联接C","CATEGORYDESC":"基金"}]});
+            """
+        ])
+
+        let code = await service.lookupFundCode(name: "易方达上证科创50ETF联接C")
+
+        XCTAssertEqual(code, "011609")
+    }
+
+    func testLookupFundCodeIgnoresNonFundSuggestResults() async throws {
+        let service = quoteServiceWithMockResponses([
+            "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": """
+            FundPulseSuggest_123({"Datas":[{"CODE":"300496","NAME":"中科创达","CATEGORYDESC":"深市"},{"CODE":"011609","NAME":"易方达上证科创50联接C","CATEGORYDESC":"基金"}]});
+            """
+        ])
+
+        let code = await service.lookupFundCode(name: "易方达上证科创50ETF联接C")
+
+        XCTAssertEqual(code, "011609")
     }
 
     func testFundDetailSupplementUsesFundBabyTrendAndTopHoldingsSources() async throws {
@@ -3007,6 +5690,54 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(store.snapshot.pendingConversions?.count, 1)
         XCTAssertEqual(store.snapshot.pendingCount, 1)
+    }
+
+    func testPendingHeaderImpactExcludesConversionsFromSubscriptionAndRedemptionAmounts() throws {
+        let impact = try XCTUnwrap(PendingHeaderImpact.make(activities: [
+            makePendingHeaderActivity(id: "buy-1", kind: .buy, displayAmount: 51_112),
+            makePendingHeaderActivity(id: "sell-1", kind: .sell, displayAmount: 9_986.45),
+            makePendingHeaderActivity(
+                id: "conversion-1-out",
+                kind: .conversionOut,
+                displayAmount: 11_565.75,
+                conversionID: "conversion-1"
+            ),
+            makePendingHeaderActivity(
+                id: "conversion-2-out",
+                kind: .conversionOut,
+                displayAmount: 4_033.11,
+                conversionID: "conversion-2"
+            )
+        ]))
+
+        XCTAssertEqual(impact.count, 4)
+        XCTAssertEqual(impact.buyAmount, 51_112, accuracy: 0.0001)
+        XCTAssertEqual(impact.sellAmount, 9_986.45, accuracy: 0.0001)
+        XCTAssertEqual(impact.conversionCount, 2)
+        XCTAssertEqual(impact.netAmount, 41_125.55, accuracy: 0.0001)
+    }
+
+    func testPendingHeaderImpactKeepsConversionOnlyActivitiesVisibleWithoutCashFlow() throws {
+        let impact = try XCTUnwrap(PendingHeaderImpact.make(activities: [
+            makePendingHeaderActivity(
+                id: "conversion-out",
+                kind: .conversionOut,
+                displayAmount: 11_565.75,
+                conversionID: "conversion-1"
+            ),
+            makePendingHeaderActivity(
+                id: "conversion-in",
+                kind: .conversionIn,
+                displayAmount: 11_565.75,
+                conversionID: "conversion-1"
+            )
+        ]))
+
+        XCTAssertEqual(impact.count, 2)
+        XCTAssertEqual(impact.buyAmount, 0, accuracy: 0.0001)
+        XCTAssertEqual(impact.sellAmount, 0, accuracy: 0.0001)
+        XCTAssertEqual(impact.conversionCount, 1)
+        XCTAssertEqual(impact.netAmount, 0, accuracy: 0.0001)
     }
 
     @MainActor
@@ -5116,6 +7847,35 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(importedStore.snapshot.tradeRecords?.first?.confirmedAt, confirmedAt)
     }
 
+    private func makePendingHeaderActivity(
+        id: String,
+        kind: FundTradeKind,
+        displayAmount: Double?,
+        conversionID: String? = nil
+    ) -> PendingTradeActivity {
+        PendingTradeActivity(
+            id: id,
+            recordID: id,
+            conversionID: conversionID,
+            kind: kind,
+            code: kind == .conversionIn ? "290008" : Self.tradeTestCode,
+            name: kind.title,
+            linkedCode: nil,
+            linkedName: nil,
+            mode: kind == .sell || kind == .conversionOut ? .share : .amount,
+            amount: nil,
+            shares: nil,
+            tradeDate: "2026-07-07",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-07",
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            displayAmount: displayAmount.map {
+                PendingActivityAmount(value: $0, source: .enteredAmount, price: nil, shares: nil)
+            },
+            fund: nil
+        )
+    }
+
     @MainActor
     private func seedPortfolio(
         _ snapshot: PortfolioSnapshot,
@@ -5289,6 +8049,138 @@ final class FundPulseCoreTests: XCTestCase {
           - url: fund-pulse-\(version)-arm64.zip
         releaseDate: '2026-07-03T08:00:00.000Z'
         """
+    }
+
+    private static let jdFinanceHoldingsResponse = """
+    {
+      "success": true,
+      "resultCode": 0,
+      "resultMsg": "success",
+      "resultData": {
+        "success": true,
+        "resultCode": 0,
+        "resultMsg": "success",
+        "resultData": {
+          "headAssetsData": {
+            "totalAssets": { "amt": 171461.84, "text": "171,461.84" },
+            "yesterdayIncome": { "amt": -16259.99, "text": "-16,259.99" },
+            "todayIncome": { "text": "0.00" },
+            "holdIncome": { "amt": -9222.66, "text": "-9,222.66" },
+            "totalIncome": { "text": "-5,425.17" }
+          },
+          "fundData": {
+            "fundList": [
+              {
+                "productList": [
+                  {
+                    "skuId": "1024424",
+                    "productName": "永赢先进制造智选混合发起A",
+                    "totalAmount": { "amt": 19907.79, "text": "19,907.79" },
+                    "yesterdayIncome": { "text": "-688.41" },
+                    "todayIncome": { "text": "--" },
+                    "holdIncome": { "amt": -734.13, "text": "-734.13" },
+                    "holdRate": { "text": "-3.56%" }
+                  },
+                  {
+                    "skuId": "113687",
+                    "fundCode": "011833",
+                    "productName": "鹏华中证光伏产业ETF联接A",
+                    "totalAmount": { "text": "8,888.88" },
+                    "yesterdayIncome": { "text": "+12.34" },
+                    "holdIncome": { "text": "-88.88" },
+                    "holdRate": { "text": "-0.99%" },
+                    "transactionTip": "买入确认中"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+    """
+
+    private static let jdFinancePendingHoldingsResponse = """
+    {
+      "success": true,
+      "resultCode": 0,
+      "resultMsg": "success",
+      "resultData": {
+        "success": true,
+        "resultCode": 0,
+        "resultMsg": "success",
+        "resultData": {
+          "headAssetsData": {
+            "totalAssets": { "text": "7,632.07" },
+            "holdIncome": { "text": "-88.88" }
+          },
+          "fundData": {
+            "fundList": [
+              {
+                "productList": [
+                  {
+                    "skuId": "113687",
+                    "fundCode": "011833",
+                    "productName": "西部利得人工智能主题指数增强C",
+                    "totalAmount": { "text": "7,632.07" },
+                    "yesterdayIncome": { "text": "预计08日更新" },
+                    "holdIncome": { "text": "-88.88" },
+                    "transactionTip": { "text": "交易：1笔买入中合计7632.07元" },
+                    "jumpData": {
+                      "param": {
+                        "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+    """
+
+    private static let jdFinancePendingDetailResponse = """
+    {
+      "success": true,
+      "resultCode": 0,
+      "resultMsg": "success",
+      "resultData": {
+        "resultData": {
+          "orderDetail": {
+            "tradeType": "买入",
+            "tradeAmount": "7,632.07",
+            "tradeDate": "2026-07-03",
+            "tradeTime": "2026-07-03 10:00:00",
+            "tradeStatus": "买入确认中"
+          }
+        }
+      }
+    }
+    """
+
+    private func jdFinanceServiceWithMockResponses(_ responses: [String: String]) -> JDFinanceHoldingsService {
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        return JDFinanceHoldingsService(session: URLSession(configuration: configuration))
+    }
+
+    private func jdFinanceServiceWithMockResponses(
+        _ responses: [String: String],
+        bodyResponses: [MockBodyResponseRule]
+    ) -> JDFinanceHoldingsService {
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        MockURLProtocol.responseStore.setBodyResponses(bodyResponses)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        return JDFinanceHoldingsService(session: URLSession(configuration: configuration))
+    }
+
+    private func jsonStringLiteral(_ value: String) throws -> String {
+        let data = try JSONEncoder().encode(value)
+        return String(data: data, encoding: .utf8) ?? "\"\""
     }
 
     private func quoteServiceWithMockResponses(_ responses: [String: String]) -> FundQuoteService {
@@ -5697,13 +8589,22 @@ private func XCTAssertThrowsErrorAsync(
 private final class MockResponseStore: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
+    private var bodyStorage: [MockBodyResponseRule] = []
     private var finalURLStorage: [String: URL] = [:]
+    private var requestStorage: [URLRequest] = []
     private var delayNanoseconds: UInt64 = 0
 
     func set(_ responses: [String: Data], finalURLs: [String: URL] = [:]) {
         lock.lock()
         storage = responses
+        bodyStorage = []
         finalURLStorage = finalURLs
+        lock.unlock()
+    }
+
+    func setBodyResponses(_ responses: [MockBodyResponseRule]) {
+        lock.lock()
+        bodyStorage = responses
         lock.unlock()
     }
 
@@ -5716,14 +8617,37 @@ private final class MockResponseStore: @unchecked Sendable {
     func reset() {
         lock.lock()
         storage = [:]
+        bodyStorage = []
         finalURLStorage = [:]
+        requestStorage = []
         delayNanoseconds = 0
         lock.unlock()
     }
 
-    func response(for url: String) -> Data? {
+    func appendRequest(_ request: URLRequest) {
+        lock.lock()
+        requestStorage.append(request)
+        lock.unlock()
+    }
+
+    func requests() -> [URLRequest] {
         lock.lock()
         defer { lock.unlock() }
+        return requestStorage
+    }
+
+    func response(for url: String, body: String? = nil) -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let body,
+           let bodyMatch = bodyStorage
+            .filter({ url.hasPrefix($0.urlPrefix) && body.contains($0.bodyContains) })
+            .max(by: { lhs, rhs in
+                lhs.urlPrefix.count + lhs.bodyContains.count < rhs.urlPrefix.count + rhs.bodyContains.count
+            })
+        {
+            return bodyMatch.data
+        }
         return storage
             .filter { url.hasPrefix($0.key) }
             .max { lhs, rhs in lhs.key.count < rhs.key.count }?
@@ -5746,6 +8670,12 @@ private final class MockResponseStore: @unchecked Sendable {
     }
 }
 
+private struct MockBodyResponseRule {
+    var urlPrefix: String
+    var bodyContains: String
+    var data: Data
+}
+
 private extension Double {
     var roundedMoneyForTest: Double {
         (self * 100).rounded() / 100
@@ -5764,8 +8694,12 @@ private final class MockURLProtocol: URLProtocol {
     }
 
     override func startLoading() {
+        Self.responseStore.appendRequest(request)
         guard let url = request.url?.absoluteString,
-              let data = Self.responseStore.response(for: url)
+              let data = Self.responseStore.response(
+                for: url,
+                body: Self.bodyText(for: request)
+              )
         else {
             client?.urlProtocol(self, didFailWithError: URLError(.badURL))
             return
@@ -5789,4 +8723,26 @@ private final class MockURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+
+    private static func bodyText(for request: URLRequest) -> String? {
+        if let body = request.httpBody {
+            return String(data: body, encoding: .utf8)
+        }
+
+        guard let stream = request.httpBodyStream else {
+            return nil
+        }
+
+        stream.open()
+        defer { stream.close() }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 { break }
+            data.append(buffer, count: count)
+        }
+        return String(data: data, encoding: .utf8)
+    }
 }
