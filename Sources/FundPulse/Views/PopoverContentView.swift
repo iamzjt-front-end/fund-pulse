@@ -861,15 +861,20 @@ struct PopoverContentView: View {
 
     private var fundList: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
-                MainPopoverNativeScrollConfiguration()
-                    .frame(height: 0)
-
-                if filter == .pending {
+            if filter == .pending {
+                VStack(spacing: 0) {
+                    MainPopoverNativeScrollConfiguration()
+                        .frame(height: 0)
                     pendingActivityList
-                } else {
+                }
+                .frame(maxWidth: .infinity, alignment: .top)
+            } else {
+                LazyVStack(spacing: 0) {
+                    MainPopoverNativeScrollConfiguration()
+                        .frame(height: 0)
                     fundRows
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
             }
         }
         .scrollIndicators(.visible)
@@ -925,6 +930,7 @@ struct PopoverContentView: View {
                     Divider()
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .top)
         }
     }
 
@@ -2172,127 +2178,7 @@ struct PopoverContentView: View {
     }
 
     private var pendingActivities: [PendingTradeActivity] {
-        let fundsByCode = Dictionary(uniqueKeysWithValues: store.snapshot.funds.map { ($0.code, $0) })
-        let records = tradeRecords
-        let pendingTrades = store.snapshot.pendingTrades ?? []
-        let pendingTradeRecordIDs = Set(pendingTrades.compactMap(\.recordID))
-        let pendingConversionTargetCodes = Set((store.snapshot.pendingConversions ?? []).map(\.toCode))
-
-        var activities: [PendingTradeActivity] = pendingTrades.map { pendingTrade in
-            let record = pendingTrade.recordID.flatMap { id in
-                records.first { $0.id == id }
-            }
-            let fund = fundsByCode[pendingTrade.code]
-            let acceptedDate = record?.acceptedDate ?? TradingCalendar.acceptedTradeDate(
-                positionDate: pendingTrade.tradeDate,
-                timeType: pendingTrade.tradeTimeType
-            )
-            return PendingTradeActivity(
-                id: "pending-trade-\(pendingTrade.id)",
-                recordID: record?.id ?? pendingTrade.recordID,
-                conversionID: record?.conversionID,
-                kind: record?.kind ?? tradeKind(for: pendingTrade.action),
-                code: pendingTrade.code,
-                name: record?.name ?? fund?.name ?? pendingTrade.code,
-                linkedCode: record?.linkedCode,
-                linkedName: record?.linkedName,
-                mode: record?.mode ?? pendingTrade.mode,
-                amount: record?.amount ?? pendingTrade.amount,
-                shares: record?.shares ?? pendingTrade.shares,
-                tradeDate: pendingTrade.tradeDate,
-                tradeTimeType: pendingTrade.tradeTimeType,
-                acceptedDate: acceptedDate,
-                createdAt: pendingTrade.createdAt,
-                displayAmount: pendingDisplayAmount(
-                    kind: record?.kind ?? tradeKind(for: pendingTrade.action),
-                    amount: record?.amount ?? pendingTrade.amount,
-                    shares: record?.shares ?? pendingTrade.shares,
-                    acceptedDate: acceptedDate,
-                    fund: fund
-                ),
-                fund: fund
-            )
-        }
-
-        let pendingRecords = records.filter {
-            $0.status == .pending
-                && !pendingTradeRecordIDs.contains($0.id)
-                && $0.kind != .conversionIn
-        }
-        activities.append(contentsOf: pendingRecords.map { record in
-            PendingTradeActivity(
-                id: "pending-record-\(record.id)",
-                recordID: record.id,
-                conversionID: record.conversionID,
-                kind: record.kind,
-                code: record.code,
-                name: record.name,
-                linkedCode: record.linkedCode,
-                linkedName: record.linkedName,
-                mode: record.mode,
-                amount: record.amount,
-                shares: record.shares,
-                tradeDate: record.tradeDate,
-                tradeTimeType: record.tradeTimeType,
-                acceptedDate: record.acceptedDate,
-                createdAt: record.createdAt,
-                displayAmount: pendingDisplayAmount(
-                    kind: record.kind,
-                    amount: record.amount,
-                    shares: record.shares,
-                    acceptedDate: record.acceptedDate,
-                    fund: fundsByCode[record.code]
-                ),
-                fund: fundsByCode[record.code]
-            )
-        })
-
-        let pendingNewFundCodes = Set(
-            activities
-                .filter { $0.kind == .newFund }
-                .map(\.code)
-        )
-        let legacyPendingFunds = store.snapshot.funds.filter {
-            FundListDisplayRules.isDisplayedPending($0, tradeRecords: records)
-                && !pendingNewFundCodes.contains($0.code)
-                && !pendingConversionTargetCodes.contains($0.code)
-        }
-        activities.append(contentsOf: legacyPendingFunds.map { fund in
-            let tradeDate = fund.positionDate ?? DateOnlyFormatter.string(from: .now)
-            let timeType = fund.positionTimeType ?? .before15
-            return PendingTradeActivity(
-                id: "pending-fund-\(fund.code)",
-                recordID: nil,
-                conversionID: nil,
-                kind: .newFund,
-                code: fund.code,
-                name: fund.name,
-                linkedCode: nil,
-                linkedName: nil,
-                mode: fund.positionMode ?? .amount,
-                amount: fund.pendingAmount,
-                shares: fund.migratedShares,
-                tradeDate: tradeDate,
-                tradeTimeType: timeType,
-                acceptedDate: TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType),
-                createdAt: .distantPast,
-                displayAmount: pendingDisplayAmount(
-                    kind: .newFund,
-                    amount: fund.pendingAmount,
-                    shares: fund.migratedShares,
-                    acceptedDate: TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType),
-                    fund: fund
-                ),
-                fund: fund
-            )
-        })
-
-        return activities.sorted {
-            if $0.createdAt != $1.createdAt {
-                return $0.createdAt > $1.createdAt
-            }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
-        }
+        PendingTradeActivityBuilder.make(from: store.snapshot)
     }
 
     private var deletePendingActivityConfirmationBinding: Binding<Bool> {
@@ -2314,68 +2200,6 @@ struct PopoverContentView: View {
             return "确定删除“\(activity.name)”这条待确认基金吗？删除后会移除这条待确认记录，且无法撤销。"
         }
         return "确定删除 \(activity.tradeDate) \(activity.tradeTimeType.title) 的\(activity.kind.title)待确认记录吗？删除后会移除这笔待确认交易，且无法撤销。"
-    }
-
-    private func tradeKind(for action: FundTradeAction) -> FundTradeKind {
-        switch action {
-        case .buy:
-            .buy
-        case .sell:
-            .sell
-        }
-    }
-
-    private func pendingDisplayAmount(
-        kind: FundTradeKind,
-        amount: Double?,
-        shares: Double?,
-        acceptedDate: String,
-        fund: FundPosition?
-    ) -> PendingActivityAmount? {
-        if let amount, amount > 0 {
-            return PendingActivityAmount(value: amount, source: .enteredAmount, price: nil, shares: shares)
-        }
-        guard let shares, shares > 0,
-              let reference = pendingReferenceValue(for: fund, acceptedDate: acceptedDate)
-        else {
-            return nil
-        }
-        return PendingActivityAmount(
-            value: shares * reference.price,
-            source: reference.source,
-            price: reference.price,
-            shares: shares
-        )
-    }
-
-    private func pendingReferenceValue(
-        for fund: FundPosition?,
-        acceptedDate: String
-    ) -> (price: Double, source: PendingActivityAmount.Source)? {
-        guard let fund else { return nil }
-        let shares = fund.migratedShares ?? 0
-        let currentAmount = PortfolioPanelDisplay.currentAmount(for: fund)
-        let basePrice: Double
-        if shares > 0, currentAmount > 0 {
-            basePrice = currentAmount / shares
-        } else if let migratedCost = fund.migratedCost, migratedCost > 0 {
-            basePrice = migratedCost
-        } else {
-            return nil
-        }
-
-        let acceptedShortDate = String(acceptedDate.dropFirst(5))
-        let updateDate = DateOnlyFormatter.string(from: store.snapshot.updateTime)
-        let dateMatchesAcceptedNetValue = fund.dateText.hasPrefix(acceptedShortDate)
-        if dateMatchesAcceptedNetValue && (fund.isUpdated || acceptedDate != updateDate) {
-            return (basePrice, .confirmedNetValue)
-        }
-
-        if acceptedDate == updateDate, !fund.isUpdated, fund.todayRate != 0 {
-            return (basePrice * (1 + fund.todayRate / 100), .estimatedNetValue)
-        }
-
-        return (basePrice, .latestNetValue)
     }
 
     private func pendingImpactSideText(amount: Double) -> String {
@@ -2526,6 +2350,201 @@ struct PendingActivityAmount {
     var source: Source
     var price: Double?
     var shares: Double?
+}
+
+enum PendingTradeActivityBuilder {
+    static func make(from snapshot: PortfolioSnapshot) -> [PendingTradeActivity] {
+        let fundsByCode = Dictionary(uniqueKeysWithValues: snapshot.funds.map { ($0.code, $0) })
+        let records = snapshot.tradeRecords ?? []
+        let pendingTrades = snapshot.pendingTrades ?? []
+        let pendingTradeRecordIDs = Set(pendingTrades.compactMap(\.recordID))
+        let pendingConversionTargetCodes = Set((snapshot.pendingConversions ?? []).map(\.toCode))
+
+        var activities: [PendingTradeActivity] = pendingTrades.map { pendingTrade in
+            let record = pendingTrade.recordID.flatMap { id in
+                records.first { $0.id == id }
+            }
+            let fund = fundsByCode[pendingTrade.code]
+            let acceptedDate = record?.acceptedDate ?? TradingCalendar.acceptedTradeDate(
+                positionDate: pendingTrade.tradeDate,
+                timeType: pendingTrade.tradeTimeType
+            )
+            let kind = record?.kind ?? tradeKind(for: pendingTrade.action)
+            return PendingTradeActivity(
+                id: "pending-trade-\(pendingTrade.id)",
+                recordID: record?.id ?? pendingTrade.recordID,
+                conversionID: record?.conversionID,
+                kind: kind,
+                code: pendingTrade.code,
+                name: record?.name ?? fund?.name ?? pendingTrade.code,
+                linkedCode: record?.linkedCode,
+                linkedName: record?.linkedName,
+                mode: record?.mode ?? pendingTrade.mode,
+                amount: record?.amount ?? pendingTrade.amount,
+                shares: record?.shares ?? pendingTrade.shares,
+                tradeDate: pendingTrade.tradeDate,
+                tradeTimeType: pendingTrade.tradeTimeType,
+                acceptedDate: acceptedDate,
+                createdAt: pendingTrade.createdAt,
+                displayAmount: pendingDisplayAmount(
+                    kind: kind,
+                    amount: record?.amount ?? pendingTrade.amount,
+                    shares: record?.shares ?? pendingTrade.shares,
+                    acceptedDate: acceptedDate,
+                    fund: fund,
+                    snapshot: snapshot
+                ),
+                fund: fund
+            )
+        }
+
+        let pendingRecords = records.filter {
+            $0.status == .pending
+                && !pendingTradeRecordIDs.contains($0.id)
+                && $0.kind != .conversionIn
+        }
+        activities.append(contentsOf: pendingRecords.map { record in
+            PendingTradeActivity(
+                id: "pending-record-\(record.id)",
+                recordID: record.id,
+                conversionID: record.conversionID,
+                kind: record.kind,
+                code: record.code,
+                name: record.name,
+                linkedCode: record.linkedCode,
+                linkedName: record.linkedName,
+                mode: record.mode,
+                amount: record.amount,
+                shares: record.shares,
+                tradeDate: record.tradeDate,
+                tradeTimeType: record.tradeTimeType,
+                acceptedDate: record.acceptedDate,
+                createdAt: record.createdAt,
+                displayAmount: pendingDisplayAmount(
+                    kind: record.kind,
+                    amount: record.amount,
+                    shares: record.shares,
+                    acceptedDate: record.acceptedDate,
+                    fund: fundsByCode[record.code],
+                    snapshot: snapshot
+                ),
+                fund: fundsByCode[record.code]
+            )
+        })
+
+        let pendingNewFundCodes = Set(
+            activities
+                .filter { $0.kind == .newFund }
+                .map(\.code)
+        )
+        let legacyPendingFunds = snapshot.funds.filter {
+            FundListDisplayRules.isDisplayedPending($0, tradeRecords: records)
+                && !pendingNewFundCodes.contains($0.code)
+                && !pendingConversionTargetCodes.contains($0.code)
+        }
+        activities.append(contentsOf: legacyPendingFunds.map { fund in
+            let tradeDate = fund.positionDate ?? DateOnlyFormatter.string(from: .now)
+            let timeType = fund.positionTimeType ?? .before15
+            let acceptedDate = TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType)
+            return PendingTradeActivity(
+                id: "pending-fund-\(fund.code)",
+                recordID: nil,
+                conversionID: nil,
+                kind: .newFund,
+                code: fund.code,
+                name: fund.name,
+                linkedCode: nil,
+                linkedName: nil,
+                mode: fund.positionMode ?? .amount,
+                amount: fund.pendingAmount,
+                shares: fund.migratedShares,
+                tradeDate: tradeDate,
+                tradeTimeType: timeType,
+                acceptedDate: acceptedDate,
+                createdAt: .distantPast,
+                displayAmount: pendingDisplayAmount(
+                    kind: .newFund,
+                    amount: fund.pendingAmount,
+                    shares: fund.migratedShares,
+                    acceptedDate: acceptedDate,
+                    fund: fund,
+                    snapshot: snapshot
+                ),
+                fund: fund
+            )
+        })
+
+        return activities.sorted {
+            if $0.createdAt != $1.createdAt {
+                return $0.createdAt > $1.createdAt
+            }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private static func tradeKind(for action: FundTradeAction) -> FundTradeKind {
+        switch action {
+        case .buy:
+            .buy
+        case .sell:
+            .sell
+        }
+    }
+
+    private static func pendingDisplayAmount(
+        kind: FundTradeKind,
+        amount: Double?,
+        shares: Double?,
+        acceptedDate: String,
+        fund: FundPosition?,
+        snapshot: PortfolioSnapshot
+    ) -> PendingActivityAmount? {
+        if let amount, amount > 0 {
+            return PendingActivityAmount(value: amount, source: .enteredAmount, price: nil, shares: shares)
+        }
+        guard let shares, shares > 0,
+              let reference = pendingReferenceValue(for: fund, acceptedDate: acceptedDate, snapshot: snapshot)
+        else {
+            return nil
+        }
+        return PendingActivityAmount(
+            value: shares * reference.price,
+            source: reference.source,
+            price: reference.price,
+            shares: shares
+        )
+    }
+
+    private static func pendingReferenceValue(
+        for fund: FundPosition?,
+        acceptedDate: String,
+        snapshot: PortfolioSnapshot
+    ) -> (price: Double, source: PendingActivityAmount.Source)? {
+        guard let fund else { return nil }
+        let shares = fund.migratedShares ?? 0
+        let currentAmount = PortfolioPanelDisplay.currentAmount(for: fund)
+        let basePrice: Double
+        if shares > 0, currentAmount > 0 {
+            basePrice = currentAmount / shares
+        } else if let migratedCost = fund.migratedCost, migratedCost > 0 {
+            basePrice = migratedCost
+        } else {
+            return nil
+        }
+
+        let acceptedShortDate = String(acceptedDate.dropFirst(5))
+        let updateDate = DateOnlyFormatter.string(from: snapshot.updateTime)
+        let dateMatchesAcceptedNetValue = fund.dateText.hasPrefix(acceptedShortDate)
+        if dateMatchesAcceptedNetValue && (fund.isUpdated || acceptedDate != updateDate) {
+            return (basePrice, .confirmedNetValue)
+        }
+
+        if acceptedDate == updateDate, !fund.isUpdated, fund.todayRate != 0 {
+            return (basePrice * (1 + fund.todayRate / 100), .estimatedNetValue)
+        }
+
+        return (basePrice, .latestNetValue)
+    }
 }
 
 struct PendingHeaderImpact {

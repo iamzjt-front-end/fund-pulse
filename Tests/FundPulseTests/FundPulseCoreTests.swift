@@ -7270,6 +7270,177 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(impact.netAmount, 0, accuracy: 0.0001)
     }
 
+    func testPendingActivityBuilderListsPendingTradesMatchingHeaderCount() throws {
+        let now = try chinaDate("2026-07-08 23:39")
+        let buyCreatedAt = try chinaDate("2026-07-08 15:08")
+        let funds = [
+            FundPosition(
+                code: "011833",
+                name: "西部利得人工智能主题指数增强C",
+                dateText: "07-08 15:00",
+                todayIncome: 82.15,
+                todayRate: 0.96,
+                holdingIncome: -360.23,
+                holdingRate: -4.00,
+                currentAmount: 8_639.77,
+                status: .holding,
+                isUpdated: true,
+                isIncomeActive: true,
+                migratedShares: 4_310.832252,
+                migratedCost: 2.087764,
+                migratedPrincipal: 9_000,
+                incomeStartDate: "2026-07-08",
+                positionMode: .amount,
+                positionDate: "2026-07-08",
+                positionTimeType: .before15,
+                lots: [
+                    FundPositionLot(id: "011833-new", shares: 4_310.832252, cost: 2.087764, principal: 9_000, incomeStartDate: "2026-07-08", positionDate: "2026-07-08", positionTimeType: .before15)
+                ]
+            ),
+            FundPosition(
+                code: "011370",
+                name: "华商均衡成长混合C",
+                dateText: "07-08 15:00",
+                todayIncome: -468.24,
+                todayRate: -3.34,
+                holdingIncome: -2_449,
+                holdingRate: -15.31,
+                currentAmount: 13_551,
+                status: .holding,
+                isUpdated: true,
+                isIncomeActive: true,
+                migratedShares: 3_370.560143,
+                migratedCost: 4.746985,
+                migratedPrincipal: 16_000,
+                incomeStartDate: "2026-07-08",
+                positionMode: .amount,
+                positionDate: "2026-07-08",
+                positionTimeType: .before15,
+                lots: [
+                    FundPositionLot(id: "011370-new", shares: 3_370.560143, cost: 4.746985, principal: 16_000, incomeStartDate: "2026-07-08", positionDate: "2026-07-08", positionTimeType: .before15)
+                ]
+            ),
+            FundPosition(
+                code: "026210",
+                name: "平安科技精选混合发起式A",
+                dateText: "07-08 15:00",
+                todayIncome: -466.41,
+                todayRate: -2.19,
+                holdingIncome: -4_688.08,
+                holdingRate: -18.37,
+                currentAmount: 20_830.85,
+                status: .holding,
+                isUpdated: true,
+                isIncomeActive: true,
+                migratedShares: 10_466.711888,
+                migratedCost: 2.438104,
+                migratedPrincipal: 25_518.93,
+                incomeStartDate: "2026-07-08",
+                positionMode: .amount,
+                positionDate: "2026-07-08",
+                positionTimeType: .before15,
+                lots: [
+                    FundPositionLot(id: "026210-new", shares: 10_466.711888, cost: 2.438104, principal: 25_518.93, incomeStartDate: "2026-07-08", positionDate: "2026-07-08", positionTimeType: .before15)
+                ]
+            ),
+            FundPosition(
+                code: "008989",
+                name: "大成科技创新混合C",
+                dateText: "07-08 15:00",
+                todayIncome: -688.40,
+                todayRate: -3.17,
+                holdingIncome: -3_970.20,
+                holdingRate: -15.88,
+                currentAmount: 21_027.80,
+                status: .holding,
+                isUpdated: true,
+                isIncomeActive: true,
+                migratedShares: 3_845.540499,
+                migratedCost: 6.500517,
+                migratedPrincipal: 24_998,
+                incomeStartDate: "2026-07-08",
+                positionMode: .amount,
+                positionDate: "2026-07-08",
+                positionTimeType: .before15,
+                lots: [
+                    FundPositionLot(id: "008989-new", shares: 3_845.540499, cost: 6.500517, principal: 24_998, incomeStartDate: "2026-07-08", positionDate: "2026-07-08", positionTimeType: .before15)
+                ]
+            ),
+            FundPosition(
+                code: "022485",
+                name: "国金中证A500指数增强A",
+                dateText: "07-08 15:00",
+                todayIncome: -2_124.32,
+                todayRate: -1.79,
+                holdingIncome: -3_447.40,
+                holdingRate: -2.87,
+                currentAmount: 116_552.60,
+                status: .holding,
+                isUpdated: true,
+                isIncomeActive: true,
+                migratedShares: 77_438.442628,
+                migratedCost: 1.549618,
+                migratedPrincipal: 120_000,
+                incomeStartDate: "2026-07-08",
+                positionMode: .amount,
+                positionDate: "2026-07-08",
+                positionTimeType: .before15,
+                lots: [
+                    FundPositionLot(id: "022485-new", shares: 77_438.442628, cost: 1.549618, principal: 120_000, incomeStartDate: "2026-07-08", positionDate: "2026-07-08", positionTimeType: .before15)
+                ]
+            )
+        ]
+        let pendingTrades = [
+            FundPendingTrade(id: "pending-022485", recordID: "buy-022485", action: .buy, code: "022485", mode: .amount, amount: 6_000, shares: nil, tradeDate: "2026-07-08", tradeTimeType: .before15, createdAt: buyCreatedAt),
+            FundPendingTrade(id: "pending-008989", recordID: "buy-008989", action: .buy, code: "008989", mode: .amount, amount: 1_000, shares: nil, tradeDate: "2026-07-08", tradeTimeType: .before15, createdAt: buyCreatedAt.addingTimeInterval(11)),
+            FundPendingTrade(id: "pending-026210", recordID: "buy-026210", action: .buy, code: "026210", mode: .amount, amount: 1_000, shares: nil, tradeDate: "2026-07-08", tradeTimeType: .before15, createdAt: buyCreatedAt.addingTimeInterval(22)),
+            FundPendingTrade(id: "pending-011370", recordID: "buy-011370", action: .buy, code: "011370", mode: .amount, amount: 1_000, shares: nil, tradeDate: "2026-07-08", tradeTimeType: .before15, createdAt: buyCreatedAt.addingTimeInterval(37))
+        ]
+        let records = pendingTrades.map { pendingTrade in
+            FundTradeRecord(
+                id: pendingTrade.recordID ?? pendingTrade.id,
+                kind: .buy,
+                status: .pending,
+                code: pendingTrade.code,
+                name: funds.first { $0.code == pendingTrade.code }?.name ?? pendingTrade.code,
+                mode: pendingTrade.mode,
+                amount: pendingTrade.amount,
+                shares: nil,
+                confirmedShares: nil,
+                price: nil,
+                tradeDate: pendingTrade.tradeDate,
+                tradeTimeType: pendingTrade.tradeTimeType,
+                acceptedDate: "2026-07-08",
+                createdAt: pendingTrade.createdAt,
+                confirmedAt: nil,
+                failureReason: nil,
+                buyFeeRate: 0
+            )
+        }
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 301_436.77,
+            holdingIncome: -14_834.48,
+            holdingIncomeRate: -4.69,
+            todayIncome: -2_106.08,
+            todayIncomeRate: -0.69,
+            pendingCount: 4,
+            funds: funds,
+            migration: nil,
+            pendingTrades: pendingTrades,
+            tradeRecords: records
+        )
+
+        let activities = PendingTradeActivityBuilder.make(from: snapshot)
+        let impact = try XCTUnwrap(PendingHeaderImpact.make(activities: activities))
+
+        XCTAssertEqual(activities.count, snapshot.pendingCount)
+        XCTAssertEqual(impact.count, snapshot.pendingCount)
+        XCTAssertEqual(activities.map(\.code), ["011370", "026210", "008989", "022485"])
+        XCTAssertEqual(activities.map(\.amount), [1_000, 1_000, 1_000, 6_000])
+        XCTAssertEqual(impact.buyAmount, 9_000, accuracy: 0.0001)
+    }
+
     @MainActor
     func testPendingConversionWithInsufficientSharesKeepsLinkedRecordsPendingWithFailureReason() async throws {
         var now = try chinaDate("2026-06-22 16:00")
