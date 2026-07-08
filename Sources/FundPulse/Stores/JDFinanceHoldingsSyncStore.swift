@@ -13,13 +13,16 @@ final class JDFinanceHoldingsSyncStore {
     private(set) var lastSyncedAt: Date?
 
     private let service: JDFinanceHoldingsService
+    private let codeResolver: JDFinanceFundCodeResolver
     private let nowProvider: () -> Date
 
     init(
         service: JDFinanceHoldingsService = JDFinanceHoldingsService(),
+        codeResolver: JDFinanceFundCodeResolver = JDFinanceFundCodeResolver(),
         now: @escaping () -> Date = { .now }
     ) {
         self.service = service
+        self.codeResolver = codeResolver
         self.nowProvider = now
     }
 
@@ -35,10 +38,14 @@ final class JDFinanceHoldingsSyncStore {
                 cookieHeader: cookieHeader,
                 needsTradeOrderRecords: portfolioStore.needsJDFinanceTradeOrderReconciliation
             )
+            let resolvedRemoteSnapshot = await codeResolver.resolve(
+                snapshot: remoteSnapshot,
+                localSnapshot: portfolioStore.snapshot
+            )
             let syncedAt = nowProvider()
-            try portfolioStore.applyJDFinanceAccountTotal(remoteSnapshot.totalAssets, syncedAt: syncedAt)
+            try portfolioStore.applyJDFinanceAccountTotal(resolvedRemoteSnapshot.totalAssets, syncedAt: syncedAt)
             preview = JDFinanceHoldingsSyncPlanner.preview(
-                remoteSnapshot: remoteSnapshot,
+                remoteSnapshot: resolvedRemoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
             if let preview {
@@ -274,9 +281,19 @@ final class JDFinanceHoldingsSyncStore {
                 "matchedRecords": notice.matchedTradeRecords.map(debugRecordSummary).joined(separator: " || ")
             ]
         }
+        let unresolvedHoldings = preview.unresolvedHoldings.map { holding in
+            [
+                "skuID": holding.skuID,
+                "name": holding.name,
+                "amount": MoneyFormatter.plainMoney(holding.amount),
+                "holdingIncome": holding.holdingIncome.map(MoneyFormatter.plainMoney) ?? "--",
+                "message": holding.message
+            ]
+        }
         let remoteProducts = preview.remoteSnapshot.products.map { product in
             [
                 "code": product.code,
+                "codeResolution": product.codeResolution.rawValue,
                 "name": product.name,
                 "totalAmount": MoneyFormatter.plainMoney(product.totalAmount),
                 "holdingIncome": product.holdIncome.map(MoneyFormatter.plainMoney) ?? "--",
@@ -294,7 +311,9 @@ final class JDFinanceHoldingsSyncStore {
             "pendingNoticeCount": notices.count,
             "pendingNotices": notices,
             "reconciliationCount": reconciliations.count,
-            "reconciliations": reconciliations
+            "reconciliations": reconciliations,
+            "unresolvedCount": unresolvedHoldings.count,
+            "unresolvedHoldings": unresolvedHoldings
         ]
 
         do {

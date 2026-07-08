@@ -5065,7 +5065,6 @@ struct FundDetailView: View {
                 Text(FundCodeFormatter.display(fund.code))
                     .fontWeight(.semibold)
                 Text(fund.dateText)
-                fundTitleReminderTags
             }
             .font(.system(size: 11, weight: .medium))
             .monospacedDigit()
@@ -5075,16 +5074,6 @@ struct FundDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private var fundTitleReminderTags: some View {
-        if let zdfRangeReminderText {
-            titleReminderTag(zdfRangeReminderText, color: .orange)
-        }
-        if let netValueReminderText {
-            titleReminderTag(netValueReminderText, color: .blue)
-        }
     }
 
     private var todayRateHero: some View {
@@ -5755,21 +5744,6 @@ struct FundDetailView: View {
         )
     }
 
-    private func titleReminderTag(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 9, weight: .semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.72)
-            .foregroundStyle(color)
-            .padding(.horizontal, 6)
-            .frame(height: 18)
-            .background(color.opacity(colorScheme == .dark ? 0.16 : 0.10), in: Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(color.opacity(colorScheme == .dark ? 0.34 : 0.22), lineWidth: 0.6)
-            )
-    }
-
     private var currentTotal: Double {
         if let currentAmount = fund.currentAmount {
             return currentAmount
@@ -5891,14 +5865,6 @@ struct FundDetailView: View {
             return Int64((parsedDate.timeIntervalSince1970 * 1000).rounded())
         }
         return Int64((Date().timeIntervalSince1970 * 1000).rounded())
-    }
-
-    private var zdfRangeReminderText: String? {
-        fund.zdfRange.map { "涨跌幅提醒 \(MoneyFormatter.percent($0, signed: false))" }
-    }
-
-    private var netValueReminderText: String? {
-        fund.jzNotice.map { "净值提醒 \(numberText($0, places: 4))" }
     }
 
     private var historyTrailingText: String? {
@@ -6476,9 +6442,15 @@ private struct FundIntradayRateChart: View {
                             linePath(in: proxy.size)
                                 .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
                         } else if let point = renderedPoints.first {
+                            singlePointPath(for: point, in: proxy.size)
+                                .stroke(lineColor, style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
                             Circle()
                                 .fill(lineColor)
-                                .frame(width: 6, height: 6)
+                                .frame(width: 7, height: 7)
+                                .overlay(
+                                    Circle()
+                                        .stroke(PanelDesign.cardBackground.opacity(colorScheme == .dark ? 0.9 : 0.96), lineWidth: 1.4)
+                                )
                                 .position(pointPosition(for: point, in: proxy.size))
                         }
 
@@ -6657,6 +6629,23 @@ private struct FundIntradayRateChart: View {
             path.addLine(to: CGPoint(x: xPosition(for: last, width: size.width), y: zeroY))
             path.addLine(to: CGPoint(x: xPosition(for: first, width: size.width), y: zeroY))
             path.closeSubpath()
+        }
+    }
+
+    private func singlePointPath(for point: FundIntradayRatePoint, in size: CGSize) -> Path {
+        Path { path in
+            let position = pointPosition(for: point, in: size)
+            let startX: CGFloat
+            let endX: CGFloat
+            if position.x >= size.width / 2 {
+                startX = max(0, position.x - 28)
+                endX = position.x
+            } else {
+                startX = position.x
+                endX = min(size.width, position.x + 28)
+            }
+            path.move(to: CGPoint(x: startX, y: position.y))
+            path.addLine(to: CGPoint(x: endX, y: position.y))
         }
     }
 

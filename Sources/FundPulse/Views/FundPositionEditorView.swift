@@ -17,8 +17,6 @@ struct FundPositionEditorView: View {
     @State private var isSameDayNewFund: Bool
     @State private var positionDate: Date
     @State private var positionTimeType: PositionTimeType
-    @State private var zdfRange: String
-    @State private var jzNotice: String
     @State private var memo: String
     @State private var lookupTask: Task<Void, Never>?
     @State private var autoResolvedName: String?
@@ -84,8 +82,6 @@ struct FundPositionEditorView: View {
         _isSameDayNewFund = State(initialValue: false)
         _positionDate = State(initialValue: date)
         _positionTimeType = State(initialValue: fund?.positionTimeType ?? TradingCalendar.defaultPositionTimeType())
-        _zdfRange = State(initialValue: fund?.zdfRange.map { Self.text($0) } ?? "")
-        _jzNotice = State(initialValue: fund?.jzNotice.map { Self.text($0, places: 4) } ?? "")
         _memo = State(initialValue: fund?.memo ?? "")
     }
 
@@ -153,13 +149,7 @@ struct FundPositionEditorView: View {
                     }
                     .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
 
-                    PanelSection(title: "提醒与备注") {
-                        field("涨跌幅提醒") {
-                            PanelTextInput("百分比，可选", text: $zdfRange, suffix: "%")
-                        }
-                        field("净值提醒") {
-                            PanelTextInput("目标净值，可选", text: $jzNotice)
-                        }
+                    PanelSection(title: "备注") {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("备注")
                                 .font(.system(size: 11, weight: .medium))
@@ -382,8 +372,6 @@ struct FundPositionEditorView: View {
             cost: Self.number(cost),
             positionDate: resolvedPositionDate,
             positionTimeType: resolvedPositionTimeType,
-            zdfRange: Self.number(zdfRange),
-            jzNotice: Self.number(jzNotice),
             memo: memo,
             requiresTradeConfirmation: isTodayNewFund
         )

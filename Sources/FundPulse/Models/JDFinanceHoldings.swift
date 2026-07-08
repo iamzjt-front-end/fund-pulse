@@ -10,9 +10,16 @@ struct JDFinanceHoldingsSnapshot: Equatable {
 }
 
 struct JDFinanceHoldingProduct: Identifiable, Equatable {
-    var id: String { code }
+    var id: String {
+        if isCodeResolved {
+            return code
+        }
+        return "unresolved-\(skuID)-\(name)"
+    }
+
     var skuID: String
     var code: String
+    var codeResolution: JDFinanceFundCodeResolution = .explicit
     var name: String
     var totalAmount: Double
     var yesterdayIncome: Double?
@@ -26,6 +33,20 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
 
     var transactionTipText: String? {
         transactionTip?.text
+    }
+
+    var isCodeResolved: Bool {
+        codeResolution.isResolved && !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+enum JDFinanceFundCodeResolution: String, Equatable {
+    case explicit
+    case nameMatched
+    case unresolved
+
+    var isResolved: Bool {
+        self != .unresolved
     }
 }
 
@@ -128,8 +149,6 @@ struct JDFinanceHoldingImportCandidate: Identifiable, Equatable {
             cost: nil,
             positionDate: positionDate,
             positionTimeType: .before15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: "京东金融同步导入",
             requiresTradeConfirmation: false
         )
@@ -153,6 +172,15 @@ struct JDFinanceMissingLocalHolding: Identifiable, Equatable {
     var code: String
     var name: String
     var localAmount: Double?
+}
+
+struct JDFinanceUnresolvedHolding: Identifiable, Equatable {
+    var id: String { "\(skuID)-\(name)" }
+    var skuID: String
+    var name: String
+    var amount: Double
+    var holdingIncome: Double?
+    var message: String
 }
 
 struct JDFinanceSyncDifference: Equatable {
@@ -296,8 +324,6 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
             cost: nil,
             positionDate: tradeDate,
             positionTimeType: tradeTimeType,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: "京东金融同步待确认",
             requiresTradeConfirmation: true
         )
@@ -458,6 +484,7 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
     var newHoldings: [JDFinanceHoldingImportCandidate]
     var changedHoldings: [JDFinanceHoldingDifference]
     var missingLocalHoldings: [JDFinanceMissingLocalHolding]
+    var unresolvedHoldings: [JDFinanceUnresolvedHolding] = []
     var pendingNotices: [JDFinanceHoldingPendingNotice]
     var reconciliationNotices: [JDFinanceReconciliationNotice] = []
 
@@ -481,6 +508,7 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
         newHoldings.isEmpty
             && changedHoldings.isEmpty
             && missingLocalHoldings.isEmpty
+            && unresolvedHoldings.isEmpty
             && pendingNotices.isEmpty
             && reconciliationNotices.isEmpty
     }
@@ -509,28 +537,7 @@ enum JDFinanceHoldingsError: LocalizedError, Equatable {
 enum JDFinanceFundCodeMapper {
     static func inferCode(from skuID: String) -> String? {
         let digits = skuID.filter(\.isNumber)
-        guard !digits.isEmpty else { return nil }
-
-        if digits.count == 7, digits.first == "1" {
-            return String(digits.suffix(6))
-        }
-
-        if digits.count == 6, digits.first == "1" {
-            return "0" + String(digits.suffix(5))
-        }
-
-        if digits.count == 6 {
-            return digits
-        }
-
-        if digits.count == 5 {
-            return "0" + digits
-        }
-
-        if digits.count > 6 {
-            return String(digits.suffix(6))
-        }
-
-        return String(repeating: "0", count: max(0, 6 - digits.count)) + digits
+        guard digits.count == 6, digits.first != "1" else { return nil }
+        return digits
     }
 }

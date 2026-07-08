@@ -1,13 +1,14 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 11
+    static let currentSchemaVersion = 12
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
     static let mainPanelHeightSliderStep = 10
     static let defaultOperationReminderTimeMinutes = 14 * 60 + 30
     static let defaultThresholdReminderInterval: FundThresholdReminderInterval = .thirtyMinutes
+    static let defaultDailyGrowthReminderEnabled = false
     static let defaultAutoRefreshInterval: AutoRefreshInterval = .fiveSeconds
     static let defaultMarketClosedAutoRefreshInterval: AutoRefreshInterval = .tenMinutes
     static let defaultMarketIndexIdentifier: MarketIndexID = .shanghaiComposite
@@ -21,6 +22,9 @@ struct AppSettings: Codable, Equatable {
     var operationReminderEnabled: Bool = true
     var operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes
     var thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval
+    var dailyGrowthReminderEnabled: Bool = Self.defaultDailyGrowthReminderEnabled
+    var dailyGrowthRiseTiers: [FundGrowthReminderTier] = []
+    var dailyGrowthFallTiers: [FundGrowthReminderTier] = []
     var appearanceMode: AppAppearanceMode = .system
     var showsMarketIndexes: Bool = true
     var defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
@@ -36,6 +40,9 @@ struct AppSettings: Codable, Equatable {
         operationReminderEnabled: Bool = true,
         operationReminderTimeMinutes: Int = Self.defaultOperationReminderTimeMinutes,
         thresholdReminderInterval: FundThresholdReminderInterval = Self.defaultThresholdReminderInterval,
+        dailyGrowthReminderEnabled: Bool = Self.defaultDailyGrowthReminderEnabled,
+        dailyGrowthRiseTiers: [FundGrowthReminderTier] = [],
+        dailyGrowthFallTiers: [FundGrowthReminderTier] = [],
         appearanceMode: AppAppearanceMode = .system,
         showsMarketIndexes: Bool = true,
         defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier,
@@ -50,6 +57,9 @@ struct AppSettings: Codable, Equatable {
         self.operationReminderEnabled = operationReminderEnabled
         self.operationReminderTimeMinutes = Self.clampedReminderTimeMinutes(operationReminderTimeMinutes)
         self.thresholdReminderInterval = thresholdReminderInterval
+        self.dailyGrowthReminderEnabled = dailyGrowthReminderEnabled
+        self.dailyGrowthRiseTiers = Self.normalizedGrowthReminderTiers(dailyGrowthRiseTiers)
+        self.dailyGrowthFallTiers = Self.normalizedGrowthReminderTiers(dailyGrowthFallTiers)
         self.appearanceMode = appearanceMode
         self.showsMarketIndexes = showsMarketIndexes
         self.defaultMarketIndexID = defaultMarketIndexID
@@ -66,6 +76,9 @@ struct AppSettings: Codable, Equatable {
         case operationReminderEnabled
         case operationReminderTimeMinutes
         case thresholdReminderInterval
+        case dailyGrowthReminderEnabled
+        case dailyGrowthRiseTiers
+        case dailyGrowthFallTiers
         case appearanceMode
         case showsMarketIndexes
         case defaultMarketIndexID
@@ -100,6 +113,18 @@ struct AppSettings: Codable, Equatable {
             FundThresholdReminderInterval.self,
             forKey: .thresholdReminderInterval
         ) ?? Self.defaultThresholdReminderInterval
+        dailyGrowthReminderEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .dailyGrowthReminderEnabled
+        ) ?? Self.defaultDailyGrowthReminderEnabled
+        let decodedRiseTierValues = try container.decodeIfPresent([Int].self, forKey: .dailyGrowthRiseTiers) ?? []
+        dailyGrowthRiseTiers = Self.normalizedGrowthReminderTiers(
+            decodedRiseTierValues.compactMap(FundGrowthReminderTier.init(rawValue:))
+        )
+        let decodedFallTierValues = try container.decodeIfPresent([Int].self, forKey: .dailyGrowthFallTiers) ?? []
+        dailyGrowthFallTiers = Self.normalizedGrowthReminderTiers(
+            decodedFallTierValues.compactMap(FundGrowthReminderTier.init(rawValue:))
+        )
         appearanceMode = try container.decodeIfPresent(AppAppearanceMode.self, forKey: .appearanceMode) ?? .system
         showsMarketIndexes = try container.decodeIfPresent(Bool.self, forKey: .showsMarketIndexes) ?? true
         let decodedMarketIndexID = try container.decodeIfPresent(String.self, forKey: .defaultMarketIndexID)
@@ -115,6 +140,10 @@ struct AppSettings: Codable, Equatable {
 
     static func clampedReminderTimeMinutes(_ minutes: Int) -> Int {
         min(max(minutes, 0), 23 * 60 + 59)
+    }
+
+    static func normalizedGrowthReminderTiers(_ tiers: [FundGrowthReminderTier]) -> [FundGrowthReminderTier] {
+        Array(Set(tiers)).sorted { $0.rawValue < $1.rawValue }
     }
 
     static func validMarketOpenAutoRefreshInterval(_ interval: AutoRefreshInterval) -> AutoRefreshInterval {
@@ -142,6 +171,22 @@ struct AppSettings: Codable, Equatable {
         let hours = operationReminderTimeMinutes / 60
         let minutes = operationReminderTimeMinutes % 60
         return String(format: "%02d:%02d", hours, minutes)
+    }
+}
+
+enum FundGrowthReminderTier: Int, Codable, CaseIterable, Identifiable, Equatable, Hashable {
+    case two = 2
+    case three = 3
+    case five = 5
+    case seven = 7
+    case ten = 10
+
+    var id: Int { rawValue }
+
+    var value: Double { Double(rawValue) }
+
+    var title: String {
+        "\(rawValue)%"
     }
 }
 

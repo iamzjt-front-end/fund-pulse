@@ -5,6 +5,13 @@ struct MarketIndexService {
         URL(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")!,
         URL(string: "https://push2delay.eastmoney.com/api/qt/ulist.np/get")!
     ]
+    private static let eastmoneyMarketBreadthEndpoints = [
+        URL(string: "https://push2delay.eastmoney.com/api/qt/clist/get")!,
+        URL(string: "https://push2.eastmoney.com/api/qt/clist/get")!
+    ]
+    private static let eastmoneyMarketBreadthPageSize = 100
+    private static let eastmoneyMarketBreadthMaxPages = 80
+    private static let eastmoneyMarketBreadthConcurrentPages = 8
     private static let tonghuashunMarketBreadthEndpoint = URL(string: "https://q.10jqka.com.cn/api.php")!
 
     private let session: URLSession
@@ -25,7 +32,10 @@ struct MarketIndexService {
     }
 
     func fetchMarketBreadth() async -> MarketBreadth? {
-        try? await fetchTonghuashunMarketBreadth()
+        if let breadth = try? await fetchTonghuashunMarketBreadth() {
+            return breadth
+        }
+        return try? await fetchEastmoneyMarketBreadth()
     }
 
     private func fetchEastmoneyBatchQuotes(for ids: [MarketIndexID]) async throws -> [MarketIndexID: MarketIndexQuote] {
@@ -107,6 +117,119 @@ struct MarketIndexService {
         )
     }
 
+    private func fetchEastmoneyMarketBreadth() async throws -> MarketBreadth {
+        let firstPage = try await fetchEastmoneyMarketBreadthPage(page: 1)
+        var rates = firstPage.rates
+        let totalPages = min(
+            Self.eastmoneyMarketBreadthMaxPages,
+            max(1, Int(ceil(Double(firstPage.total) / Double(Self.eastmoneyMarketBreadthPageSize))))
+        )
+
+        if totalPages > 1 {
+            for batchStart in stride(from: 2, through: totalPages, by: Self.eastmoneyMarketBreadthConcurrentPages) {
+                let batchEnd = min(batchStart + Self.eastmoneyMarketBreadthConcurrentPages - 1, totalPages)
+                let batchRates = try await withThrowingTaskGroup(of: [Double].self) { group in
+                    for page in batchStart...batchEnd {
+                        group.addTask {
+                            try await self.fetchEastmoneyMarketBreadthPage(page: page).rates
+                        }
+                    }
+
+                    var rates: [Double] = []
+                    for try await pageRates in group {
+                        rates.append(contentsOf: pageRates)
+                    }
+                    return rates
+                }
+                rates.append(contentsOf: batchRates)
+            }
+        }
+
+        let validRates = rates.filter(\.isFinite)
+        let risingCount = validRates.filter { $0 > 0 }.count
+        let fallingCount = validRates.filter { $0 < 0 }.count
+        guard risingCount > 0 || fallingCount > 0 else {
+            throw URLError(.badServerResponse)
+        }
+
+        return MarketBreadth(
+            risingCount: risingCount,
+            fallingCount: fallingCount,
+            distribution: eastmoneyDistribution(from: validRates),
+            limitUpCount: validRates.filter { $0 >= 9.9 }.count,
+            limitDownCount: validRates.filter { $0 <= -9.9 }.count
+        )
+    }
+
+    private func fetchEastmoneyMarketBreadthPage(page: Int) async throws -> EastmoneyMarketBreadthPage {
+        var lastError: Error?
+        for endpoint in Self.eastmoneyMarketBreadthEndpoints {
+            do {
+                var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+                components.queryItems = [
+                    URLQueryItem(name: "pn", value: "\(page)"),
+                    URLQueryItem(name: "pz", value: "\(Self.eastmoneyMarketBreadthPageSize)"),
+                    URLQueryItem(name: "po", value: "1"),
+                    URLQueryItem(name: "np", value: "1"),
+                    URLQueryItem(name: "ut", value: "fa5fd1943c7b386f172d6893dbfba10b"),
+                    URLQueryItem(name: "fltt", value: "2"),
+                    URLQueryItem(name: "invt", value: "2"),
+                    URLQueryItem(name: "fid", value: "f3"),
+                    URLQueryItem(name: "fs", value: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"),
+                    URLQueryItem(name: "fields", value: "f12,f14,f3")
+                ]
+                guard let url = components.url else { throw URLError(.badURL) }
+
+                let (data, _) = try await session.data(for: marketIndexRequest(url: url))
+                let response = try JSONDecoder().decode(EastmoneyMarketBreadthResponse.self, from: data)
+                guard response.rc == 0,
+                      let payload = response.data,
+                      let items = payload.items
+                else {
+                    throw URLError(.badServerResponse)
+                }
+                return EastmoneyMarketBreadthPage(
+                    total: payload.total ?? items.count,
+                    rates: items.compactMap { $0.changeRate?.value }
+                )
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? URLError(.badServerResponse)
+    }
+
+    private func eastmoneyDistribution(from rates: [Double]) -> [Int] {
+        var buckets = Array(repeating: 0, count: 10)
+        for rate in rates {
+            switch rate {
+            case ..<(-7):
+                buckets[0] += 1
+            case ..<(-5):
+                buckets[1] += 1
+            case ..<(-3):
+                buckets[2] += 1
+            case ..<(-1):
+                buckets[3] += 1
+            case ..<0:
+                buckets[4] += 1
+            case 0:
+                continue
+            case ...1:
+                buckets[5] += 1
+            case ...3:
+                buckets[6] += 1
+            case ...5:
+                buckets[7] += 1
+            case ...7:
+                buckets[8] += 1
+            default:
+                buckets[9] += 1
+            }
+        }
+        return buckets
+    }
+
     private func marketIndexRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -159,6 +282,34 @@ private struct EastmoneyMarketIndexListItem: Decodable {
         case changeRate = "f3"
         case change = "f4"
     }
+}
+
+private struct EastmoneyMarketBreadthResponse: Decodable {
+    var rc: Int
+    var data: EastmoneyMarketBreadthPayload?
+}
+
+private struct EastmoneyMarketBreadthPayload: Decodable {
+    var total: Int?
+    var items: [EastmoneyMarketBreadthItem]?
+
+    enum CodingKeys: String, CodingKey {
+        case total
+        case items = "diff"
+    }
+}
+
+private struct EastmoneyMarketBreadthItem: Decodable {
+    var changeRate: LossyMarketIndexNumber?
+
+    enum CodingKeys: String, CodingKey {
+        case changeRate = "f3"
+    }
+}
+
+private struct EastmoneyMarketBreadthPage {
+    var total: Int
+    var rates: [Double]
 }
 
 private struct TonghuashunIndexFlashResponse: Decodable {

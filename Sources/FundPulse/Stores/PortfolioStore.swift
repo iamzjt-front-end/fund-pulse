@@ -794,8 +794,8 @@ final class PortfolioStore {
             positionTimeType: draft.positionTimeType,
             pendingAmount: pendingAmount,
             pendingProfit: pendingProfit,
-            zdfRange: draft.zdfRange,
-            jzNotice: draft.jzNotice,
+            zdfRange: nil,
+            jzNotice: nil,
             memo: draft.memo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draft.memo,
             lots: lots,
             intradayRateDate: existingFund?.intradayRateDate,
@@ -1165,11 +1165,13 @@ final class PortfolioStore {
             return
         }
 
+        let fundsByCode = Dictionary(uniqueKeysWithValues: snapshot.funds.map { ($0.code, $0) })
         var affectedCodes = Set<String>()
         for index in records.indices {
             guard records[index].kind == .newFund,
                   records[index].status == .confirmed,
                   records[index].mode == .amount,
+                  !isJDFinanceSyncedManualHolding(fundsByCode[records[index].code]),
                   !shouldConfirmPendingTrade(acceptedDate: records[index].acceptedDate)
             else {
                 continue
@@ -1222,6 +1224,17 @@ final class PortfolioStore {
         fund.positionTimeType = record.tradeTimeType
         fund.incomeStartDate = record.acceptedDate
         snapshot.funds[index] = fund
+    }
+
+    private func isJDFinanceSyncedManualHolding(_ fund: FundPosition?) -> Bool {
+        guard let fund,
+              fund.positionMode == .amount,
+              (fund.pendingAmount ?? 0) > 0,
+              fund.memo?.contains("京东金融同步") == true
+        else {
+            return false
+        }
+        return true
     }
 
     private func processPendingPositions(quotes: [String: FundQuote]) async {

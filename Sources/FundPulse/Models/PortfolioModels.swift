@@ -360,10 +360,34 @@ struct FundPositionDraft: Equatable {
     var cost: Double?
     var positionDate: String
     var positionTimeType: PositionTimeType
-    var zdfRange: Double?
-    var jzNotice: Double?
     var memo: String
     var requiresTradeConfirmation: Bool = true
+
+    init(
+        code: String,
+        name: String,
+        positionMode: PositionMode,
+        positionAmount: Double? = nil,
+        positionProfit: Double,
+        shares: Double? = nil,
+        cost: Double? = nil,
+        positionDate: String,
+        positionTimeType: PositionTimeType,
+        memo: String,
+        requiresTradeConfirmation: Bool = true
+    ) {
+        self.code = code
+        self.name = name
+        self.positionMode = positionMode
+        self.positionAmount = positionAmount
+        self.positionProfit = positionProfit
+        self.shares = shares
+        self.cost = cost
+        self.positionDate = positionDate
+        self.positionTimeType = positionTimeType
+        self.memo = memo
+        self.requiresTradeConfirmation = requiresTradeConfirmation
+    }
 }
 
 struct FundAmountPositionSyncUpdate: Equatable {

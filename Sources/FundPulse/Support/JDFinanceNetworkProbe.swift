@@ -262,11 +262,7 @@ final class JDFinanceNetworkProbe: @unchecked Sendable {
 
             let summary: String
             if normalizedKey == "busproductid" || normalizedKey == "productid" {
-                if let code = JDFinanceFundCodeMapper.inferCode(from: value) {
-                    summary = "请求.\(shortFieldName(leaf.path)): \(value)(\(code))"
-                } else {
-                    summary = "请求.\(shortFieldName(leaf.path)): \(abbreviated(value))"
-                }
+                summary = "请求.\(shortFieldName(leaf.path)): \(abbreviated(value))"
             } else if normalizedKey == "productcode" || normalizedKey == "fundcode" {
                 summary = "请求.\(shortFieldName(leaf.path)): \(fundCode(from: value) ?? abbreviated(value))"
             } else if let date = normalizedDate(from: value),
@@ -559,20 +555,10 @@ final class JDFinanceNetworkProbe: @unchecked Sendable {
             "fundNo",
             "productCode",
             "productcode",
-            "jjdm",
-            "code"
+            "jjdm"
         ]
         for key in explicitCodeKeys {
             if let code = fundCode(from: stringValue(dictionary[key]) ?? "") {
-                return code
-            }
-        }
-
-        let productIDKeys = ["productId", "productID", "skuId", "skuID", "sku"]
-        for key in productIDKeys {
-            if let rawValue = stringValue(dictionary[key]),
-               let code = JDFinanceFundCodeMapper.inferCode(from: rawValue)
-            {
                 return code
             }
         }

@@ -29,7 +29,9 @@ final class MarketIndexStore {
         let now = nowProvider()
         if !force,
            let lastRefreshAt,
-           now.timeIntervalSince(lastRefreshAt) < minimumRefreshInterval {
+           now.timeIntervalSince(lastRefreshAt) < minimumRefreshInterval,
+           !quotes.isEmpty,
+           marketBreadth != nil {
             return
         }
 

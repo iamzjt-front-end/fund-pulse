@@ -346,6 +346,18 @@ struct JDFinanceHoldingsSyncView: View {
                             }
                         }
 
+                        if !preview.unresolvedHoldings.isEmpty {
+                            previewSection(
+                                title: "无法自动识别",
+                                count: preview.unresolvedHoldings.count,
+                                tone: PanelDesign.warningAccent
+                            ) {
+                                ForEach(preview.unresolvedHoldings) { holding in
+                                    unresolvedHoldingCard(holding)
+                                }
+                            }
+                        }
+
                         if !preview.pendingNotices.isEmpty {
                             previewSection(
                                 title: "待确认/交易中",
@@ -396,6 +408,7 @@ struct JDFinanceHoldingsSyncView: View {
                 countPill("差异", preview.changedHoldings.count, tone: .orange)
                 countPill("覆盖", preview.reconciliationNotices.count, tone: PanelDesign.accent)
                 countPill("清仓", preview.missingLocalHoldings.count, tone: .green)
+                countPill("待识别", preview.unresolvedHoldings.count, tone: PanelDesign.warningAccent)
                 countPill("待确认", preview.pendingNotices.count, tone: PanelDesign.warningAccent)
             }
 
@@ -459,8 +472,8 @@ struct JDFinanceHoldingsSyncView: View {
                         tone: PanelDesign.accent
                     )
                 }
-            } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty {
-                Label("清仓和交易中记录仅作为提示，不会自动写入本地。", systemImage: "info.circle")
+            } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty || !preview.unresolvedHoldings.isEmpty {
+                Label("清仓、待识别和交易中记录仅作为提示，不会自动写入本地。", systemImage: "info.circle")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -514,7 +527,8 @@ struct JDFinanceHoldingsSyncView: View {
             ("无新增", preview.newHoldings.isEmpty),
             ("无金额差异", preview.changedHoldings.isEmpty),
             ("无待覆盖", preview.reconciliationNotices.isEmpty),
-            ("无清仓提示", preview.missingLocalHoldings.isEmpty)
+            ("无清仓提示", preview.missingLocalHoldings.isEmpty),
+            ("无识别问题", preview.unresolvedHoldings.isEmpty)
         ].filter(\.1).map(\.0)
 
         if !quietItems.isEmpty {
@@ -709,6 +723,20 @@ struct JDFinanceHoldingsSyncView: View {
         comparisonCardHeader(code: holding.code, name: holding.name, badge: "本地有", tone: .green) {
             metricPair("京东金额", "--", tone: .secondary)
             metricPair("本地金额", moneyOrDash(holding.localAmount), tone: .primary)
+        }
+    }
+
+    private func unresolvedHoldingCard(_ holding: JDFinanceUnresolvedHolding) -> some View {
+        comparisonCardHeader(code: holding.skuID, name: holding.name, badge: "待识别", tone: PanelDesign.warningAccent) {
+            HStack(spacing: 8) {
+                metricPair("京东金额", MoneyFormatter.plainMoney(holding.amount), tone: .primary)
+                metricPair("持有收益", signedMoneyOrDash(holding.holdingIncome), tone: toneColor(holding.holdingIncome))
+            }
+
+            Text(holding.message)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

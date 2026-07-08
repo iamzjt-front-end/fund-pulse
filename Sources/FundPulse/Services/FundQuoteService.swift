@@ -463,6 +463,7 @@ struct FundQuoteService {
 
     private static func fundCodeSearchKeys(for name: String) -> [String] {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tradeName = fundSearchNameWithoutTradePrefix(trimmed)
         var keys: [String] = []
         func append(_ value: String) {
             let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -471,11 +472,21 @@ struct FundQuoteService {
         }
 
         append(trimmed)
-        append(trimmed.replacingOccurrences(of: "ETF", with: ""))
-        append(trimmed.replacingOccurrences(of: "交易型开放式指数证券投资基金", with: ""))
-        append(trimmed.replacingOccurrences(of: "板", with: ""))
-        append(trimmed.replacingOccurrences(of: "板", with: "").replacingOccurrences(of: "ETF", with: ""))
+        append(tradeName)
+        for value in [trimmed, tradeName] {
+            append(value.replacingOccurrences(of: "ETF", with: ""))
+            append(value.replacingOccurrences(of: "交易型开放式指数证券投资基金", with: ""))
+            append(value.replacingOccurrences(of: "板", with: ""))
+            append(value.replacingOccurrences(of: "板", with: "").replacingOccurrences(of: "ETF", with: ""))
+        }
         return keys
+    }
+
+    private static func fundSearchNameWithoutTradePrefix(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "转换-", with: "")
+            .replacingOccurrences(of: "转入-", with: "")
+            .replacingOccurrences(of: "转出-", with: "")
     }
 
     private static func matchedFundSearchItem(in items: [FundSearchItem], queryNames: [String]) -> FundSearchItem? {

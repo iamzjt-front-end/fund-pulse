@@ -359,8 +359,10 @@ struct JDFinanceHoldingsService: Sendable {
         if let product {
             payloadObject["busProductId"] = product.skuID
             payloadObject["productId"] = product.skuID
-            payloadObject["productCode"] = product.code
-            payloadObject["fundCode"] = product.code
+            if product.isCodeResolved {
+                payloadObject["productCode"] = product.code
+                payloadObject["fundCode"] = product.code
+            }
         }
 
         let payloadData = try JSONSerialization.data(withJSONObject: payloadObject)
@@ -375,11 +377,13 @@ struct JDFinanceHoldingsService: Sendable {
             return "https://roma.jd.com/wealth/tradeorder/list?pageShowType=1&businessCode=FUND&pageShowTitle=%E5%9F%BA%E9%87%91%E4%BA%A4%E6%98%93"
         }
 
-        let baseParam: [String: Any] = [
-            "productId": product.skuID,
-            "productCode": product.code,
-            "fundCode": product.code
+        var baseParam: [String: Any] = [
+            "productId": product.skuID
         ]
+        if product.isCodeResolved {
+            baseParam["productCode"] = product.code
+            baseParam["fundCode"] = product.code
+        }
         let baseParamData = (try? JSONSerialization.data(withJSONObject: baseParam)) ?? Data()
         let baseParamText = String(data: baseParamData, encoding: .utf8) ?? "{}"
 
@@ -525,7 +529,7 @@ struct JDFinanceHoldingsService: Sendable {
     }
 
     private static func matchesIdentity(_ record: JDFinanceTradeOrderRecord, product: JDFinanceHoldingProduct) -> Bool {
-        if let code = record.code, code == product.code {
+        if product.isCodeResolved, let code = record.code, code == product.code {
             return true
         }
         guard let productName = record.productName else {
@@ -824,6 +828,9 @@ struct JDFinanceHoldingsService: Sendable {
     private static func canonicalFundName(_ value: String) -> String {
         normalizedFundName(value)
             .replacingOccurrences(of: "中证", with: "")
+            .replacingOccurrences(of: "转换-", with: "")
+            .replacingOccurrences(of: "转入-", with: "")
+            .replacingOccurrences(of: "转出-", with: "")
     }
 
     private static let requestPayload = """
@@ -888,16 +895,17 @@ enum JDFinanceHoldingsParser {
 
     private static func parseProduct(_ dictionary: [String: Any]) -> JDFinanceHoldingProduct? {
         guard let skuID = stringValue(dictionary["skuId"] ?? dictionary["skuID"] ?? dictionary["sku"]),
-              let code = explicitFundCode(in: dictionary) ?? JDFinanceFundCodeMapper.inferCode(from: skuID),
               let name = stringValue(dictionary["productName"] ?? dictionary["name"]),
               let totalAmount = numericValue(dictionary["totalAmount"])
         else {
             return nil
         }
+        let explicitCode = explicitFundCode(in: dictionary)
 
         return JDFinanceHoldingProduct(
             skuID: skuID,
-            code: code,
+            code: explicitCode ?? "",
+            codeResolution: explicitCode == nil ? .unresolved : .explicit,
             name: name,
             totalAmount: totalAmount,
             yesterdayIncome: numericValue(dictionary["yesterdayIncome"]),
@@ -962,12 +970,9 @@ enum JDFinanceHoldingsParser {
             "fundcd",
             "fundNo",
             "fundno",
-            "fundId",
-            "fundid",
             "productCode",
             "productcode",
-            "jjdm",
-            "code"
+            "jjdm"
         ]
 
         for key in explicitCodeKeys {
@@ -1657,20 +1662,10 @@ enum JDFinanceTradeOrderParser {
             "fundNo",
             "productCode",
             "productcode",
-            "jjdm",
-            "code"
+            "jjdm"
         ]
         for key in explicitCodeKeys {
             if let code = normalizedFundCode(from: dictionary[key]) {
-                return code
-            }
-        }
-
-        let productIDKeys = ["productId", "productID", "skuId", "skuID", "sku"]
-        for key in productIDKeys {
-            if let rawValue = stringValue(dictionary[key]),
-               let code = JDFinanceFundCodeMapper.inferCode(from: rawValue)
-            {
                 return code
             }
         }

@@ -18,8 +18,11 @@ enum PortfolioCalculator {
         let funds = snapshot.funds.map { fund in
             var next = fund
             let quote = quotes[fund.code]
-            var lots = effectiveLots(for: fund)
+            let shouldPreserveSyncedManualAmount = preservesSyncedManualAmount(for: fund)
+            let storedLots = effectiveLots(for: fund)
+            var lots = shouldPreserveSyncedManualAmount ? [] : storedLots
             if lots.isEmpty,
+               !shouldPreserveSyncedManualAmount,
                let amount = manualHoldingAmount(for: fund),
                let referenceNetValue = quoteNetValue(quote),
                let backfilledLot = amountPositionLot(
@@ -34,9 +37,15 @@ enum PortfolioCalculator {
                 next.pendingAmount = nil
                 next.pendingProfit = nil
             }
+            let displayLots = shouldPreserveSyncedManualAmount ? storedLots : lots
             let totalShares = lots.reduce(0) { $0 + $1.shares }
             let lotCostTotal = lots.reduce(0) { $0 + lotPrincipal($1) }
-            let manualAmount = lots.isEmpty ? manualHoldingAmount(for: fund) : nil
+            let displayShares = displayLots.reduce(0) { $0 + $1.shares }
+            let displayCostTotal = displayLots.reduce(0) { $0 + lotPrincipal($1) }
+            let displayCost = displayShares > 0
+                ? displayCostTotal / displayShares
+                : fund.migratedCost
+            let manualAmount = shouldPreserveSyncedManualAmount ? manualHoldingAmount(for: fund) : (lots.isEmpty ? manualHoldingAmount(for: fund) : nil)
             let manualProfit = manualAmount == nil ? 0 : (fund.pendingProfit ?? 0)
             let manualPrincipal = manualAmount.map { max($0 - manualProfit, 0) } ?? 0
             let fundCostTotal = lotCostTotal + manualPrincipal
@@ -46,14 +55,17 @@ enum PortfolioCalculator {
             let netValue = quote?.netValue ?? cost
             let dailyState = quote.map { dailyQuoteState(for: $0, now: now) } ?? .inactive
             let dailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, now: now)
+            let manualDailyIncomeAmount = shouldPreserveSyncedManualAmount ? manualAmount : nil
             let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
             let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
             let holdingIncome = calculatedHoldingIncome(lots: lots, quote: quote, netValue: holdingNetValue) + manualProfit
             let todayIncome = quote.map {
                 calculatedTodayIncome(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
+                    + calculatedManualTodayIncome(amount: manualDailyIncomeAmount, quote: $0, dailyState: dailyState)
             } ?? 0
             let todayIncomeBase = quote.map {
                 calculatedTodayIncomeBase(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
+                    + calculatedManualTodayIncomeBase(amount: manualDailyIncomeAmount, dailyState: dailyState)
             } ?? 0
             let confirmedHoldingRate = fundCostTotal > 0 ? confirmedHoldingIncome / fundCostTotal * 100 : nil
             let holdingRate = fundCostTotal > 0 ? holdingIncome / fundCostTotal * 100 : nil
@@ -80,7 +92,9 @@ enum PortfolioCalculator {
             if let quote {
                 next.name = quote.name.isEmpty ? fund.name : quote.name
                 next.dateText = shortDateText(quote: quote, fallback: fund.dateText, now: now)
-                next.todayRate = dailyState.isActive && dailyIncomeShares > 0 ? quote.growthRate : 0
+                next.todayRate = dailyState.isActive && (dailyIncomeShares > 0 || (manualDailyIncomeAmount ?? 0) > 0)
+                    ? quote.growthRate
+                    : 0
                 next.isUpdated = isQuoteUpdated(quote, now: now)
             }
             next.status = status
@@ -91,8 +105,8 @@ enum PortfolioCalculator {
             next.confirmedHoldingIncome = confirmedHoldingIncome
             next.confirmedHoldingRate = confirmedHoldingRate
             next.currentAmount = fundCurrentTotal
-            next.migratedShares = totalShares
-            next.migratedCost = totalShares > 0 ? cost : fund.migratedCost
+            next.migratedShares = displayShares > 0 ? displayShares : totalShares
+            next.migratedCost = displayShares > 0 ? displayCost : (totalShares > 0 ? cost : fund.migratedCost)
             next.migratedPrincipal = fundCostTotal
             return next
         }
@@ -130,6 +144,17 @@ enum PortfolioCalculator {
             return nil
         }
         return amount
+    }
+
+    private static func preservesSyncedManualAmount(for fund: FundPosition) -> Bool {
+        guard fund.positionMode == .amount,
+              let pendingAmount = fund.pendingAmount,
+              pendingAmount > 0,
+              fund.memo?.contains("京东金融同步") == true
+        else {
+            return false
+        }
+        return true
     }
 
     private static func effectiveLots(for fund: FundPosition) -> [FundPositionLot] {
@@ -258,6 +283,33 @@ enum PortfolioCalculator {
         case .inactive:
             return 0
         }
+    }
+
+    private static func calculatedManualTodayIncome(
+        amount: Double?,
+        quote: FundQuote,
+        dailyState: DailyQuoteState
+    ) -> Double {
+        guard dailyState.isActive,
+              let amount,
+              amount > 0
+        else {
+            return 0
+        }
+        return amount * quote.growthRate / 100
+    }
+
+    private static func calculatedManualTodayIncomeBase(
+        amount: Double?,
+        dailyState: DailyQuoteState
+    ) -> Double {
+        guard dailyState.isActive,
+              let amount,
+              amount > 0
+        else {
+            return 0
+        }
+        return amount
     }
 
     private static func calculatedConfirmedHoldingIncome(

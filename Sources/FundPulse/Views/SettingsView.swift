@@ -52,6 +52,7 @@ struct SettingsView: View {
     let onOpenJDFinanceSync: (() -> Void)?
     let onClose: (() -> Void)?
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
     @State private var selectedMarketClosedAutoRefreshInterval: AutoRefreshInterval
     @State private var mainPanelHeightText: String
@@ -155,28 +156,8 @@ struct SettingsView: View {
                         }
                     }
 
-                    PanelSection(title: "涨跌/净值提醒") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("涨跌幅提醒、净值提醒在单只基金的基金设置里配置；同一只基金同一提醒每天最多通知一次。")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("当日去重")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text("达到条件后立即提醒；当天已经提醒过的同一基金、同一阈值，不会再重复弹出。")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(9)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .overlay(PanelDesign.border(cornerRadius: 9))
-                        }
+                    PanelSection(title: "涨跌幅提醒") {
+                        dailyGrowthReminderSection
                     }
 
                     PanelSection(title: "通知测试") {
@@ -484,6 +465,138 @@ struct SettingsView: View {
                 onSettingsChanged?()
             }
         )
+    }
+
+    private var dailyGrowthReminderSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("开启涨跌幅提醒")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("按统一档位监控全部基金，涨幅和跌幅可分别选择。")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                FocuslessSwitch(isOn: dailyGrowthReminderEnabledBinding)
+                    .frame(width: 54, height: 30)
+            }
+
+            growthTierPicker(
+                title: "涨幅档位",
+                systemImage: "arrow.up.right",
+                tiers: settingsStore.settings.dailyGrowthRiseTiers,
+                isRise: true
+            )
+            growthTierPicker(
+                title: "跌幅档位",
+                systemImage: "arrow.down.right",
+                tiers: settingsStore.settings.dailyGrowthFallTiers,
+                isRise: false
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("当日去重")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("达到条件后立即提醒；当天已经提醒过的同一基金、同一方向、同一档位，不会再重复弹出。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 9))
+        }
+    }
+
+    private var dailyGrowthReminderEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { settingsStore.settings.dailyGrowthReminderEnabled },
+            set: { isEnabled in
+                settingsStore.setDailyGrowthReminderEnabled(isEnabled)
+                onSettingsChanged?()
+            }
+        )
+    }
+
+    private func growthTierPicker(
+        title: String,
+        systemImage: String,
+        tiers: [FundGrowthReminderTier],
+        isRise: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .bold))
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer()
+            }
+            .foregroundStyle(isRise ? Color.red : Color.green)
+
+            HStack(spacing: 5) {
+                ForEach(FundGrowthReminderTier.allCases) { tier in
+                    growthTierButton(tier, isSelected: tiers.contains(tier), isRise: isRise)
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .opacity(settingsStore.settings.dailyGrowthReminderEnabled ? 1 : 0.58)
+    }
+
+    private func growthTierButton(
+        _ tier: FundGrowthReminderTier,
+        isSelected: Bool,
+        isRise: Bool
+    ) -> some View {
+        let accent = isRise ? Color.red : Color.green
+        return Button {
+            toggleDailyGrowthTier(tier, isRise: isRise)
+        } label: {
+            Text(tier.title)
+                .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
+                .monospacedDigit()
+                .foregroundStyle(isSelected ? accent : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .background(
+                    isSelected ? accent.opacity(colorScheme == .dark ? 0.18 : 0.10) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(isSelected ? accent.opacity(0.34) : Color.clear, lineWidth: 0.8)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .disabled(!settingsStore.settings.dailyGrowthReminderEnabled)
+    }
+
+    private func toggleDailyGrowthTier(_ tier: FundGrowthReminderTier, isRise: Bool) {
+        let current = isRise
+            ? settingsStore.settings.dailyGrowthRiseTiers
+            : settingsStore.settings.dailyGrowthFallTiers
+        let updated: [FundGrowthReminderTier]
+        if current.contains(tier) {
+            updated = current.filter { $0 != tier }
+        } else {
+            updated = current + [tier]
+        }
+
+        if isRise {
+            settingsStore.setDailyGrowthRiseTiers(updated)
+        } else {
+            settingsStore.setDailyGrowthFallTiers(updated)
+        }
+        onSettingsChanged?()
     }
 
     private var betaFeaturesEnabledBinding: Binding<Bool> {

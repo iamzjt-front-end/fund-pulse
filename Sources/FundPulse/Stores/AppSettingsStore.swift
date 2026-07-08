@@ -74,6 +74,21 @@ final class AppSettingsStore {
         try? save()
     }
 
+    func setDailyGrowthReminderEnabled(_ isEnabled: Bool) {
+        settings.dailyGrowthReminderEnabled = isEnabled
+        try? save()
+    }
+
+    func setDailyGrowthRiseTiers(_ tiers: [FundGrowthReminderTier]) {
+        settings.dailyGrowthRiseTiers = AppSettings.normalizedGrowthReminderTiers(tiers)
+        try? save()
+    }
+
+    func setDailyGrowthFallTiers(_ tiers: [FundGrowthReminderTier]) {
+        settings.dailyGrowthFallTiers = AppSettings.normalizedGrowthReminderTiers(tiers)
+        try? save()
+    }
+
     func setAppearanceMode(_ mode: AppAppearanceMode) {
         settings.appearanceMode = mode
         try? save()

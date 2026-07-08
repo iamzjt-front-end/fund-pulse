@@ -3,22 +3,40 @@ import Foundation
 struct FundThresholdReminder: Equatable {
     enum Kind: String, Equatable {
         case dailyGrowth = "daily-growth"
-        case netValue = "net-value"
+    }
+
+    enum Direction: String, Equatable {
+        case rise
+        case fall
+
+        var title: String {
+            switch self {
+            case .rise:
+                "涨幅"
+            case .fall:
+                "跌幅"
+            }
+        }
     }
 
     let code: String
     let name: String
     let kind: Kind
+    let direction: Direction
     let threshold: Double
     let currentValue: Double
     let dateKey: String
 
     var dedupeKey: String {
-        "\(kind.rawValue).\(displayCode).\(thresholdKey)"
+        "\(kind.rawValue).\(dateKey).\(displayCode).\(direction.rawValue).\(thresholdKey)"
+    }
+
+    var sameDayDirectionDedupePrefix: String {
+        "\(kind.rawValue).\(dateKey).\(displayCode).\(direction.rawValue)."
     }
 
     var notificationIdentifier: String {
-        "fund-pulse.threshold.\(kind.rawValue).\(dateKey).\(displayCode).\(thresholdKey)"
+        "fund-pulse.threshold.\(kind.rawValue).\(dateKey).\(displayCode).\(direction.rawValue).\(thresholdKey)"
     }
 
     var title: String {
@@ -28,10 +46,7 @@ struct FundThresholdReminder: Equatable {
     var body: String {
         switch kind {
         case .dailyGrowth:
-            let direction = currentValue >= 0 ? "涨幅" : "跌幅"
-            return "涨跌幅提醒：当前\(direction) \(MoneyFormatter.percent(currentValue, signed: true))。"
-        case .netValue:
-            return "净值提醒：当前净值 \(Self.numberText(currentValue, places: 4))，目标 \(Self.numberText(threshold, places: 4))。"
+            return "涨跌幅提醒：当前\(direction.title) \(MoneyFormatter.percent(currentValue, signed: true))，已达 \(MoneyFormatter.percent(threshold, signed: false))档。"
         }
     }
 
@@ -44,7 +59,7 @@ struct FundThresholdReminder: Equatable {
     }
 
     private var thresholdKey: String {
-        Self.numberText(threshold, places: kind == .netValue ? 4 : 2)
+        Self.numberText(threshold, places: 2)
             .replacingOccurrences(of: ".", with: "_")
     }
 
@@ -54,13 +69,18 @@ struct FundThresholdReminder: Equatable {
 }
 
 enum FundThresholdReminderEvaluator {
-    static func reminders(in snapshot: PortfolioSnapshot, date: Date = .now) -> [FundThresholdReminder] {
+    static func reminders(
+        in snapshot: PortfolioSnapshot,
+        settings: AppSettings,
+        date: Date = .now
+    ) -> [FundThresholdReminder] {
         let dateKey = DateOnlyFormatter.string(from: date)
-        return snapshot.funds.flatMap { reminders(for: $0, dateKey: dateKey) }
+        return snapshot.funds.flatMap { reminders(for: $0, settings: settings, dateKey: dateKey) }
     }
 
     static func eligibleReminders(
         in snapshot: PortfolioSnapshot,
+        settings: AppSettings,
         now: Date = .now,
         lastSentAt: [String: Date]
     ) -> [FundThresholdReminder] {
@@ -68,33 +88,36 @@ enum FundThresholdReminderEvaluator {
             return []
         }
 
-        return reminders(in: snapshot, date: now).filter { reminder in
-            guard let lastSentDate = lastSentAt[reminder.dedupeKey] else {
-                return true
+        return reminders(in: snapshot, settings: settings, date: now).filter { reminder in
+            let sentSameDirectionThresholds = lastSentAt.keys.compactMap {
+                reminder.sentThresholdFromSameDayDirectionKey($0)
             }
-            return DateOnlyFormatter.string(from: lastSentDate) < reminder.dateKey
+            return !sentSameDirectionThresholds.contains { $0 >= reminder.threshold }
         }
     }
 
-    static func reminders(for fund: FundPosition, dateKey: String) -> [FundThresholdReminder] {
-        var reminders: [FundThresholdReminder] = []
-
-        if let dailyGrowthReminder = dailyGrowthReminder(for: fund, dateKey: dateKey) {
-            reminders.append(dailyGrowthReminder)
+    static func reminders(for fund: FundPosition, settings: AppSettings, dateKey: String) -> [FundThresholdReminder] {
+        guard let dailyGrowthReminder = dailyGrowthReminder(for: fund, settings: settings, dateKey: dateKey) else {
+            return []
         }
-
-        if let netValueReminder = netValueReminder(for: fund, dateKey: dateKey) {
-            reminders.append(netValueReminder)
-        }
-
-        return reminders
+        return [dailyGrowthReminder]
     }
 
-    private static func dailyGrowthReminder(for fund: FundPosition, dateKey: String) -> FundThresholdReminder? {
-        guard let threshold = fund.zdfRange,
-              threshold != 0,
-              abs(fund.todayRate) >= abs(threshold)
+    private static func dailyGrowthReminder(
+        for fund: FundPosition,
+        settings: AppSettings,
+        dateKey: String
+    ) -> FundThresholdReminder? {
+        guard settings.dailyGrowthReminderEnabled,
+              fund.todayRate != 0
         else {
+            return nil
+        }
+
+        let direction: FundThresholdReminder.Direction = fund.todayRate > 0 ? .rise : .fall
+        let tiers = direction == .rise ? settings.dailyGrowthRiseTiers : settings.dailyGrowthFallTiers
+        let absoluteRate = abs(fund.todayRate)
+        guard let threshold = tiers.map(\.value).filter({ absoluteRate >= $0 }).max() else {
             return nil
         }
 
@@ -102,37 +125,21 @@ enum FundThresholdReminderEvaluator {
             code: fund.code,
             name: fund.name,
             kind: .dailyGrowth,
+            direction: direction,
             threshold: threshold,
             currentValue: fund.todayRate,
             dateKey: dateKey
         )
     }
+}
 
-    private static func netValueReminder(for fund: FundPosition, dateKey: String) -> FundThresholdReminder? {
-        guard let targetNetValue = fund.jzNotice,
-              targetNetValue > 0,
-              let currentNetValue = currentNetValue(for: fund),
-              currentNetValue >= targetNetValue
-        else {
+private extension FundThresholdReminder {
+    func sentThresholdFromSameDayDirectionKey(_ key: String) -> Double? {
+        guard key.hasPrefix(sameDayDirectionDedupePrefix) else {
             return nil
         }
-
-        return FundThresholdReminder(
-            code: fund.code,
-            name: fund.name,
-            kind: .netValue,
-            threshold: targetNetValue,
-            currentValue: currentNetValue,
-            dateKey: dateKey
-        )
-    }
-
-    private static func currentNetValue(for fund: FundPosition) -> Double? {
-        let lotShares = fund.lots?.reduce(0) { $0 + $1.shares } ?? 0
-        let shares = fund.migratedShares ?? lotShares
-        guard let currentAmount = fund.currentAmount, shares > 0 else {
-            return nil
-        }
-        return currentAmount / shares
+        let rawThreshold = key.dropFirst(sameDayDirectionDedupePrefix.count)
+            .replacingOccurrences(of: "_", with: ".")
+        return Double(rawThreshold)
     }
 }

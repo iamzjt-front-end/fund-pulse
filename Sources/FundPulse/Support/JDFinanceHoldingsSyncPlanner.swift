@@ -10,6 +10,8 @@ enum JDFinanceHoldingsSyncPlanner {
         let remoteProducts = remoteSnapshot.products.map {
             resolvedProduct($0, localFundsByCode: localFundsByCode, localFundsByName: localFundsByName)
         }
+        let resolvedProducts = remoteProducts.filter(\.isCodeResolved)
+        let unresolvedProducts = remoteProducts.filter { !$0.isCodeResolved }
         let resolvedRemoteSnapshot = JDFinanceHoldingsSnapshot(
             totalAssets: remoteSnapshot.totalAssets,
             yesterdayIncome: remoteSnapshot.yesterdayIncome,
@@ -18,16 +20,16 @@ enum JDFinanceHoldingsSyncPlanner {
             totalIncome: remoteSnapshot.totalIncome,
             products: remoteProducts
         )
-        let remoteCodes = Set(remoteProducts.map(\.code))
+        let remoteCodes = Set(resolvedProducts.map(\.code))
         let localPendingTradeCodes = Set(localSnapshot.pendingTrades?.map(\.code) ?? [])
         let localPendingConversionCodes = Set((localSnapshot.pendingConversions ?? []).flatMap { [$0.fromCode, $0.toCode] })
         let localTradeRecords = localSnapshot.tradeRecords ?? []
 
-        let newHoldings = remoteProducts
+        let newHoldings = resolvedProducts
             .filter { localFundsByCode[$0.code] == nil && !hasPendingTransactionTip($0) }
             .map { JDFinanceHoldingImportCandidate(product: $0) }
 
-        let changedHoldings = remoteProducts.compactMap { product -> JDFinanceHoldingDifference? in
+        let changedHoldings = resolvedProducts.compactMap { product -> JDFinanceHoldingDifference? in
             guard let localFund = localFundsByCode[product.code],
                   localFund.status == .holding,
                   let localAmount = currentAmount(for: localFund)
@@ -59,6 +61,7 @@ enum JDFinanceHoldingsSyncPlanner {
         let missingLocalHoldings = localSnapshot.funds.compactMap { fund -> JDFinanceMissingLocalHolding? in
             guard fund.status == .holding,
                   !remoteCodes.contains(fund.code),
+                  !unresolvedProducts.contains(where: { namesLikelyMatch($0.name, fund.name) }),
                   let localAmount = currentAmount(for: fund),
                   localAmount > 0.01
             else {
@@ -71,7 +74,17 @@ enum JDFinanceHoldingsSyncPlanner {
             )
         }
 
-        let pendingNotices = remoteProducts.compactMap { product -> JDFinanceHoldingPendingNotice? in
+        let unresolvedHoldings = unresolvedProducts.map { product in
+            JDFinanceUnresolvedHolding(
+                skuID: product.skuID,
+                name: product.name,
+                amount: product.totalAmount,
+                holdingIncome: product.holdIncome,
+                message: "京东未返回明确基金代码，且未能通过基金名称精确匹配；已跳过自动同步。"
+            )
+        }
+
+        let pendingNotices = resolvedProducts.compactMap { product -> JDFinanceHoldingPendingNotice? in
             let transactionTipText = product.transactionTipText?.trimmingCharacters(in: .whitespacesAndNewlines)
             let localFund = localFundsByCode[product.code]
             let localConfirmedCandidate = localConfirmedCandidate(for: product, records: localTradeRecords)
@@ -123,7 +136,7 @@ enum JDFinanceHoldingsSyncPlanner {
             )
         }
         let reconciliationNotices = reconciliationNotices(
-            remoteProducts: remoteProducts,
+            remoteProducts: resolvedProducts,
             localTradeRecords: localTradeRecords
         )
 
@@ -132,6 +145,7 @@ enum JDFinanceHoldingsSyncPlanner {
             newHoldings: newHoldings,
             changedHoldings: changedHoldings,
             missingLocalHoldings: missingLocalHoldings,
+            unresolvedHoldings: unresolvedHoldings,
             pendingNotices: pendingNotices,
             reconciliationNotices: reconciliationNotices
         )
@@ -145,6 +159,9 @@ enum JDFinanceHoldingsSyncPlanner {
         if let orderCode = commonMatchedTradeOrderCode(for: product) {
             var resolved = product
             resolved.code = orderCode
+            if !product.isCodeResolved {
+                resolved.codeResolution = .nameMatched
+            }
             return resolved
         }
 
@@ -162,6 +179,7 @@ enum JDFinanceHoldingsSyncPlanner {
 
         var resolved = product
         resolved.code = localFund.code
+        resolved.codeResolution = .nameMatched
         return resolved
     }
 

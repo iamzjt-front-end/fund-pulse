@@ -261,10 +261,12 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(FundCodeFormatter.display(""), "--")
     }
 
-    func testJDFinanceFundCodeMapperInfersFundCodeFromSkuID() {
-        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "1024424"), "024424")
-        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "1008998"), "008998")
-        XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "113687"), "013687")
+    func testJDFinanceFundCodeMapperDoesNotInferJDProductIDs() {
+        XCTAssertNil(JDFinanceFundCodeMapper.inferCode(from: "1024424"))
+        XCTAssertNil(JDFinanceFundCodeMapper.inferCode(from: "1008998"))
+        XCTAssertNil(JDFinanceFundCodeMapper.inferCode(from: "113687"))
+        XCTAssertNil(JDFinanceFundCodeMapper.inferCode(from: "1013284"))
+        XCTAssertNil(JDFinanceFundCodeMapper.inferCode(from: "109922"))
         XCTAssertEqual(JDFinanceFundCodeMapper.inferCode(from: "024418"), "024418")
     }
 
@@ -279,6 +281,7 @@ final class FundPulseCoreTests: XCTestCase {
         let first = try XCTUnwrap(snapshot.products.first)
         XCTAssertEqual(first.skuID, "1024424")
         XCTAssertEqual(first.code, "024424")
+        XCTAssertEqual(first.codeResolution, .explicit)
         XCTAssertEqual(first.name, "永赢先进制造智选混合发起A")
         XCTAssertEqual(first.totalAmount, 19_907.79, accuracy: 0.0001)
         XCTAssertEqual(first.yesterdayIncome ?? 0, -688.41, accuracy: 0.0001)
@@ -299,6 +302,21 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(snapshot.products.first?.skuID, "113687")
         XCTAssertEqual(snapshot.products.first?.code, "011833")
+    }
+
+    func testJDFinanceHoldingsParserMarksProductWithoutExplicitCodeAsUnresolved() throws {
+        let response = """
+        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{},"fundData":{"fundList":[{"productList":[{"skuId":"113387","productName":"华商均衡成长混合C","totalAmount":"14019.17","holdIncome":"-1980.83"}]}]}}}}
+        """
+
+        let snapshot = try JDFinanceHoldingsParser.parse(data: Data(response.utf8))
+        let product = try XCTUnwrap(snapshot.products.first)
+
+        XCTAssertEqual(product.skuID, "113387")
+        XCTAssertEqual(product.code, "")
+        XCTAssertEqual(product.codeResolution, .unresolved)
+        XCTAssertFalse(product.isCodeResolved)
+        XCTAssertEqual(product.name, "华商均衡成长混合C")
     }
 
     func testJDFinanceHoldingsParserReadsTransactionTipObjectAndDetailRequest() throws {
@@ -409,7 +427,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertNil(detail.tradeTimeType)
     }
 
-    func testJDFinanceTradeOrderParserReadsBizTimeAndSkuDerivedCode() throws {
+    func testJDFinanceTradeOrderParserDoesNotTreatProductIDAsFundCode() throws {
         let response = """
         {
           "resultCode": 0,
@@ -435,7 +453,7 @@ final class FundPulseCoreTests: XCTestCase {
         let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
         let record = try XCTUnwrap(records.first)
 
-        XCTAssertEqual(record.code, "024424")
+        XCTAssertNil(record.code)
         XCTAssertEqual(record.productName, "东方阿尔法科技优选混合发起C")
         XCTAssertEqual(record.action, .buy)
         XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
@@ -469,7 +487,7 @@ final class FundPulseCoreTests: XCTestCase {
         let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
         let record = try XCTUnwrap(records.first)
 
-        XCTAssertEqual(record.code, "024424")
+        XCTAssertNil(record.code)
         XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
         XCTAssertEqual(record.tradeDate, "2026-07-03")
         XCTAssertEqual(record.tradeTimeType, .before15)
@@ -489,7 +507,7 @@ final class FundPulseCoreTests: XCTestCase {
         let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
         let record = try XCTUnwrap(records.first)
 
-        XCTAssertEqual(record.code, "024424")
+        XCTAssertNil(record.code)
         XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
         XCTAssertEqual(record.tradeDate, "2026-07-03")
         XCTAssertEqual(record.tradeTimeType, .before15)
@@ -529,6 +547,30 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(object["productId"] as? String, "1025500")
         XCTAssertEqual(object["productCode"] as? String, "025500")
         XCTAssertEqual(object["fundCode"] as? String, "025500")
+    }
+
+    func testJDFinanceTradeOrderProductScopedPayloadOmitsUnresolvedFundCode() throws {
+        let product = JDFinanceHoldingProduct(
+            skuID: "113387",
+            code: "",
+            codeResolution: .unresolved,
+            name: "华商均衡成长混合C",
+            totalAmount: 14_019.17
+        )
+
+        let payload = try JDFinanceHoldingsService.tradeOrderRequestPayload(
+            page: 1,
+            now: try chinaDate("2026-07-08 14:38"),
+            product: product
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+        )
+
+        XCTAssertEqual(object["busProductId"] as? String, "113387")
+        XCTAssertEqual(object["productId"] as? String, "113387")
+        XCTAssertNil(object["productCode"])
+        XCTAssertNil(object["fundCode"])
     }
 
     func testJDFinanceTradeOrderParserReadsGenericTradeRows() throws {
@@ -573,6 +615,7 @@ final class FundPulseCoreTests: XCTestCase {
               "tradeOrderVoList": [
                 {
                   "productId": "109922",
+                  "productCode": "009922",
                   "productName": "转换-国泰中证全指通信设备ETF联接C",
                   "sellProductName": "华夏上证科创板半导体材料设备主题ETF发起式联接C",
                   "sellProductId": "113284",
@@ -612,6 +655,7 @@ final class FundPulseCoreTests: XCTestCase {
               "tradeOrderVoList": [
                 {
                   "productId": "1008998",
+                  "productCode": "008998",
                   "productName": "转出-同泰竞争优势混合C",
                   "tradeTypeName": "卖出",
                   "tradeTypeCode": "TRANSFER_OUT",
@@ -1497,6 +1541,7 @@ final class FundPulseCoreTests: XCTestCase {
                     "bizTime": "2026-07-03 14:35:12",
                     "currentTime": "07-03 14:35:12",
                     "productId": "1025500",
+                    "productCode": "025500",
                     "productName": "东方阿尔法科技智选混合发起C",
                     "allAmount": "1000.00",
                     "statusName": "支付成功",
@@ -1506,6 +1551,7 @@ final class FundPulseCoreTests: XCTestCase {
                   {
                     "bizTime": "2026-07-03 14:42:12",
                     "productId": "1025500",
+                    "productCode": "025500",
                     "productName": "东方阿尔法科技智选混合发起C",
                     "allAmount": "2000.00",
                     "statusName": "支付成功",
@@ -1564,8 +1610,8 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertTrue(joined.contains("请求.businessCode: FUND"))
         XCTAssertTrue(joined.contains("请求.pageNo: 1"))
-        XCTAssertTrue(joined.contains("请求.busProductId: 1025500(025500)"))
-        XCTAssertTrue(joined.contains("请求.productId: 1025500(025500)"))
+        XCTAssertTrue(joined.contains("请求.busProductId: 1025500"))
+        XCTAssertTrue(joined.contains("请求.productId: 1025500"))
         XCTAssertTrue(joined.contains("请求.productCode: 025500"))
         XCTAssertTrue(joined.contains("请求.fundCode: 025500"))
         XCTAssertTrue(joined.contains("请求.orderCreateStartDate: 2016-07-06"))
@@ -1634,6 +1680,36 @@ final class FundPulseCoreTests: XCTestCase {
         let preview = try XCTUnwrap(syncStore.preview)
         XCTAssertEqual(preview.remoteSnapshot.products.count, 2)
         XCTAssertEqual(syncStore.statusMessage, "已生成同步预览")
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreResolvesMissingCodeByExactFundName() async throws {
+        let response = """
+        {"success":true,"resultCode":0,"resultMsg":"success","resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":{"text":"14,019.17"},"holdIncome":{"text":"-1,980.83"}},"fundData":{"fundList":[{"productList":[{"skuId":"113387","productName":"华商均衡成长混合C","totalAmount":{"text":"14,019.17"},"holdIncome":{"text":"-1,980.83"}}]}]}}}}
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: response
+        ])
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: service,
+            codeResolver: JDFinanceFundCodeResolver { name in
+                name == "华商均衡成长混合C" ? "011370" : nil
+            }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        let preview = try XCTUnwrap(syncStore.preview)
+        XCTAssertEqual(preview.remoteSnapshot.products.map(\.code), ["011370"])
+        XCTAssertEqual(preview.remoteSnapshot.products.map(\.codeResolution), [.nameMatched])
+        XCTAssertEqual(preview.newHoldings.map(\.code), ["011370"])
+        XCTAssertTrue(preview.unresolvedHoldings.isEmpty)
     }
 
     @MainActor
@@ -2424,7 +2500,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(preview.pendingNotices.contains { $0.code == "011833" })
     }
 
-    func testJDFinanceSyncPreviewResolvesSkuDerivedCodeByMatchingLocalName() {
+    func testJDFinanceSyncPreviewResolvesUnresolvedCodeByMatchingLocalName() {
         let remoteSnapshot = JDFinanceHoldingsSnapshot(
             totalAssets: 7_632.07,
             yesterdayIncome: nil,
@@ -2434,7 +2510,8 @@ final class FundPulseCoreTests: XCTestCase {
             products: [
                 JDFinanceHoldingProduct(
                     skuID: "113687",
-                    code: "013687",
+                    code: "",
+                    codeResolution: .unresolved,
                     name: "西部利得中证人工智能主题指数增强C",
                     totalAmount: 7_632.07,
                     yesterdayIncome: nil,
@@ -2474,8 +2551,56 @@ final class FundPulseCoreTests: XCTestCase {
         )
 
         XCTAssertEqual(preview.remoteSnapshot.products.map(\.code), ["011833"])
+        XCTAssertEqual(preview.remoteSnapshot.products.map(\.codeResolution), [.nameMatched])
         XCTAssertTrue(preview.newHoldings.isEmpty)
         XCTAssertFalse(preview.missingLocalHoldings.contains { $0.code == "011833" })
+    }
+
+    func testJDFinanceSyncPreviewKeepsUnresolvedHoldingOutOfWritableChanges() {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 14_019.17,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: -1_980.83,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "113387",
+                    code: "",
+                    codeResolution: .unresolved,
+                    name: "华商均衡成长混合C",
+                    totalAmount: 14_019.17,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: -1_980.83,
+                    holdRate: nil,
+                    transactionTip: nil
+                )
+            ]
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertTrue(preview.newHoldings.isEmpty)
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertTrue(preview.pendingNotices.isEmpty)
+        XCTAssertEqual(preview.unresolvedHoldings.map(\.skuID), ["113387"])
+        XCTAssertEqual(preview.unresolvedHoldings.first?.name, "华商均衡成长混合C")
+        XCTAssertFalse(preview.hasActionableChanges)
     }
 
     func testJDFinanceSyncPreviewTreatsLocalPendingFundAsPendingNotice() {
@@ -4161,6 +4286,10 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(settings.operationReminderTimeText, "14:30")
         XCTAssertEqual(settings.thresholdReminderInterval, .thirtyMinutes)
         XCTAssertEqual(settings.thresholdReminderInterval.seconds, 30 * 60)
+        XCTAssertFalse(settings.dailyGrowthReminderEnabled)
+        XCTAssertTrue(settings.dailyGrowthRiseTiers.isEmpty)
+        XCTAssertTrue(settings.dailyGrowthFallTiers.isEmpty)
+        XCTAssertEqual(FundGrowthReminderTier.allCases.map(\.title), ["2%", "3%", "5%", "7%", "10%"])
         XCTAssertEqual(settings.appearanceMode, .system)
         XCTAssertEqual(AppAppearanceMode.allCases.map(\.title), ["跟随系统", "浅色", "深色"])
         XCTAssertTrue(settings.showsMarketIndexes)
@@ -4213,70 +4342,93 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshingQuotes)
     }
 
-    func testFundThresholdReminderEvaluatorTriggersDailyGrowthRange() throws {
+    func testFundThresholdReminderEvaluatorUsesGlobalDailyGrowthTiers() throws {
         let date = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
+        let settings = AppSettings(
+            dailyGrowthReminderEnabled: true,
+            dailyGrowthRiseTiers: [.two, .three, .five, .seven],
+            dailyGrowthFallTiers: [.three, .five, .ten]
+        )
         let snapshot = thresholdReminderSnapshot(
             funds: [
-                thresholdReminderFund(code: "024418", todayRate: 5.41, zdfRange: 5),
-                thresholdReminderFund(code: "024424", todayRate: -5.2, zdfRange: 5),
-                thresholdReminderFund(code: "025833", todayRate: 4.99, zdfRange: 5)
+                thresholdReminderFund(code: "024418", todayRate: 5.41),
+                thresholdReminderFund(code: "024424", todayRate: -5.2),
+                thresholdReminderFund(code: "025833", todayRate: 1.99),
+                thresholdReminderFund(code: "026210", todayRate: -2.99)
             ]
         )
 
-        let reminders = FundThresholdReminderEvaluator.reminders(in: snapshot, date: date)
+        let reminders = FundThresholdReminderEvaluator.reminders(in: snapshot, settings: settings, date: date)
 
         XCTAssertEqual(reminders.count, 2)
         XCTAssertEqual(reminders.map(\.code), ["024418", "024424"])
         XCTAssertEqual(reminders.map(\.kind), [.dailyGrowth, .dailyGrowth])
+        XCTAssertEqual(reminders.map(\.direction), [.rise, .fall])
+        XCTAssertEqual(reminders.map(\.threshold), [5, 5])
         XCTAssertEqual(reminders[0].title, "测试基金024418")
-        XCTAssertEqual(reminders[0].body, "涨跌幅提醒：当前涨幅 +5.41%。")
+        XCTAssertEqual(reminders[0].body, "涨跌幅提醒：当前涨幅 +5.41%，已达 5.00%档。")
         XCTAssertEqual(reminders[1].title, "测试基金024424")
-        XCTAssertEqual(reminders[1].body, "涨跌幅提醒：当前跌幅 -5.20%。")
+        XCTAssertEqual(reminders[1].body, "涨跌幅提醒：当前跌幅 -5.20%，已达 5.00%档。")
     }
 
-    func testFundThresholdReminderEvaluatorTriggersNetValueTarget() throws {
+    func testFundThresholdReminderEvaluatorIgnoresLegacyPerFundAndNetValueReminders() throws {
         let date = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
         let snapshot = thresholdReminderSnapshot(
             funds: [
                 thresholdReminderFund(
                     code: "024418",
-                    todayRate: 1.2,
+                    todayRate: 8.2,
                     currentAmount: 2_570.9,
                     shares: 1_000,
+                    zdfRange: 5,
                     jzNotice: 2.5
                 ),
                 thresholdReminderFund(
                     code: "025833",
-                    todayRate: 1.2,
+                    todayRate: -8.2,
                     currentAmount: 2_400,
                     shares: 1_000,
+                    zdfRange: 5,
                     jzNotice: 2.5
                 )
             ]
         )
 
-        let reminders = FundThresholdReminderEvaluator.reminders(in: snapshot, date: date)
+        XCTAssertTrue(
+            FundThresholdReminderEvaluator.reminders(in: snapshot, settings: AppSettings(), date: date).isEmpty
+        )
 
-        XCTAssertEqual(reminders.count, 1)
-        XCTAssertEqual(reminders.first?.code, "024418")
-        XCTAssertEqual(reminders.first?.kind, .netValue)
-        XCTAssertEqual(reminders.first?.title, "测试基金024418")
-        XCTAssertEqual(reminders.first?.body, "净值提醒：当前净值 2.5709，目标 2.5000。")
+        let settings = AppSettings(
+            dailyGrowthReminderEnabled: true,
+            dailyGrowthRiseTiers: [.seven],
+            dailyGrowthFallTiers: []
+        )
+        let reminders = FundThresholdReminderEvaluator.reminders(in: snapshot, settings: settings, date: date)
+        XCTAssertEqual(reminders.map(\.code), ["024418"])
+        XCTAssertEqual(reminders.map(\.kind), [.dailyGrowth])
     }
 
     func testFundThresholdReminderEvaluatorOnlySendsOncePerDay() throws {
         let now = try chinaDate("2026-06-24 13:30")
         let nextDay = try chinaDate("2026-06-25 09:45")
+        let settings = AppSettings(
+            dailyGrowthReminderEnabled: true,
+            dailyGrowthRiseTiers: [.three, .five, .seven],
+            dailyGrowthFallTiers: []
+        )
         let snapshot = thresholdReminderSnapshot(
             funds: [
-                thresholdReminderFund(code: "024418", todayRate: 5.41, zdfRange: 5)
+                thresholdReminderFund(code: "024418", todayRate: 5.41)
             ]
         )
-        let reminder = try XCTUnwrap(FundThresholdReminderEvaluator.reminders(in: snapshot, date: now).first)
+        let reminder = try XCTUnwrap(
+            FundThresholdReminderEvaluator.reminders(in: snapshot, settings: settings, date: now).first
+        )
 
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: now,
                 lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 09:31")]
             ).isEmpty
@@ -4284,23 +4436,47 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: nextDay,
                 lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 14:55")]
             ).count,
             1
         )
+        XCTAssertTrue(
+            FundThresholdReminderEvaluator.eligibleReminders(
+                in: thresholdReminderSnapshot(funds: [thresholdReminderFund(code: "024418", todayRate: 3.41)]),
+                settings: settings,
+                now: now,
+                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 09:31")]
+            ).isEmpty
+        )
+        XCTAssertEqual(
+            FundThresholdReminderEvaluator.eligibleReminders(
+                in: thresholdReminderSnapshot(funds: [thresholdReminderFund(code: "024418", todayRate: 7.41)]),
+                settings: settings,
+                now: now,
+                lastSentAt: [reminder.dedupeKey: try chinaDate("2026-06-24 09:31")]
+            ).first?.threshold,
+            7
+        )
     }
 
     func testFundThresholdReminderEvaluatorOnlyRunsWhileMarketIsOpen() throws {
+        let settings = AppSettings(
+            dailyGrowthReminderEnabled: true,
+            dailyGrowthRiseTiers: [.five],
+            dailyGrowthFallTiers: []
+        )
         let snapshot = thresholdReminderSnapshot(
             funds: [
-                thresholdReminderFund(code: "024418", todayRate: 5.41, zdfRange: 5)
+                thresholdReminderFund(code: "024418", todayRate: 5.41)
             ]
         )
 
         XCTAssertEqual(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: try chinaDate("2026-06-24 10:30"),
                 lastSentAt: [:]
             ).count,
@@ -4309,6 +4485,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: try chinaDate("2026-06-24 12:00"),
                 lastSentAt: [:]
             ).isEmpty
@@ -4316,6 +4493,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: try chinaDate("2026-06-24 15:01"),
                 lastSentAt: [:]
             ).isEmpty
@@ -4323,6 +4501,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(
             FundThresholdReminderEvaluator.eligibleReminders(
                 in: snapshot,
+                settings: settings,
                 now: try chinaDate("2026-06-21 10:30"),
                 lastSentAt: [:]
             ).isEmpty
@@ -4359,6 +4538,9 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(store.settings.operationReminderEnabled)
         XCTAssertEqual(store.settings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(store.settings.thresholdReminderInterval, .thirtyMinutes)
+        XCTAssertFalse(store.settings.dailyGrowthReminderEnabled)
+        XCTAssertTrue(store.settings.dailyGrowthRiseTiers.isEmpty)
+        XCTAssertTrue(store.settings.dailyGrowthFallTiers.isEmpty)
         XCTAssertEqual(store.settings.appearanceMode, .system)
         XCTAssertTrue(store.settings.showsMarketIndexes)
         XCTAssertEqual(store.settings.defaultMarketIndexID, .shanghaiComposite)
@@ -4375,6 +4557,9 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(savedSettings.operationReminderEnabled)
         XCTAssertEqual(savedSettings.operationReminderTimeMinutes, 14 * 60 + 30)
         XCTAssertEqual(savedSettings.thresholdReminderInterval, .thirtyMinutes)
+        XCTAssertFalse(savedSettings.dailyGrowthReminderEnabled)
+        XCTAssertTrue(savedSettings.dailyGrowthRiseTiers.isEmpty)
+        XCTAssertTrue(savedSettings.dailyGrowthFallTiers.isEmpty)
         XCTAssertEqual(savedSettings.appearanceMode, .system)
         XCTAssertTrue(savedSettings.showsMarketIndexes)
         XCTAssertEqual(savedSettings.defaultMarketIndexID, .shanghaiComposite)
@@ -4456,6 +4641,14 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(store.settings.mainPanelHeight, 777)
         store.setThresholdReminderInterval(.twoHours)
         XCTAssertEqual(store.settings.thresholdReminderInterval, .twoHours)
+        store.setDailyGrowthReminderEnabled(true)
+        XCTAssertTrue(store.settings.dailyGrowthReminderEnabled)
+        store.setDailyGrowthRiseTiers([.five, .two, .five, .ten])
+        XCTAssertEqual(store.settings.dailyGrowthRiseTiers, [.two, .five, .ten])
+        XCTAssertTrue(store.settings.dailyGrowthFallTiers.isEmpty)
+        store.setDailyGrowthFallTiers([.seven, .three, .seven])
+        XCTAssertEqual(store.settings.dailyGrowthRiseTiers, [.two, .five, .ten])
+        XCTAssertEqual(store.settings.dailyGrowthFallTiers, [.three, .seven])
         store.setAppearanceMode(.dark)
         XCTAssertEqual(store.settings.appearanceMode, .dark)
         store.setMenuBarContentMode(.both)
@@ -4479,6 +4672,9 @@ final class FundPulseCoreTests: XCTestCase {
         let refreshedSettings = try JSONDecoder().decode(AppSettings.self, from: refreshedData)
         XCTAssertEqual(refreshedSettings.autoRefreshInterval, .twoSeconds)
         XCTAssertEqual(refreshedSettings.marketClosedAutoRefreshInterval, .threeMinutes)
+        XCTAssertTrue(refreshedSettings.dailyGrowthReminderEnabled)
+        XCTAssertEqual(refreshedSettings.dailyGrowthRiseTiers, [.two, .five, .ten])
+        XCTAssertEqual(refreshedSettings.dailyGrowthFallTiers, [.three, .seven])
         XCTAssertFalse(refreshedSettings.showsMarketIndexes)
         XCTAssertEqual(refreshedSettings.defaultMarketIndexID, .csi300)
         XCTAssertTrue(refreshedSettings.betaFeaturesEnabled)
@@ -4581,6 +4777,112 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(breadth.limitDownCount, 45)
     }
 
+    func testMarketIndexServiceFallsBackToEastmoneyMarketBreadthWhenTonghuashunFails() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            Self.tonghuashunMarketBreadthEndpoint(): """
+            {"status":"forbidden"}
+            """,
+            Self.eastmoneyMarketBreadthEndpoint(): """
+            {
+              "rc": 0,
+              "data": {
+                "total": 4,
+                "diff": [
+                  { "f12": "300454", "f14": "深信服", "f3": 20.0 },
+                  { "f12": "600000", "f14": "浦发银行", "f3": 1.24 },
+                  { "f12": "000001", "f14": "平安银行", "f3": -0.35 },
+                  { "f12": "600519", "f14": "贵州茅台", "f3": -10.0 }
+                ]
+              }
+            }
+            """
+        ])
+
+        let fetchedBreadth = await service.fetchMarketBreadth()
+        let breadth = try XCTUnwrap(fetchedBreadth)
+
+        XCTAssertEqual(breadth.risingCount, 2)
+        XCTAssertEqual(breadth.fallingCount, 2)
+        XCTAssertEqual(breadth.limitUpCount, 1)
+        XCTAssertEqual(breadth.limitDownCount, 1)
+        XCTAssertEqual(breadth.distribution.reduce(0, +), 4)
+    }
+
+    func testMarketIndexServiceFallsBackToRealtimeHostWhenDelayMarketBreadthFails() async throws {
+        let service = marketIndexServiceWithMockResponses([
+            Self.tonghuashunMarketBreadthEndpoint(): """
+            {"status":"forbidden"}
+            """,
+            Self.eastmoneyMarketBreadthEndpoint(host: "push2.eastmoney.com"): """
+            {
+              "rc": 0,
+              "data": {
+                "total": 2,
+                "diff": [
+                  { "f12": "300454", "f14": "深信服", "f3": 20.0 },
+                  { "f12": "000001", "f14": "平安银行", "f3": -0.35 }
+                ]
+              }
+            }
+            """
+        ])
+
+        let fetchedBreadth = await service.fetchMarketBreadth()
+        let breadth = try XCTUnwrap(fetchedBreadth)
+        let requestedURLs = MockURLProtocol.responseStore.requests().compactMap { $0.url?.absoluteString }
+
+        XCTAssertTrue(requestedURLs.contains { $0.hasPrefix(Self.eastmoneyMarketBreadthEndpoint()) })
+        XCTAssertTrue(requestedURLs.contains { $0.hasPrefix(Self.eastmoneyMarketBreadthEndpoint(host: "push2.eastmoney.com")) })
+        XCTAssertEqual(breadth.risingCount, 1)
+        XCTAssertEqual(breadth.fallingCount, 1)
+        XCTAssertEqual(breadth.limitUpCount, 1)
+    }
+
+    func testMarketIndexServiceFetchesEastmoneyMarketBreadthAdditionalPages() async throws {
+        let pageOnePrefix = Self.eastmoneyMarketBreadthEndpoint() + "?pn=1&"
+        let pageTwoPrefix = Self.eastmoneyMarketBreadthEndpoint() + "?pn=2&"
+        let service = marketIndexServiceWithMockResponses([
+            Self.tonghuashunMarketBreadthEndpoint(): """
+            {"status":"forbidden"}
+            """,
+            pageOnePrefix: """
+            {
+              "rc": 0,
+              "data": {
+                "total": 101,
+                "diff": [
+                  { "f12": "300454", "f14": "深信服", "f3": 20.0 },
+                  { "f12": "600000", "f14": "浦发银行", "f3": 1.24 }
+                ]
+              }
+            }
+            """,
+            pageTwoPrefix: """
+            {
+              "rc": 0,
+              "data": {
+                "total": 101,
+                "diff": [
+                  { "f12": "000001", "f14": "平安银行", "f3": -0.35 },
+                  { "f12": "600519", "f14": "贵州茅台", "f3": -10.0 }
+                ]
+              }
+            }
+            """
+        ])
+
+        let fetchedBreadth = await service.fetchMarketBreadth()
+        let breadth = try XCTUnwrap(fetchedBreadth)
+        let requestedURLs = MockURLProtocol.responseStore.requests().compactMap { $0.url?.absoluteString }
+
+        XCTAssertTrue(requestedURLs.contains { $0.hasPrefix(pageOnePrefix) })
+        XCTAssertTrue(requestedURLs.contains { $0.hasPrefix(pageTwoPrefix) })
+        XCTAssertEqual(breadth.risingCount, 2)
+        XCTAssertEqual(breadth.fallingCount, 2)
+        XCTAssertEqual(breadth.limitUpCount, 1)
+        XCTAssertEqual(breadth.limitDownCount, 1)
+    }
+
     @MainActor
     func testMarketIndexStoreMergesPartialRefreshesIntoExistingQuotes() async throws {
         let service = marketIndexServiceWithMockResponses([
@@ -4625,6 +4927,37 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(breadth.fallingCount, 4860)
         XCTAssertEqual(breadth.limitUpCount, 31)
         XCTAssertEqual(breadth.limitDownCount, 42)
+    }
+
+    @MainActor
+    func testMarketIndexStoreRetriesWhenMarketBreadthIsMissing() async throws {
+        let now = try chinaDate("2026-07-08 15:20")
+        let service = marketIndexServiceWithMockResponses([
+            Self.marketIndexBatchQuoteEndpoint(): """
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38}]}}
+            """
+        ])
+        let store = MarketIndexStore(service: service, minimumRefreshInterval: 20) {
+            now
+        }
+
+        await store.refresh()
+        XCTAssertNotNil(store.primaryQuote(defaultID: MarketIndexID.shanghaiComposite))
+        XCTAssertNil(store.marketBreadth)
+
+        MockURLProtocol.responseStore.set([
+            Self.marketIndexBatchQuoteEndpoint(): Data("""
+            {"rc":0,"rt":4,"data":{"diff":[{"f12":"000001","f14":"上证指数","f2":4080.28,"f3":0.16,"f4":6.38}]}}
+            """.utf8),
+            Self.tonghuashunMarketBreadthEndpoint(): Data("""
+            {"zdfb_data":{"zdfb":[1,2,3],"znum":704,"dnum":4860},"zdt_data":{"last_zdt":{"ztzs":31,"dtzs":42}}}
+            """.utf8)
+        ])
+
+        await store.refresh()
+        let breadth: MarketBreadth = try XCTUnwrap(store.marketBreadth)
+        XCTAssertEqual(breadth.risingCount, 704)
+        XCTAssertEqual(breadth.fallingCount, 4860)
     }
 
     @MainActor
@@ -4885,8 +5218,6 @@ final class FundPulseCoreTests: XCTestCase {
             cost: nil,
             positionDate: "2026-06-18",
             positionTimeType: .before15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: ""
         )
 
@@ -4940,8 +5271,6 @@ final class FundPulseCoreTests: XCTestCase {
             cost: nil,
             positionDate: "2026-06-23",
             positionTimeType: .before15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: ""
         )
 
@@ -5018,8 +5347,6 @@ final class FundPulseCoreTests: XCTestCase {
             cost: nil,
             positionDate: "2026-06-24",
             positionTimeType: .before15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: ""
         )
 
@@ -5086,8 +5413,6 @@ final class FundPulseCoreTests: XCTestCase {
                 cost: nil,
                 positionDate: "2026-06-24",
                 positionTimeType: .before15,
-                zdfRange: nil,
-                jzNotice: nil,
                 memo: ""
             )
         )
@@ -5137,8 +5462,6 @@ final class FundPulseCoreTests: XCTestCase {
             cost: nil,
             positionDate: "2026-06-24",
             positionTimeType: .after15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: "",
             requiresTradeConfirmation: false
         )
@@ -7920,8 +8243,6 @@ final class FundPulseCoreTests: XCTestCase {
                 cost: 2,
                 positionDate: "2026-06-22",
                 positionTimeType: .before15,
-                zdfRange: nil,
-                jzNotice: nil,
                 memo: ""
             ),
             replacing: "026210"
@@ -8112,8 +8433,6 @@ final class FundPulseCoreTests: XCTestCase {
             cost: nil,
             positionDate: "2026-05-15",
             positionTimeType: .before15,
-            zdfRange: nil,
-            jzNotice: nil,
             memo: ""
         )
 
@@ -8168,8 +8487,6 @@ final class FundPulseCoreTests: XCTestCase {
                 cost: nil,
                 positionDate: "2026-06-26",
                 positionTimeType: .before15,
-                zdfRange: nil,
-                jzNotice: nil,
                 memo: ""
             )
         )
@@ -8243,6 +8560,8 @@ final class FundPulseCoreTests: XCTestCase {
                     positionMode: .amount,
                     positionDate: "2026-07-07",
                     positionTimeType: .before15,
+                    zdfRange: 5,
+                    jzNotice: 2.5,
                     lots: [
                         FundPositionLot(
                             id: "existing-lot",
@@ -8273,8 +8592,6 @@ final class FundPulseCoreTests: XCTestCase {
                 cost: nil,
                 positionDate: "2026-07-07",
                 positionTimeType: .before15,
-                zdfRange: 5,
-                jzNotice: nil,
                 memo: ""
             ),
             replacing: "011833"
@@ -8285,6 +8602,8 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(fund.intradayRateDate, "2026-07-08")
         XCTAssertEqual(points.map(\.estimateTime), ["2026-07-08 09:35", "2026-07-08 13:32"])
         XCTAssertEqual(points.map(\.rate), [3.21, 2.15])
+        XCTAssertNil(fund.zdfRange)
+        XCTAssertNil(fund.jzNotice)
     }
 
     @MainActor
@@ -8470,6 +8789,34 @@ final class FundPulseCoreTests: XCTestCase {
         )
     }
 
+    func testOperationReminderCleanupClearsLegacyContentWithUnknownIdentifier() {
+        XCTAssertEqual(
+            StatusBarController.operationReminderNotificationIdentifiersToClear(
+                from: [
+                    OperationReminderNotificationCandidate(
+                        identifier: "legacy.daily-reminder",
+                        title: "基金操作提醒",
+                        body: "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
+                    ),
+                    OperationReminderNotificationCandidate(
+                        identifier: "fund-pulse.test-reminder.1",
+                        title: "fund-pulse 测试提醒",
+                        body: "如果你看到这条通知，说明系统通知权限正常。"
+                    ),
+                    OperationReminderNotificationCandidate(
+                        identifier: "other.notification",
+                        title: "基金操作提醒",
+                        body: "别的内容"
+                    )
+                ]
+            ),
+            [
+                "fund-pulse.operation-reminder",
+                "legacy.daily-reminder"
+            ]
+        )
+    }
+
     func testPortfolioCalculatorKeepsHoldingAmountAtOfficialNetValueDuringIntradayEstimate() throws {
         let now = try chinaDate("2026-06-22 10:35")
         let snapshot = PortfolioSnapshot(
@@ -8586,6 +8933,84 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertNil(fund.pendingAmount)
         XCTAssertNil(fund.pendingProfit)
         XCTAssertEqual(fund.currentAmount ?? 0, 5_232.22, accuracy: 0.01)
+    }
+
+    func testPortfolioCalculatorPreservesJDFinanceSyncedManualAmount() throws {
+        let now = try chinaDate("2026-07-08 15:09")
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "011370",
+                    name: "华商均衡成长混合C",
+                    dateText: "07-08 14:38",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    isIncomeActive: true,
+                    migratedShares: 10_000,
+                    migratedCost: 1.6,
+                    migratedPrincipal: 16_000,
+                    incomeStartDate: "2026-07-08",
+                    positionMode: .amount,
+                    positionDate: "2026-07-08",
+                    positionTimeType: .before15,
+                    pendingAmount: 14_019.17,
+                    pendingProfit: -1_980.83,
+                    memo: "京东金融同步持仓金额修复",
+                    lots: [
+                        FundPositionLot(
+                            id: "011370-amount-backfill",
+                            shares: 10_000,
+                            cost: 1.6,
+                            principal: 16_000,
+                            incomeStartDate: "2026-07-08",
+                            positionDate: "2026-07-08",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "011370",
+            name: "华商均衡成长混合C",
+            netValue: 1.2345,
+            estimatedNetValue: 1.2345,
+            growthRate: 3.21,
+            estimateTime: "2026-07-08 15:00",
+            netValueDate: "2026-07-07"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["011370": quote],
+            now: now
+        )
+
+        let fund = result.funds[0]
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertEqual(fund.currentAmount ?? 0, 14_019.17, accuracy: 0.0001)
+        XCTAssertEqual(fund.holdingIncome ?? 0, -1_980.83, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedPrincipal ?? 0, 16_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 10_000, accuracy: 0.000001)
+        XCTAssertEqual(fund.migratedCost ?? 0, 1.6, accuracy: 0.0001)
+        XCTAssertEqual(fund.lots?.first?.shares ?? 0, 10_000, accuracy: 0.000001)
+        XCTAssertEqual(fund.pendingAmount ?? 0, 14_019.17, accuracy: 0.0001)
+        XCTAssertEqual(fund.pendingProfit ?? 0, -1_980.83, accuracy: 0.0001)
+        XCTAssertEqual(fund.todayRate, 3.21, accuracy: 0.0001)
+        XCTAssertEqual(fund.todayIncome, 14_019.17 * 3.21 / 100, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, 14_019.17 * 3.21 / 100, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, 3.21, accuracy: 0.0001)
     }
 
     func testHoldingIncomeAndAmountUseOfficialNetValueWhileTodayIncomeUsesEstimate() throws {
@@ -9518,6 +9943,7 @@ final class FundPulseCoreTests: XCTestCase {
                 "productList": [
                   {
                     "skuId": "1024424",
+                    "fundCode": "024424",
                     "productName": "永赢先进制造智选混合发起A",
                     "totalAmount": { "amt": 19907.79, "text": "19,907.79" },
                     "yesterdayIncome": { "text": "-688.41" },
@@ -9649,6 +10075,12 @@ final class FundPulseCoreTests: XCTestCase {
 
     private static func tonghuashunMarketBreadthEndpoint() -> String {
         "https://q.10jqka.com.cn/api.php?t=indexflash"
+    }
+
+    private static func eastmoneyMarketBreadthEndpoint(
+        host: String = "push2delay.eastmoney.com"
+    ) -> String {
+        "https://\(host)/api/qt/clist/get"
     }
 
     private func tradeQuoteService(

@@ -1864,7 +1864,7 @@ final class StatusBarController: NSObject {
             guard !Task.isCancelled else { return }
 
             let pendingOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
-                from: pendingRequests.map(\.identifier)
+                from: pendingRequests.map(Self.operationReminderNotificationCandidate(from:))
             )
             center.removePendingNotificationRequests(withIdentifiers: pendingOperationReminderIDs)
 
@@ -1872,7 +1872,7 @@ final class StatusBarController: NSObject {
             guard !Task.isCancelled else { return }
 
             let deliveredOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
-                from: deliveredNotifications.map(\.request.identifier)
+                from: deliveredNotifications.map { Self.operationReminderNotificationCandidate(from: $0.request) }
             )
             center.removeDeliveredNotifications(withIdentifiers: deliveredOperationReminderIDs)
 
@@ -1891,8 +1891,8 @@ final class StatusBarController: NSObject {
 
                 let dateKey = DateOnlyFormatter.string(from: reminderDate)
                 let content = UNMutableNotificationContent()
-                content.title = "基金操作提醒"
-                content.body = "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
+                content.title = OperationReminderNotificationContent.title
+                content.body = OperationReminderNotificationContent.body
                 content.sound = .default
 
                 let trigger = UNCalendarNotificationTrigger(
@@ -1913,14 +1913,40 @@ final class StatusBarController: NSObject {
         Set(identifiers.filter(isOperationReminderNotificationID) + [operationReminderNotificationID]).sorted()
     }
 
+    nonisolated static func operationReminderNotificationIdentifiersToClear(
+        from candidates: [OperationReminderNotificationCandidate]
+    ) -> [String] {
+        Set(
+            candidates.filter { candidate in
+                isOperationReminderNotificationID(candidate.identifier)
+                    || isOperationReminderNotificationContent(title: candidate.title, body: candidate.body)
+            }.map(\.identifier) + [operationReminderNotificationID]
+        ).sorted()
+    }
+
     nonisolated private static func isOperationReminderNotificationID(_ identifier: String) -> Bool {
         identifier == operationReminderNotificationID || identifier.hasPrefix(operationReminderNotificationPrefix)
+    }
+
+    nonisolated private static func isOperationReminderNotificationContent(title: String, body: String) -> Bool {
+        title == OperationReminderNotificationContent.title && body == OperationReminderNotificationContent.body
+    }
+
+    nonisolated private static func operationReminderNotificationCandidate(
+        from request: UNNotificationRequest
+    ) -> OperationReminderNotificationCandidate {
+        OperationReminderNotificationCandidate(
+            identifier: request.identifier,
+            title: request.content.title,
+            body: request.content.body
+        )
     }
 
     private func sendFundThresholdRemindersIfNeeded() {
         let now = Date()
         let reminders = FundThresholdReminderEvaluator.eligibleReminders(
             in: store.snapshot,
+            settings: settingsStore.settings,
             now: now,
             lastSentAt: fundThresholdReminderLastSentAt
         )
