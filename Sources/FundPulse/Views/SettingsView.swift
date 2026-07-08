@@ -890,6 +890,8 @@ struct SettingsView: View {
             "percent"
         case .both:
             "rectangle.split.2x1"
+        case .hidden:
+            "eye.slash"
         }
     }
 

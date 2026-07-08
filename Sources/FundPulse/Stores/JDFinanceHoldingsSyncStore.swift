@@ -31,15 +31,20 @@ final class JDFinanceHoldingsSyncStore {
         defer { isSyncing = false }
 
         do {
-            let remoteSnapshot = try await service.fetchSnapshot(cookieHeader: cookieHeader)
+            let remoteSnapshot = try await service.fetchSnapshot(
+                cookieHeader: cookieHeader,
+                needsTradeOrderRecords: portfolioStore.needsJDFinanceTradeOrderReconciliation
+            )
+            let syncedAt = nowProvider()
+            try portfolioStore.applyJDFinanceAccountTotal(remoteSnapshot.totalAssets, syncedAt: syncedAt)
             preview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: remoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
             if let preview {
-                Self.writeDebugPreview(preview, now: nowProvider())
+                Self.writeDebugPreview(preview, now: syncedAt)
             }
-            lastSyncedAt = nowProvider()
+            lastSyncedAt = syncedAt
             statusMessage = preview?.isEmpty == true ? "已同步，暂无差异" : "已生成同步预览"
         } catch let error as JDFinanceHoldingsError {
             preview = nil
@@ -59,7 +64,8 @@ final class JDFinanceHoldingsSyncStore {
             to: portfolioStore,
             importNew: true,
             updateChanged: false,
-            importPending: false
+            importPending: false,
+            reconcileConfirmed: false
         )
     }
 
@@ -67,12 +73,14 @@ final class JDFinanceHoldingsSyncStore {
         to portfolioStore: PortfolioStore,
         importNew: Bool,
         updateChanged: Bool,
-        importPending: Bool
+        importPending: Bool,
+        reconcileConfirmed: Bool = false
     ) async {
         guard let preview else { return }
 
         let candidates = importNew ? preview.newHoldings : []
         let pendingCandidates = importPending ? preview.importablePendingNotices : []
+        let reconciliationCandidates = reconcileConfirmed ? preview.overwritableReconciliationNotices : []
         let updates = updateChanged
             ? preview.changedHoldings.map {
                 FundAmountPositionSyncUpdate(
@@ -82,7 +90,7 @@ final class JDFinanceHoldingsSyncStore {
                 )
             }
             : []
-        let selectedCount = candidates.count + updates.count + pendingCandidates.count
+        let selectedCount = candidates.count + updates.count + pendingCandidates.count + reconciliationCandidates.count
         guard selectedCount > 0 else {
             statusMessage = "请选择要同步的数据"
             return
@@ -101,6 +109,9 @@ final class JDFinanceHoldingsSyncStore {
             }
             for candidate in pendingCandidates {
                 try await applyPendingNoticeDraft(candidate, to: portfolioStore, manualCompletion: nil)
+            }
+            for candidate in reconciliationCandidates {
+                try await portfolioStore.applyJDFinanceReconciliation(candidate)
             }
             try await portfolioStore.applyAmountPositionSyncUpdates(updates)
             self.preview = JDFinanceHoldingsSyncPlanner.preview(
@@ -161,6 +172,32 @@ final class JDFinanceHoldingsSyncStore {
     ) async throws {
         if let fundDraft = notice.fundPositionDraft(manualCompletion: manualCompletion) {
             try await portfolioStore.upsertFund(fundDraft)
+            let metadata = syncMetadata(
+                syncKey: JDFinanceSyncFingerprint.tradeDraft(
+                    FundTradeDraft(
+                        action: .buy,
+                        code: fundDraft.code,
+                        mode: .amount,
+                        amount: fundDraft.positionAmount,
+                        shares: nil,
+                        tradeDate: fundDraft.positionDate,
+                        tradeTimeType: fundDraft.positionTimeType
+                    )
+                ),
+                statusText: notice.detailStatusText ?? notice.message
+            )
+            try portfolioStore.markImportedTradeIfPresent(
+                FundTradeDraft(
+                    action: .buy,
+                    code: fundDraft.code,
+                    mode: .amount,
+                    amount: fundDraft.positionAmount,
+                    shares: nil,
+                    tradeDate: fundDraft.positionDate,
+                    tradeTimeType: fundDraft.positionTimeType
+                ),
+                syncMetadata: metadata
+            )
             return
         }
 
@@ -168,7 +205,13 @@ final class JDFinanceHoldingsSyncStore {
            !tradeDrafts.isEmpty
         {
             for tradeDraft in tradeDrafts {
-                try await portfolioStore.adjustFundPosition(tradeDraft)
+                try await portfolioStore.importTradeIfNeeded(
+                    tradeDraft,
+                    syncMetadata: syncMetadata(
+                        syncKey: JDFinanceSyncFingerprint.tradeDraft(tradeDraft),
+                        statusText: notice.detailStatusText ?? notice.message
+                    )
+                )
             }
             return
         }
@@ -176,12 +219,28 @@ final class JDFinanceHoldingsSyncStore {
         let conversionDrafts = notice.conversionDrafts(manualCompletion: manualCompletion)
         if !conversionDrafts.isEmpty {
             for conversionDraft in conversionDrafts {
-                try await portfolioStore.convertFundPosition(conversionDraft)
+                try await portfolioStore.importConversionIfNeeded(
+                    conversionDraft,
+                    syncMetadata: syncMetadata(
+                        syncKey: JDFinanceSyncFingerprint.conversionDraft(conversionDraft),
+                        statusText: notice.detailStatusText ?? notice.message
+                    )
+                )
             }
             return
         }
 
         throw JDFinanceHoldingsError.invalidResponse
+    }
+
+    private func syncMetadata(syncKey: String, statusText: String?) -> FundTradeSyncMetadata {
+        FundTradeSyncMetadata(
+            source: .jdFinance,
+            syncKey: syncKey,
+            externalStatus: .waitingExternalConfirmation,
+            externalStatusText: statusText,
+            waitsForExternalConfirmation: true
+        )
     }
 
     private static func writeDebugPreview(_ preview: JDFinanceHoldingsSyncPreview, now: Date) {
@@ -192,6 +251,7 @@ final class JDFinanceHoldingsSyncStore {
                 "amount": MoneyFormatter.plainMoney(notice.amount),
                 "message": notice.message,
                 "importable": notice.isImportable ? "true" : "false",
+                "syncState": debugSyncState(notice.syncState),
                 "requiresManualCompletion": notice.requiresManualCompletion ? "true" : "false",
                 "tradeDate": notice.pendingDetail?.tradeDate ?? "--",
                 "tradeTimeType": notice.pendingDetail?.tradeTimeType?.title ?? "--",
@@ -200,11 +260,41 @@ final class JDFinanceHoldingsSyncStore {
                 "candidateRecords": notice.candidateTradeRecords.map(debugRecordSummary).joined(separator: " || ")
             ]
         }
+        let reconciliations = preview.reconciliationNotices.map { notice in
+            [
+                "code": notice.code,
+                "name": notice.name,
+                "state": debugSyncState(notice.state),
+                "tradeDate": notice.tradeDate,
+                "tradeTimeType": notice.tradeTimeType.title,
+                "localAmount": notice.localAmount.map(MoneyFormatter.plainMoney) ?? "--",
+                "jdAmount": notice.jdAmount.map(MoneyFormatter.plainMoney) ?? "--",
+                "localShares": notice.localShares.map { "\($0)" } ?? "--",
+                "jdShares": notice.jdShares.map { "\($0)" } ?? "--",
+                "matchedRecords": notice.matchedTradeRecords.map(debugRecordSummary).joined(separator: " || ")
+            ]
+        }
+        let remoteProducts = preview.remoteSnapshot.products.map { product in
+            [
+                "code": product.code,
+                "name": product.name,
+                "totalAmount": MoneyFormatter.plainMoney(product.totalAmount),
+                "holdingIncome": product.holdIncome.map(MoneyFormatter.plainMoney) ?? "--",
+                "transactionTip": product.transactionTipText ?? "--"
+            ]
+        }
+        let remoteProductTotal = preview.remoteSnapshot.products.reduce(0) { $0 + $1.totalAmount }
 
         let payload: [String: Any] = [
             "updatedAt": ISO8601DateFormatter().string(from: now),
+            "remoteTotalAssets": preview.remoteSnapshot.totalAssets.map(MoneyFormatter.plainMoney) ?? "--",
+            "remoteProductTotal": MoneyFormatter.plainMoney(remoteProductTotal),
+            "remoteProductCount": remoteProducts.count,
+            "remoteProducts": remoteProducts,
             "pendingNoticeCount": notices.count,
-            "pendingNotices": notices
+            "pendingNotices": notices,
+            "reconciliationCount": reconciliations.count,
+            "reconciliations": reconciliations
         ]
 
         do {
@@ -232,6 +322,18 @@ final class JDFinanceHoldingsSyncStore {
             record.tradeTimeType?.title ?? "--",
             record.statusText ?? "--"
         ].joined(separator: " · ")
+    }
+
+    private static func debugSyncState(_ state: JDFinanceSyncPreviewState?) -> String {
+        guard let state else { return "--" }
+        switch state {
+        case .localConfirmedJDPending:
+            return "localConfirmedJDPending"
+        case .jdConfirmedNeedsOverwrite:
+            return "jdConfirmedNeedsOverwrite"
+        case .conflict(let message):
+            return "conflict: \(message)"
+        }
     }
 
     private static func debugPreviewURL() -> URL {

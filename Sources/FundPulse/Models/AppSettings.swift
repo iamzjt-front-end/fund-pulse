@@ -258,6 +258,7 @@ enum MenuBarContentMode: String, Codable, CaseIterable, Identifiable, Equatable 
     case amount
     case rate
     case both
+    case hidden
 
     var id: String { rawValue }
 
@@ -269,6 +270,8 @@ enum MenuBarContentMode: String, Codable, CaseIterable, Identifiable, Equatable 
             "百分比"
         case .both:
             "都显示"
+        case .hidden:
+            "都不显示"
         }
     }
 
@@ -280,6 +283,8 @@ enum MenuBarContentMode: String, Codable, CaseIterable, Identifiable, Equatable 
             "菜单栏只显示实时收益率。"
         case .both:
             "菜单栏显示金额和百分比，中间用竖线分隔。"
+        case .hidden:
+            "菜单栏只显示图标，不显示金额和百分比。"
         }
     }
 }

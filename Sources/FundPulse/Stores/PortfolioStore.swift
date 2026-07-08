@@ -279,7 +279,7 @@ final class PortfolioStore {
         await refreshQuotes()
     }
 
-    func adjustFundPosition(_ draft: FundTradeDraft) async throws {
+    func adjustFundPosition(_ draft: FundTradeDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
         let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             throw PortfolioStoreError.invalidCode
@@ -298,12 +298,34 @@ final class PortfolioStore {
             positionDate: draft.tradeDate,
             timeType: draft.tradeTimeType
         )
-        appendPendingTrade(draft, fund: snapshot.funds[index], acceptedDate: acceptedDate)
+        appendPendingTrade(draft, fund: snapshot.funds[index], acceptedDate: acceptedDate, syncMetadata: syncMetadata)
         try save(snapshot)
         await refreshQuotes()
     }
 
-    func convertFundPosition(_ draft: FundConversionDraft) async throws {
+    func importTradeIfNeeded(_ draft: FundTradeDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
+        if hasImportedTrade(matching: draft) {
+            if let syncMetadata {
+                markImportedTrade(matching: draft, syncMetadata: syncMetadata)
+                try save(snapshot)
+            }
+            return
+        }
+        try await adjustFundPosition(draft, syncMetadata: syncMetadata)
+    }
+
+    func markImportedTradeIfPresent(
+        _ draft: FundTradeDraft,
+        syncMetadata: FundTradeSyncMetadata
+    ) throws {
+        guard hasImportedTrade(matching: draft) else {
+            return
+        }
+        markImportedTrade(matching: draft, syncMetadata: syncMetadata)
+        try save(snapshot)
+    }
+
+    func convertFundPosition(_ draft: FundConversionDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
         let normalizedDraft = try normalizedConversionDraft(draft)
         guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == normalizedDraft.fromCode }) else {
             throw PortfolioStoreError.fundNotFound
@@ -326,8 +348,68 @@ final class PortfolioStore {
             acceptedDate: acceptedDate,
             conversionID: UUID().uuidString,
             outRecordID: UUID().uuidString,
-            inRecordID: UUID().uuidString
+            inRecordID: UUID().uuidString,
+            syncMetadata: syncMetadata
         )
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
+    func importConversionIfNeeded(_ draft: FundConversionDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
+        let normalizedDraft = try normalizedConversionDraft(draft)
+        if hasImportedConversion(matching: normalizedDraft) {
+            if let syncMetadata {
+                markImportedConversion(matching: normalizedDraft, syncMetadata: syncMetadata)
+                try save(snapshot)
+            }
+            return
+        }
+        try await convertFundPosition(normalizedDraft, syncMetadata: syncMetadata)
+    }
+
+    var needsJDFinanceTradeOrderReconciliation: Bool {
+        let recordsNeedReconciliation = (snapshot.tradeRecords ?? []).contains { record in
+            record.syncSource == .jdFinance
+                && ((record.waitsForExternalConfirmation ?? false)
+                    || record.externalStatus == .waitingExternalConfirmation)
+        }
+        let pendingTradesNeedReconciliation = (snapshot.pendingTrades ?? []).contains { pendingTrade in
+            pendingTrade.syncSource == .jdFinance
+                && ((pendingTrade.waitsForExternalConfirmation ?? false)
+                    || pendingTrade.externalStatus == .waitingExternalConfirmation)
+        }
+        let pendingConversionsNeedReconciliation = (snapshot.pendingConversions ?? []).contains { pendingConversion in
+            pendingConversion.syncSource == .jdFinance
+                && ((pendingConversion.waitsForExternalConfirmation ?? false)
+                    || pendingConversion.externalStatus == .waitingExternalConfirmation)
+        }
+        return recordsNeedReconciliation || pendingTradesNeedReconciliation || pendingConversionsNeedReconciliation
+    }
+
+    func applyJDFinanceAccountTotal(_ amount: Double?, syncedAt: Date) throws {
+        guard let amount, amount > 0 else { return }
+        let roundedAmount = roundedMoney(amount)
+        snapshot.syncedAccountTotal = PortfolioSyncedAccountTotal(
+            source: .jdFinance,
+            amount: roundedAmount,
+            syncedAt: syncedAt
+        )
+        snapshot.totalAmount = roundedAmount
+        try save(snapshot)
+    }
+
+    func applyJDFinanceReconciliation(_ notice: JDFinanceReconciliationNotice) async throws {
+        guard notice.isOverwritable else {
+            throw PortfolioStoreError.invalidPosition
+        }
+
+        switch notice.kind {
+        case .trade(let recordID, _):
+            try overwriteJDFinanceTradeRecord(recordID: recordID, values: notice.values)
+        case .conversion(let conversionID, _, _):
+            try overwriteJDFinanceConversionRecords(conversionID: conversionID, values: notice.values)
+        }
+
         try save(snapshot)
         await refreshQuotes()
     }
@@ -400,20 +482,64 @@ final class PortfolioStore {
         await refreshQuotes()
     }
 
-    func deleteFund(code: String) async throws {
+    func deleteFund(code rawCode: String) async throws {
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else {
+            throw PortfolioStoreError.invalidCode
+        }
+
         snapshot.funds.removeAll { $0.code == code }
-        snapshot.pendingTrades?.removeAll { $0.code == code }
+
+        var removedRecordIDs = Set<String>()
+        var removedConversionIDs = Set<String>()
+        var affectedCodes = Set<String>()
+        if var records = snapshot.tradeRecords {
+            let directlyRemovedRecords = records.filter {
+                $0.code == code || $0.linkedCode == code
+            }
+            removedRecordIDs = Set(directlyRemovedRecords.map(\.id))
+            removedConversionIDs = Set(directlyRemovedRecords.compactMap(\.conversionID))
+
+            let removedRecords = records.filter {
+                $0.code == code
+                    || $0.linkedCode == code
+                    || $0.conversionID.map(removedConversionIDs.contains) == true
+            }
+            removedRecordIDs.formUnion(removedRecords.map(\.id))
+            removedConversionIDs.formUnion(removedRecords.compactMap(\.conversionID))
+            affectedCodes = Set(
+                removedRecords.flatMap { record in
+                    [record.code, record.linkedCode].compactMap { $0 }
+                }
+            )
+            affectedCodes.remove(code)
+
+            records.removeAll {
+                $0.code == code
+                    || $0.linkedCode == code
+                    || $0.conversionID.map(removedConversionIDs.contains) == true
+            }
+            snapshot.tradeRecords = records.isEmpty ? nil : records
+        }
+
+        snapshot.pendingTrades?.removeAll {
+            $0.code == code || $0.recordID.map(removedRecordIDs.contains) == true
+        }
         if snapshot.pendingTrades?.isEmpty == true {
             snapshot.pendingTrades = nil
         }
-        snapshot.pendingConversions?.removeAll { $0.fromCode == code || $0.toCode == code }
+        snapshot.pendingConversions?.removeAll {
+            $0.fromCode == code || $0.toCode == code || removedConversionIDs.contains($0.id)
+        }
         if snapshot.pendingConversions?.isEmpty == true {
             snapshot.pendingConversions = nil
         }
-        snapshot.tradeRecords?.removeAll { $0.code == code }
-        if snapshot.tradeRecords?.isEmpty == true {
-            snapshot.tradeRecords = nil
+
+        for affectedCode in affectedCodes where snapshot.funds.contains(where: { $0.code == affectedCode }) {
+            rebuildPendingTradesFromRecords(for: affectedCode)
+            try rebuildFundPositionFromTradeRecords(code: affectedCode)
         }
+
         try save(snapshot)
         await refreshQuotes()
     }
@@ -716,6 +842,11 @@ final class PortfolioStore {
 
         var remaining: [FundPendingTrade] = []
         for pendingTrade in pendingTrades {
+            guard !waitsForExternalConfirmation(pendingTrade) else {
+                remaining.append(pendingTrade)
+                continue
+            }
+
             let draft = pendingTrade.draft
             guard let index = snapshot.funds.firstIndex(where: { $0.code == draft.code }) else {
                 continue
@@ -773,6 +904,11 @@ final class PortfolioStore {
 
         var remaining: [FundPendingConversion] = []
         for pendingConversion in pendingConversions {
+            guard !waitsForExternalConfirmation(pendingConversion) else {
+                remaining.append(pendingConversion)
+                continue
+            }
+
             let draft = pendingConversion.draft
             guard let fromPrice = await quoteService.fetchConfirmedNetValue(
                 code: draft.fromCode,
@@ -982,6 +1118,24 @@ final class PortfolioStore {
         return acceptedDate < DateOnlyFormatter.string(from: nowProvider())
     }
 
+    private func waitsForExternalConfirmation(_ record: FundTradeRecord) -> Bool {
+        record.syncSource == .jdFinance
+            && ((record.waitsForExternalConfirmation ?? false)
+                || record.externalStatus == .waitingExternalConfirmation)
+    }
+
+    private func waitsForExternalConfirmation(_ pendingTrade: FundPendingTrade) -> Bool {
+        pendingTrade.syncSource == .jdFinance
+            && ((pendingTrade.waitsForExternalConfirmation ?? false)
+                || pendingTrade.externalStatus == .waitingExternalConfirmation)
+    }
+
+    private func waitsForExternalConfirmation(_ pendingConversion: FundPendingConversion) -> Bool {
+        pendingConversion.syncSource == .jdFinance
+            && ((pendingConversion.waitsForExternalConfirmation ?? false)
+                || pendingConversion.externalStatus == .waitingExternalConfirmation)
+    }
+
     private func resolvedInitialAcceptedDate(
         draft: FundPositionDraft,
         quote: FundQuote?,
@@ -1073,6 +1227,10 @@ final class PortfolioStore {
             let positionDate = pendingRecord?.tradeDate ?? fund.positionDate ?? DateOnlyFormatter.string(from: .now)
             let positionTimeType = pendingRecord?.tradeTimeType ?? fund.positionTimeType ?? .before15
             let positionMode = pendingRecord?.mode ?? fund.positionMode ?? .amount
+            if let pendingRecord, waitsForExternalConfirmation(pendingRecord) {
+                continue
+            }
+
             let acceptedDate = TradingCalendar.acceptedTradeDate(
                 positionDate: positionDate,
                 timeType: positionTimeType
@@ -1203,7 +1361,8 @@ final class PortfolioStore {
         acceptedDate: String,
         conversionID: String,
         outRecordID: String,
-        inRecordID: String
+        inRecordID: String,
+        syncMetadata: FundTradeSyncMetadata? = nil
     ) {
         let createdAt = Date.now
         let targetFund = toFund ?? snapshot.funds.first { $0.code == draft.toCode }
@@ -1223,7 +1382,12 @@ final class PortfolioStore {
                 createdAt: createdAt,
                 sellFeeMode: draft.sellFeeMode,
                 sellFeeValue: draft.sellFeeValue,
-                buyFeeRate: draft.buyFeeRate
+                buyFeeRate: draft.buyFeeRate,
+                syncSource: syncMetadata?.source,
+                syncKey: syncMetadata?.syncKey,
+                externalStatus: syncMetadata?.externalStatus,
+                externalStatusText: syncMetadata?.externalStatusText,
+                waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
             )
         )
         snapshot.pendingConversions = pendingConversions
@@ -1235,7 +1399,8 @@ final class PortfolioStore {
                 fromFund: fromFund,
                 toFund: targetFund,
                 acceptedDate: acceptedDate,
-                createdAt: createdAt
+                createdAt: createdAt,
+                syncMetadata: syncMetadata
             )
         )
         appendTradeRecord(
@@ -1246,7 +1411,8 @@ final class PortfolioStore {
                 fromFund: fromFund,
                 toFund: targetFund,
                 acceptedDate: acceptedDate,
-                createdAt: createdAt
+                createdAt: createdAt,
+                syncMetadata: syncMetadata
             )
         )
     }
@@ -1290,7 +1456,8 @@ final class PortfolioStore {
         fromFund: FundPosition,
         toFund: FundPosition?,
         acceptedDate: String,
-        createdAt: Date
+        createdAt: Date,
+        syncMetadata: FundTradeSyncMetadata? = nil
     ) -> FundTradeRecord {
         FundTradeRecord(
             id: id,
@@ -1313,7 +1480,12 @@ final class PortfolioStore {
             sellFeeValue: draft.sellFeeValue,
             conversionID: conversionID,
             linkedCode: draft.toCode,
-            linkedName: toFund?.name ?? draft.toName
+            linkedName: toFund?.name ?? draft.toName,
+            syncSource: syncMetadata?.source,
+            syncKey: syncMetadata?.syncKey,
+            externalStatus: syncMetadata?.externalStatus,
+            externalStatusText: syncMetadata?.externalStatusText,
+            waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
         )
     }
 
@@ -1324,7 +1496,8 @@ final class PortfolioStore {
         fromFund: FundPosition,
         toFund: FundPosition?,
         acceptedDate: String,
-        createdAt: Date
+        createdAt: Date,
+        syncMetadata: FundTradeSyncMetadata? = nil
     ) -> FundTradeRecord {
         FundTradeRecord(
             id: id,
@@ -1346,14 +1519,20 @@ final class PortfolioStore {
             buyFeeRate: draft.buyFeeRate,
             conversionID: conversionID,
             linkedCode: draft.fromCode,
-            linkedName: fromFund.name
+            linkedName: fromFund.name,
+            syncSource: syncMetadata?.source,
+            syncKey: syncMetadata?.syncKey,
+            externalStatus: syncMetadata?.externalStatus,
+            externalStatusText: syncMetadata?.externalStatusText,
+            waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
         )
     }
 
     private func appendPendingTrade(
         _ draft: FundTradeDraft,
         fund: FundPosition,
-        acceptedDate: String
+        acceptedDate: String,
+        syncMetadata: FundTradeSyncMetadata? = nil
     ) {
         let record = tradeRecord(
             kind: tradeKind(for: draft.action),
@@ -1372,7 +1551,8 @@ final class PortfolioStore {
             tradeTimeType: draft.tradeTimeType,
             acceptedDate: acceptedDate,
             createdAt: .now,
-            confirmedAt: nil
+            confirmedAt: nil,
+            syncMetadata: syncMetadata
         )
         var pendingTrades = snapshot.pendingTrades ?? []
         pendingTrades.append(
@@ -1389,7 +1569,12 @@ final class PortfolioStore {
                 createdAt: .now,
                 buyFeeRate: draft.buyFeeRate,
                 sellFeeMode: draft.sellFeeMode,
-                sellFeeValue: draft.sellFeeValue
+                sellFeeValue: draft.sellFeeValue,
+                syncSource: syncMetadata?.source,
+                syncKey: syncMetadata?.syncKey,
+                externalStatus: syncMetadata?.externalStatus,
+                externalStatusText: syncMetadata?.externalStatusText,
+                waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
             )
         )
         snapshot.pendingTrades = pendingTrades
@@ -1564,7 +1749,12 @@ final class PortfolioStore {
                     createdAt: record.createdAt,
                     buyFeeRate: record.buyFeeRate,
                     sellFeeMode: record.sellFeeMode,
-                    sellFeeValue: record.sellFeeValue
+                    sellFeeValue: record.sellFeeValue,
+                    syncSource: record.syncSource,
+                    syncKey: record.syncKey,
+                    externalStatus: record.externalStatus,
+                    externalStatusText: record.externalStatusText,
+                    waitsForExternalConfirmation: record.waitsForExternalConfirmation
                 )
             }
         let next = existing + rebuilt
@@ -2011,6 +2201,28 @@ final class PortfolioStore {
             return
         }
 
+        if updateTradeRecord(
+            id: nil,
+            matching: { record in
+                tradeRecordMatches(record, draft: draft, code: draft.code)
+            },
+            update: { record in
+                record.status = .confirmed
+                record.name = fund.name
+                record.price = record.price ?? price
+                record.confirmedShares = record.confirmedShares ?? confirmedShares
+                record.buyFeeRate = draft.buyFeeRate
+                record.sellFeeMode = draft.sellFeeMode
+                record.sellFeeValue = draft.sellFeeValue
+                record.confirmedAt = record.confirmedAt ?? .now
+                if let syncMetadata = syncMetadata(from: pendingTrade) {
+                    apply(syncMetadata, to: &record)
+                }
+            }
+        ) {
+            return
+        }
+
         appendTradeRecord(
             tradeRecord(
                 kind: kind,
@@ -2029,7 +2241,8 @@ final class PortfolioStore {
                 tradeTimeType: draft.tradeTimeType,
                 acceptedDate: acceptedDate,
                 createdAt: pendingTrade.createdAt,
-                confirmedAt: .now
+                confirmedAt: .now,
+                syncMetadata: syncMetadata(from: pendingTrade)
             )
         )
     }
@@ -2100,7 +2313,12 @@ final class PortfolioStore {
                     conversionID: conversionID,
                     linkedCode: draft.toCode,
                     linkedName: toFund.name,
-                    feeAmount: sellFee
+                    feeAmount: sellFee,
+                    syncSource: pendingConversion.syncSource,
+                    syncKey: pendingConversion.syncKey,
+                    externalStatus: pendingConversion.externalStatus,
+                    externalStatusText: pendingConversion.externalStatusText,
+                    waitsForExternalConfirmation: pendingConversion.waitsForExternalConfirmation
                 )
             )
         }
@@ -2151,7 +2369,12 @@ final class PortfolioStore {
                     conversionID: conversionID,
                     linkedCode: draft.fromCode,
                     linkedName: fromFund.name,
-                    feeAmount: buyFee
+                    feeAmount: buyFee,
+                    syncSource: pendingConversion.syncSource,
+                    syncKey: pendingConversion.syncKey,
+                    externalStatus: pendingConversion.externalStatus,
+                    externalStatusText: pendingConversion.externalStatusText,
+                    waitsForExternalConfirmation: pendingConversion.waitsForExternalConfirmation
                 )
             )
         }
@@ -2235,7 +2458,8 @@ final class PortfolioStore {
         tradeTimeType: PositionTimeType,
         acceptedDate: String,
         createdAt: Date,
-        confirmedAt: Date?
+        confirmedAt: Date?,
+        syncMetadata: FundTradeSyncMetadata? = nil
     ) -> FundTradeRecord {
         FundTradeRecord(
             id: UUID().uuidString,
@@ -2257,7 +2481,12 @@ final class PortfolioStore {
             failureReason: nil,
             buyFeeRate: buyFeeRate,
             sellFeeMode: sellFeeMode,
-            sellFeeValue: sellFeeValue
+            sellFeeValue: sellFeeValue,
+            syncSource: syncMetadata?.source,
+            syncKey: syncMetadata?.syncKey,
+            externalStatus: syncMetadata?.externalStatus,
+            externalStatusText: syncMetadata?.externalStatusText,
+            waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
         )
     }
 
@@ -2265,6 +2494,286 @@ final class PortfolioStore {
         var records = snapshot.tradeRecords ?? []
         records.append(record)
         snapshot.tradeRecords = records
+    }
+
+    private func hasImportedTrade(matching draft: FundTradeDraft) -> Bool {
+        let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return false }
+
+        if (snapshot.pendingTrades ?? []).contains(where: { pendingTradeMatches($0, draft: draft, code: code) }) {
+            return true
+        }
+
+        return (snapshot.tradeRecords ?? []).contains { tradeRecordMatches($0, draft: draft, code: code) }
+    }
+
+    private func markImportedTrade(
+        matching draft: FundTradeDraft,
+        syncMetadata: FundTradeSyncMetadata
+    ) {
+        let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return }
+
+        if var pendingTrades = snapshot.pendingTrades {
+            for index in pendingTrades.indices where pendingTradeMatches(pendingTrades[index], draft: draft, code: code) {
+                apply(syncMetadata, to: &pendingTrades[index])
+            }
+            snapshot.pendingTrades = pendingTrades
+        }
+
+        if var records = snapshot.tradeRecords {
+            for index in records.indices where tradeRecordMatches(records[index], draft: draft, code: code) {
+                apply(syncMetadata, to: &records[index])
+            }
+            snapshot.tradeRecords = records
+        }
+    }
+
+    private func pendingTradeMatches(_ pendingTrade: FundPendingTrade, draft: FundTradeDraft, code: String) -> Bool {
+        guard pendingTrade.code == code,
+              pendingTrade.action == draft.action,
+              pendingTrade.tradeDate == draft.tradeDate,
+              pendingTrade.tradeTimeType == draft.tradeTimeType
+        else {
+            return false
+        }
+
+        switch draft.action {
+        case .buy:
+            return moneyMatches(pendingTrade.amount, draft.amount)
+        case .sell:
+            return sharesMatch(pendingTrade.shares, draft.shares)
+        }
+    }
+
+    private func tradeRecordMatches(_ record: FundTradeRecord, draft: FundTradeDraft, code: String) -> Bool {
+        guard record.code == code,
+              record.tradeDate == draft.tradeDate,
+              record.tradeTimeType == draft.tradeTimeType
+        else {
+            return false
+        }
+
+        switch draft.action {
+        case .buy:
+            guard record.kind == .newFund || record.kind == .buy else { return false }
+            return moneyMatches(record.amount, draft.amount)
+        case .sell:
+            guard record.kind == .sell else { return false }
+            return sharesMatch(record.shares ?? record.confirmedShares, draft.shares)
+        }
+    }
+
+    private func overwriteJDFinanceTradeRecord(
+        recordID: String,
+        values: JDFinanceReconciliationValues
+    ) throws {
+        guard var records = snapshot.tradeRecords,
+              let index = records.firstIndex(where: { $0.id == recordID })
+        else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+
+        let code = records[index].code
+        let amount = values.amount ?? records[index].amount
+        let shares = values.shares ?? records[index].confirmedShares ?? records[index].shares
+        records[index].status = .confirmed
+        records[index].amount = amount
+        switch records[index].kind {
+        case .newFund, .buy, .conversionIn:
+            records[index].shares = nil
+        case .sell, .conversionOut:
+            records[index].shares = shares
+        }
+        records[index].confirmedShares = shares
+        records[index].price = reconciliationPrice(
+            amount: amount,
+            shares: shares,
+            fallback: values.price ?? records[index].price
+        )
+        records[index].confirmedAt = records[index].confirmedAt ?? .now
+        records[index].failureReason = nil
+        markRecordAsJDFinanceConfirmed(&records[index], values: values)
+        snapshot.tradeRecords = records
+        snapshot.pendingTrades?.removeAll { $0.recordID == recordID || $0.id == recordID }
+        if snapshot.pendingTrades?.isEmpty == true {
+            snapshot.pendingTrades = nil
+        }
+        try rebuildFundPositionFromTradeRecords(code: code)
+    }
+
+    private func overwriteJDFinanceConversionRecords(
+        conversionID: String,
+        values: JDFinanceReconciliationValues
+    ) throws {
+        guard var records = snapshot.tradeRecords else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+        guard let outIndex = records.firstIndex(where: { $0.conversionID == conversionID && $0.kind == .conversionOut }),
+              let inIndex = records.firstIndex(where: { $0.conversionID == conversionID && $0.kind == .conversionIn })
+        else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+
+        let affectedCodes = Set([records[outIndex].code, records[inIndex].code])
+        let outAmount = values.amount ?? records[outIndex].amount
+        let outShares = values.shares ?? records[outIndex].confirmedShares ?? records[outIndex].shares
+        records[outIndex].status = .confirmed
+        records[outIndex].amount = outAmount
+        records[outIndex].shares = outShares
+        records[outIndex].confirmedShares = outShares
+        records[outIndex].price = reconciliationPrice(
+            amount: outAmount,
+            shares: outShares,
+            fallback: values.price ?? records[outIndex].price
+        )
+        records[outIndex].confirmedAt = records[outIndex].confirmedAt ?? .now
+        records[outIndex].failureReason = nil
+        markRecordAsJDFinanceConfirmed(&records[outIndex], values: values)
+
+        let inAmount = values.inAmount ?? records[inIndex].amount
+        let inShares = values.inShares ?? records[inIndex].confirmedShares ?? records[inIndex].shares
+        records[inIndex].status = .confirmed
+        records[inIndex].amount = inAmount
+        records[inIndex].shares = nil
+        records[inIndex].confirmedShares = inShares
+        records[inIndex].price = reconciliationPrice(
+            amount: inAmount,
+            shares: inShares,
+            fallback: values.inPrice ?? records[inIndex].price
+        )
+        records[inIndex].confirmedAt = records[inIndex].confirmedAt ?? .now
+        records[inIndex].failureReason = nil
+        markRecordAsJDFinanceConfirmed(&records[inIndex], values: values)
+
+        snapshot.tradeRecords = records
+        snapshot.pendingConversions?.removeAll { $0.id == conversionID }
+        if snapshot.pendingConversions?.isEmpty == true {
+            snapshot.pendingConversions = nil
+        }
+        for code in affectedCodes {
+            try rebuildFundPositionFromTradeRecords(code: code)
+        }
+    }
+
+    private func reconciliationPrice(amount: Double?, shares: Double?, fallback: Double?) -> Double? {
+        guard let amount, let shares, amount > 0, shares > 0 else {
+            return fallback
+        }
+        return roundedStoredShares(amount / shares)
+    }
+
+    private func markRecordAsJDFinanceConfirmed(
+        _ record: inout FundTradeRecord,
+        values: JDFinanceReconciliationValues
+    ) {
+        record.syncSource = .jdFinance
+        record.syncKey = values.syncKey ?? record.syncKey
+        record.externalStatus = .externalConfirmed
+        record.externalStatusText = values.statusText ?? record.externalStatusText
+        record.waitsForExternalConfirmation = false
+    }
+
+    private func hasImportedConversion(matching draft: FundConversionDraft) -> Bool {
+        if (snapshot.pendingConversions ?? []).contains(where: { pendingConversionMatches($0, draft: draft) }) {
+            return true
+        }
+
+        return (snapshot.tradeRecords ?? []).contains { record in
+            record.kind == .conversionOut
+                && record.code == draft.fromCode
+                && record.linkedCode == draft.toCode
+                && record.tradeDate == draft.tradeDate
+                && record.tradeTimeType == draft.tradeTimeType
+                && sharesMatch(record.shares ?? record.confirmedShares, draft.shares)
+        }
+    }
+
+    private func markImportedConversion(
+        matching draft: FundConversionDraft,
+        syncMetadata: FundTradeSyncMetadata
+    ) {
+        var conversionIDs = Set<String>()
+
+        if var pendingConversions = snapshot.pendingConversions {
+            for index in pendingConversions.indices where pendingConversionMatches(pendingConversions[index], draft: draft) {
+                apply(syncMetadata, to: &pendingConversions[index])
+                conversionIDs.insert(pendingConversions[index].id)
+            }
+            snapshot.pendingConversions = pendingConversions
+        }
+
+        if var records = snapshot.tradeRecords {
+            for index in records.indices {
+                let matchesDraft = records[index].kind == .conversionOut
+                    && records[index].code == draft.fromCode
+                    && records[index].linkedCode == draft.toCode
+                    && records[index].tradeDate == draft.tradeDate
+                    && records[index].tradeTimeType == draft.tradeTimeType
+                    && sharesMatch(records[index].shares ?? records[index].confirmedShares, draft.shares)
+                if matchesDraft, let conversionID = records[index].conversionID {
+                    conversionIDs.insert(conversionID)
+                }
+            }
+
+            for index in records.indices where records[index].conversionID.map(conversionIDs.contains) == true {
+                apply(syncMetadata, to: &records[index])
+            }
+            snapshot.tradeRecords = records
+        }
+    }
+
+    private func apply(_ syncMetadata: FundTradeSyncMetadata, to record: inout FundTradeRecord) {
+        record.syncSource = syncMetadata.source
+        record.syncKey = syncMetadata.syncKey
+        record.externalStatus = syncMetadata.externalStatus
+        record.externalStatusText = syncMetadata.externalStatusText
+        record.waitsForExternalConfirmation = syncMetadata.waitsForExternalConfirmation
+    }
+
+    private func apply(_ syncMetadata: FundTradeSyncMetadata, to pendingTrade: inout FundPendingTrade) {
+        pendingTrade.syncSource = syncMetadata.source
+        pendingTrade.syncKey = syncMetadata.syncKey
+        pendingTrade.externalStatus = syncMetadata.externalStatus
+        pendingTrade.externalStatusText = syncMetadata.externalStatusText
+        pendingTrade.waitsForExternalConfirmation = syncMetadata.waitsForExternalConfirmation
+    }
+
+    private func apply(_ syncMetadata: FundTradeSyncMetadata, to pendingConversion: inout FundPendingConversion) {
+        pendingConversion.syncSource = syncMetadata.source
+        pendingConversion.syncKey = syncMetadata.syncKey
+        pendingConversion.externalStatus = syncMetadata.externalStatus
+        pendingConversion.externalStatusText = syncMetadata.externalStatusText
+        pendingConversion.waitsForExternalConfirmation = syncMetadata.waitsForExternalConfirmation
+    }
+
+    private func syncMetadata(from pendingTrade: FundPendingTrade) -> FundTradeSyncMetadata? {
+        guard let source = pendingTrade.syncSource else { return nil }
+        return FundTradeSyncMetadata(
+            source: source,
+            syncKey: pendingTrade.syncKey,
+            externalStatus: pendingTrade.externalStatus,
+            externalStatusText: pendingTrade.externalStatusText,
+            waitsForExternalConfirmation: pendingTrade.waitsForExternalConfirmation
+        )
+    }
+
+    private func pendingConversionMatches(_ pendingConversion: FundPendingConversion, draft: FundConversionDraft) -> Bool {
+        pendingConversion.fromCode == draft.fromCode
+            && pendingConversion.toCode == draft.toCode
+            && pendingConversion.tradeDate == draft.tradeDate
+            && pendingConversion.tradeTimeType == draft.tradeTimeType
+            && sharesMatch(pendingConversion.shares, draft.shares)
+    }
+
+    private func moneyMatches(_ lhs: Double?, _ rhs: Double?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return roundedMoney(lhs) == roundedMoney(rhs)
+    }
+
+    private func sharesMatch(_ lhs: Double?, _ rhs: Double?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return roundedStoredShares(lhs) == roundedStoredShares(rhs)
     }
 
     private func resetTradeHistoryForEditedFund(codes: Set<String>) {

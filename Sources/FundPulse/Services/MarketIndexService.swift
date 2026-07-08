@@ -5,6 +5,7 @@ struct MarketIndexService {
         URL(string: "https://push2.eastmoney.com/api/qt/ulist.np/get")!,
         URL(string: "https://push2delay.eastmoney.com/api/qt/ulist.np/get")!
     ]
+    private static let tonghuashunMarketBreadthEndpoint = URL(string: "https://q.10jqka.com.cn/api.php")!
 
     private let session: URLSession
 
@@ -21,6 +22,10 @@ struct MarketIndexService {
         guard !uniqueIDs.isEmpty else { return [:] }
 
         return (try? await fetchEastmoneyBatchQuotes(for: uniqueIDs)) ?? [:]
+    }
+
+    func fetchMarketBreadth() async -> MarketBreadth? {
+        try? await fetchTonghuashunMarketBreadth()
     }
 
     private func fetchEastmoneyBatchQuotes(for ids: [MarketIndexID]) async throws -> [MarketIndexID: MarketIndexQuote] {
@@ -76,11 +81,49 @@ struct MarketIndexService {
         return quotes
     }
 
+    private func fetchTonghuashunMarketBreadth() async throws -> MarketBreadth {
+        var components = URLComponents(url: Self.tonghuashunMarketBreadthEndpoint, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "t", value: "indexflash")
+        ]
+        guard let url = components.url else { throw URLError(.badURL) }
+
+        let (data, _) = try await session.data(for: tonghuashunMarketBreadthRequest(url: url))
+        let response = try JSONDecoder().decode(TonghuashunIndexFlashResponse.self, from: data)
+        guard let payload = response.distribution,
+              let risingCount = payload.risingCount?.value,
+              let fallingCount = payload.fallingCount?.value,
+              risingCount > 0 || fallingCount > 0
+        else {
+            throw URLError(.badServerResponse)
+        }
+
+        return MarketBreadth(
+            risingCount: risingCount,
+            fallingCount: fallingCount,
+            distribution: payload.buckets?.compactMap(\.value) ?? [],
+            limitUpCount: response.limitData?.latest?.limitUpCount?.value,
+            limitDownCount: response.limitData?.latest?.limitDownCount?.value
+        )
+    }
+
     private func marketIndexRequest(url: URL) -> URLRequest {
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.setValue("no-cache", forHTTPHeaderField: "Pragma")
         request.setValue("https://quote.eastmoney.com/", forHTTPHeaderField: "Referer")
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+        return request
+    }
+
+    private func tonghuashunMarketBreadthRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.setValue("no-cache", forHTTPHeaderField: "Pragma")
+        request.setValue("https://q.10jqka.com.cn/", forHTTPHeaderField: "Referer")
         request.setValue(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
@@ -118,6 +161,46 @@ private struct EastmoneyMarketIndexListItem: Decodable {
     }
 }
 
+private struct TonghuashunIndexFlashResponse: Decodable {
+    var distribution: TonghuashunBreadthPayload?
+    var limitData: TonghuashunLimitPayload?
+
+    enum CodingKeys: String, CodingKey {
+        case distribution = "zdfb_data"
+        case limitData = "zdt_data"
+    }
+}
+
+private struct TonghuashunBreadthPayload: Decodable {
+    var buckets: [LossyMarketIndexInteger]?
+    var risingCount: LossyMarketIndexInteger?
+    var fallingCount: LossyMarketIndexInteger?
+
+    enum CodingKeys: String, CodingKey {
+        case buckets = "zdfb"
+        case risingCount = "znum"
+        case fallingCount = "dnum"
+    }
+}
+
+private struct TonghuashunLimitPayload: Decodable {
+    var latest: TonghuashunLatestLimit?
+
+    enum CodingKeys: String, CodingKey {
+        case latest = "last_zdt"
+    }
+}
+
+private struct TonghuashunLatestLimit: Decodable {
+    var limitUpCount: LossyMarketIndexInteger?
+    var limitDownCount: LossyMarketIndexInteger?
+
+    enum CodingKeys: String, CodingKey {
+        case limitUpCount = "ztzs"
+        case limitDownCount = "dtzs"
+    }
+}
+
 private struct LossyMarketIndexNumber: Decodable {
     var value: Double?
 
@@ -132,6 +215,34 @@ private struct LossyMarketIndexNumber: Decodable {
         } else if let string = try? container.decode(String.self) {
             let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
             value = Double(normalized)
+        } else {
+            value = nil
+        }
+    }
+}
+
+private struct LossyMarketIndexInteger: Decodable {
+    var value: Int?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            value = nil
+        } else if let int = try? container.decode(Int.self) {
+            value = int
+        } else if let double = try? container.decode(Double.self) {
+            value = Int(double)
+        } else if let string = try? container.decode(String.self) {
+            let normalized = string
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: ",", with: "")
+            if let int = Int(normalized) {
+                value = int
+            } else if let double = Double(normalized) {
+                value = Int(double)
+            } else {
+                value = nil
+            }
         } else {
             value = nil
         }

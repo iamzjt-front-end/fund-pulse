@@ -169,6 +169,11 @@ final class JDFinanceNetworkProbe: @unchecked Sendable {
             seen.insert(summary)
         }
 
+        for summary in accountAssetSummaries(in: object) where seen.insert(summary).inserted {
+            summaries.append(summary)
+            if summaries.count >= 12 { break }
+        }
+
         for leaf in leafValues(in: object) {
             guard !isSensitivePath(leaf.path),
                   let summary = safeSummary(for: leaf)
@@ -181,6 +186,48 @@ final class JDFinanceNetworkProbe: @unchecked Sendable {
         }
 
         return (topLevelKeys, summaries)
+    }
+
+    private static func accountAssetSummaries(in object: Any) -> [String] {
+        let leaves = leafValues(in: object).filter { !isSensitivePath($0.path) }
+        let targets: [(path: String, label: String)] = [
+            ("headassetsdata.totalassets", "账户总金额"),
+            ("headassetsdata.holdincome", "账户持有收益"),
+            ("headassetsdata.todayincome", "账户今日收益"),
+            ("headassetsdata.yesterdayincome", "账户昨日收益"),
+            ("headassetsdata.totalincome", "账户累计收益")
+        ]
+
+        return targets.compactMap { target in
+            let candidates = leaves
+                .filter { accountLeaf($0, matches: target.path) }
+                .sorted(by: accountLeafPrecedes)
+            guard let leaf = candidates.first else { return nil }
+
+            if let amount = numericValue(leaf.value) {
+                return "\(target.label): \(MoneyFormatter.plainMoney(amount))"
+            }
+            return "\(target.label): \(abbreviated(leaf.value))"
+        }
+    }
+
+    private static func accountLeaf(_ leaf: Leaf, matches targetPath: String) -> Bool {
+        let path = leaf.path.lowercased()
+        return path == targetPath
+            || path.hasPrefix("\(targetPath).")
+            || path.hasSuffix(".\(targetPath)")
+            || path.contains(".\(targetPath).")
+    }
+
+    private static func accountLeafPrecedes(_ lhs: Leaf, _ rhs: Leaf) -> Bool {
+        accountLeafPriority(lhs.path) < accountLeafPriority(rhs.path)
+    }
+
+    private static func accountLeafPriority(_ path: String) -> Int {
+        let path = path.lowercased()
+        if path.hasSuffix(".amt") { return 0 }
+        if path.hasSuffix(".text") { return 1 }
+        return 2
     }
 
     private static func requestSummaries(fromBodyText bodyText: String?) -> [String] {

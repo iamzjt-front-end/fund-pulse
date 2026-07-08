@@ -113,3 +113,36 @@ struct MarketIndexQuote: Codable, Equatable, Identifiable {
         self.updateTime = updateTime
     }
 }
+
+struct MarketBreadth: Codable, Equatable {
+    var risingCount: Int
+    var fallingCount: Int
+    var distribution: [Int]
+    var limitUpCount: Int?
+    var limitDownCount: Int?
+    var updateTime: Date
+
+    init(
+        risingCount: Int,
+        fallingCount: Int,
+        distribution: [Int] = [],
+        limitUpCount: Int? = nil,
+        limitDownCount: Int? = nil,
+        updateTime: Date = .now
+    ) {
+        self.risingCount = risingCount
+        self.fallingCount = fallingCount
+        self.distribution = distribution
+        self.limitUpCount = limitUpCount
+        self.limitDownCount = limitDownCount
+        self.updateTime = updateTime
+    }
+
+    var activeCount: Int {
+        risingCount + fallingCount
+    }
+
+    var hasData: Bool {
+        risingCount > 0 || fallingCount > 0
+    }
+}

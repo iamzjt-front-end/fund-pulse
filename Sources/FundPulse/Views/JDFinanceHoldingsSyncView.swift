@@ -13,6 +13,7 @@ private enum JDFinanceSyncApplyScope: Hashable {
     case newHoldings
     case changedHoldings
     case pendingHoldings
+    case reconciliations
 }
 
 private struct JDFinanceManualPendingInput: Equatable {
@@ -47,7 +48,12 @@ struct JDFinanceHoldingsSyncView: View {
     @State private var needsLogin = false
     @State private var isRequestingLogin = false
     @State private var loginToastMessage: String?
-    @State private var selectedApplyScopes: Set<JDFinanceSyncApplyScope> = [.newHoldings, .changedHoldings, .pendingHoldings]
+    @State private var selectedApplyScopes: Set<JDFinanceSyncApplyScope> = [
+        .newHoldings,
+        .changedHoldings,
+        .pendingHoldings,
+        .reconciliations
+    ]
     @State private var manualPendingInputs: [String: JDFinanceManualPendingInput] = [:]
 
     @MainActor
@@ -316,6 +322,18 @@ struct JDFinanceHoldingsSyncView: View {
                             }
                         }
 
+                        if !preview.reconciliationNotices.isEmpty {
+                            previewSection(
+                                title: "京东最终待覆盖",
+                                count: preview.reconciliationNotices.count,
+                                tone: PanelDesign.accent
+                            ) {
+                                ForEach(preview.reconciliationNotices) { notice in
+                                    reconciliationNoticeCard(notice)
+                                }
+                            }
+                        }
+
                         if !preview.missingLocalHoldings.isEmpty {
                             previewSection(
                                 title: "可能清仓",
@@ -376,6 +394,7 @@ struct JDFinanceHoldingsSyncView: View {
             HStack(spacing: 7) {
                 countPill("新增", preview.newHoldings.count, tone: PanelDesign.accent)
                 countPill("差异", preview.changedHoldings.count, tone: .orange)
+                countPill("覆盖", preview.reconciliationNotices.count, tone: PanelDesign.accent)
                 countPill("清仓", preview.missingLocalHoldings.count, tone: .green)
                 countPill("待确认", preview.pendingNotices.count, tone: PanelDesign.warningAccent)
             }
@@ -433,6 +452,12 @@ struct JDFinanceHoldingsSyncView: View {
                         count: preview.importablePendingNotices.count,
                         tone: PanelDesign.warningAccent
                     )
+                    syncScopeToggle(
+                        scope: .reconciliations,
+                        title: "待覆盖",
+                        count: preview.overwritableReconciliationNotices.count,
+                        tone: PanelDesign.accent
+                    )
                 }
             } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty {
                 Label("清仓和交易中记录仅作为提示，不会自动写入本地。", systemImage: "info.circle")
@@ -488,6 +513,7 @@ struct JDFinanceHoldingsSyncView: View {
         let quietItems = [
             ("无新增", preview.newHoldings.isEmpty),
             ("无金额差异", preview.changedHoldings.isEmpty),
+            ("无待覆盖", preview.reconciliationNotices.isEmpty),
             ("无清仓提示", preview.missingLocalHoldings.isEmpty)
         ].filter(\.1).map(\.0)
 
@@ -512,7 +538,8 @@ struct JDFinanceHoldingsSyncView: View {
     private func hasSelectableScopes(_ preview: JDFinanceHoldingsSyncPreview) -> Bool {
         !preview.newHoldings.isEmpty ||
             !preview.changedHoldings.isEmpty ||
-            !preview.importablePendingNotices.isEmpty
+            !preview.importablePendingNotices.isEmpty ||
+            !preview.overwritableReconciliationNotices.isEmpty
     }
 
     private func syncScopeToggle(
@@ -685,6 +712,100 @@ struct JDFinanceHoldingsSyncView: View {
         }
     }
 
+    private func reconciliationNoticeCard(_ notice: JDFinanceReconciliationNotice) -> some View {
+        comparisonCardHeader(
+            code: notice.code,
+            name: notice.name,
+            badge: reconciliationBadge(for: notice),
+            tone: notice.isOverwritable ? PanelDesign.accent : PanelDesign.warningAccent
+        ) {
+            HStack(spacing: 8) {
+                metricPair("方向", reconciliationActionTitle(for: notice), tone: .primary)
+                metricPair("交易日", notice.tradeDate, tone: .primary)
+                metricPair("时段", notice.tradeTimeType.title, tone: .primary)
+            }
+
+            HStack(spacing: 8) {
+                metricPair("本地金额", moneyOrDash(notice.localAmount), tone: .secondary)
+                metricPair("京东金额", moneyOrDash(notice.jdAmount), tone: notice.jdAmount == nil ? .secondary : .primary)
+                metricPair("差额", differenceText(for: notice), tone: notice.isOverwritable ? PanelDesign.accent : .secondary)
+            }
+
+            HStack(spacing: 8) {
+                metricPair("本地份额", notice.localShares.map(shareText) ?? "--", tone: .secondary)
+                metricPair("京东份额", notice.jdShares.map(shareText) ?? "--", tone: notice.jdShares == nil ? .secondary : .primary)
+            }
+
+            if let linkedName = notice.linkedName {
+                Text("目标：\(linkedName)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let conflictMessage = reconciliationConflictMessage(for: notice) {
+                Text(conflictMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(PanelDesign.warningAccent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if !notice.matchedTradeRecords.isEmpty {
+                tradeRecordsList(title: "京东最终流水", records: notice.matchedTradeRecords)
+            }
+        }
+    }
+
+    private func reconciliationBadge(for notice: JDFinanceReconciliationNotice) -> String {
+        switch notice.state {
+        case .jdConfirmedNeedsOverwrite:
+            "京东已确认 · 待覆盖"
+        case .localConfirmedJDPending:
+            "本地已确认"
+        case .conflict:
+            "同步冲突"
+        }
+    }
+
+    private func reconciliationActionTitle(for notice: JDFinanceReconciliationNotice) -> String {
+        switch notice.kind {
+        case .trade(_, let action):
+            action.title
+        case .conversion:
+            "转换"
+        }
+    }
+
+    private func reconciliationConflictMessage(for notice: JDFinanceReconciliationNotice) -> String? {
+        if case .conflict(let message) = notice.state {
+            return message
+        }
+        return nil
+    }
+
+    private func differenceText(for notice: JDFinanceReconciliationNotice) -> String {
+        switch notice.state {
+        case .jdConfirmedNeedsOverwrite(let difference), .localConfirmedJDPending(let difference):
+            return differenceText(for: difference)
+        case .conflict:
+            return "--"
+        }
+    }
+
+    private func differenceText(for difference: JDFinanceSyncDifference) -> String {
+        var parts: [String] = []
+        if let amountDelta = difference.amountDelta {
+            parts.append(signedMoneyOrDash(amountDelta))
+        }
+        if let sharesDelta = difference.sharesDelta {
+            parts.append(shareText(sharesDelta))
+        }
+        if let priceDelta = difference.priceDelta {
+            parts.append(String(format: "%+.6f", priceDelta))
+        }
+        return parts.isEmpty ? "无" : parts.joined(separator: " / ")
+    }
+
     private func pendingNoticeCard(_ notice: JDFinanceHoldingPendingNotice) -> some View {
         comparisonCardHeader(
             code: notice.code,
@@ -715,6 +836,13 @@ struct JDFinanceHoldingsSyncView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
+            if case .localConfirmedJDPending(let difference) = notice.syncState {
+                Text("与本地确认差额：\(differenceText(for: difference))")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             if !notice.matchedTradeRecords.isEmpty {
                 tradeRecordsList(title: "已匹配交易记录", records: notice.matchedTradeRecords)
             } else if !notice.candidateTradeRecords.isEmpty {
@@ -731,6 +859,9 @@ struct JDFinanceHoldingsSyncView: View {
     }
 
     private func pendingNoticeBadge(for notice: JDFinanceHoldingPendingNotice) -> String {
+        if case .localConfirmedJDPending = notice.syncState {
+            return "本地已确认 · 京东待确认"
+        }
         if notice.isImportable { return "可同步" }
         if notice.requiresManualCompletion { return "需补全" }
         return "交易中"
@@ -740,12 +871,19 @@ struct JDFinanceHoldingsSyncView: View {
         if case .conversion = notice.importKind {
             return "转换份额"
         }
+        if (notice.pendingDetail?.action ?? notice.transactionTip?.action) == .conversion {
+            return "转换份额"
+        }
         return "交易金额"
     }
 
     private func pendingNoticeAmountText(for notice: JDFinanceHoldingPendingNotice) -> String {
         if case .conversion = notice.importKind {
             let shares = notice.conversionDraft()?.shares ?? notice.pendingDetail?.shares ?? notice.amount
+            return shares > 0 ? shareText(shares) : "--"
+        }
+        if (notice.pendingDetail?.action ?? notice.transactionTip?.action) == .conversion {
+            let shares = notice.pendingDetail?.shares ?? notice.amount
             return shares > 0 ? shareText(shares) : "--"
         }
         return notice.amount > 0 ? MoneyFormatter.plainMoney(notice.amount) : "--"
@@ -1086,7 +1224,8 @@ struct JDFinanceHoldingsSyncView: View {
         let canImportNew = selectedApplyScopes.contains(.newHoldings) && !preview.newHoldings.isEmpty
         let canUpdateChanged = selectedApplyScopes.contains(.changedHoldings) && !preview.changedHoldings.isEmpty
         let canImportPending = selectedApplyScopes.contains(.pendingHoldings) && !preview.importablePendingNotices.isEmpty
-        return canImportNew || canUpdateChanged || canImportPending
+        let canReconcile = selectedApplyScopes.contains(.reconciliations) && !preview.overwritableReconciliationNotices.isEmpty
+        return canImportNew || canUpdateChanged || canImportPending || canReconcile
     }
 
     private func applySelectedData() {
@@ -1095,7 +1234,8 @@ struct JDFinanceHoldingsSyncView: View {
                 to: portfolioStore,
                 importNew: selectedApplyScopes.contains(.newHoldings),
                 updateChanged: selectedApplyScopes.contains(.changedHoldings),
-                importPending: selectedApplyScopes.contains(.pendingHoldings)
+                importPending: selectedApplyScopes.contains(.pendingHoldings),
+                reconcileConfirmed: selectedApplyScopes.contains(.reconciliations)
             )
             onMainPanelRefreshNeeded()
         }

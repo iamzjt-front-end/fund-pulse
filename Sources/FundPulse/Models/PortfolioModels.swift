@@ -13,6 +13,7 @@ struct PortfolioSnapshot: Codable, Equatable {
     var pendingTrades: [FundPendingTrade]? = nil
     var pendingConversions: [FundPendingConversion]? = nil
     var tradeRecords: [FundTradeRecord]? = nil
+    var syncedAccountTotal: PortfolioSyncedAccountTotal? = nil
 
     static let empty = PortfolioSnapshot(
         updateTime: .now,
@@ -68,6 +69,16 @@ struct PortfolioSnapshot: Codable, Equatable {
         ],
         migration: nil
     )
+}
+
+struct PortfolioSyncedAccountTotal: Codable, Equatable {
+    var source: PortfolioAccountTotalSource
+    var amount: Double
+    var syncedAt: Date
+}
+
+enum PortfolioAccountTotalSource: String, Codable, Equatable {
+    case jdFinance
 }
 
 struct FundPosition: Codable, Identifiable, Equatable {
@@ -159,6 +170,24 @@ enum FundTradeRecordStatus: String, Codable, Equatable {
     }
 }
 
+enum FundTradeSyncSource: String, Codable, Equatable {
+    case jdFinance
+}
+
+enum FundTradeExternalStatus: String, Codable, Equatable {
+    case waitingExternalConfirmation
+    case externalConfirmed
+    case conflict
+}
+
+struct FundTradeSyncMetadata: Codable, Equatable {
+    var source: FundTradeSyncSource
+    var syncKey: String?
+    var externalStatus: FundTradeExternalStatus?
+    var externalStatusText: String?
+    var waitsForExternalConfirmation: Bool? = nil
+}
+
 struct FundTradeRecord: Codable, Identifiable, Equatable {
     var id: String
     var kind: FundTradeKind
@@ -184,6 +213,11 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var linkedCode: String? = nil
     var linkedName: String? = nil
     var feeAmount: Double? = nil
+    var syncSource: FundTradeSyncSource? = nil
+    var syncKey: String? = nil
+    var externalStatus: FundTradeExternalStatus? = nil
+    var externalStatusText: String? = nil
+    var waitsForExternalConfirmation: Bool? = nil
 }
 
 enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
@@ -245,6 +279,11 @@ struct FundPendingTrade: Codable, Identifiable, Equatable {
     var buyFeeRate: Double? = nil
     var sellFeeMode: TradeFeeMode? = nil
     var sellFeeValue: Double? = nil
+    var syncSource: FundTradeSyncSource? = nil
+    var syncKey: String? = nil
+    var externalStatus: FundTradeExternalStatus? = nil
+    var externalStatusText: String? = nil
+    var waitsForExternalConfirmation: Bool? = nil
 
     var draft: FundTradeDraft {
         FundTradeDraft(
@@ -290,6 +329,11 @@ struct FundPendingConversion: Codable, Identifiable, Equatable {
     var sellFeeValue: Double = 0
     var buyFeeRate: Double = 0
     var failureReason: String? = nil
+    var syncSource: FundTradeSyncSource? = nil
+    var syncKey: String? = nil
+    var externalStatus: FundTradeExternalStatus? = nil
+    var externalStatusText: String? = nil
+    var waitsForExternalConfirmation: Bool? = nil
 
     var draft: FundConversionDraft {
         FundConversionDraft(

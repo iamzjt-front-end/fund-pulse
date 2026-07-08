@@ -18,7 +18,7 @@ struct JDFinanceHoldingsService: Sendable {
         self.networkProbe = networkProbe
     }
 
-    func fetchSnapshot(cookieHeader: String?) async throws -> JDFinanceHoldingsSnapshot {
+    func fetchSnapshot(cookieHeader: String?, needsTradeOrderRecords: Bool = false) async throws -> JDFinanceHoldingsSnapshot {
         var components = URLComponents(url: Self.endpoint, resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "reqData", value: Self.requestPayload)
@@ -53,12 +53,14 @@ struct JDFinanceHoldingsService: Sendable {
             if let cookieHeader, !cookieHeader.isEmpty {
                 let tradeOrderRecords = await tradeOrderRecordsIfNeeded(
                     for: snapshot.products,
-                    cookieHeader: cookieHeader
+                    cookieHeader: cookieHeader,
+                    forceFetch: needsTradeOrderRecords
                 )
                 snapshot.products = await productsByFillingPendingDetails(
                     for: snapshot.products,
                     cookieHeader: cookieHeader,
-                    tradeOrderRecords: tradeOrderRecords
+                    tradeOrderRecords: tradeOrderRecords,
+                    includeReconciliationCandidates: needsTradeOrderRecords
                 )
             }
             return snapshot
@@ -72,7 +74,8 @@ struct JDFinanceHoldingsService: Sendable {
     private func productsByFillingPendingDetails(
         for products: [JDFinanceHoldingProduct],
         cookieHeader: String,
-        tradeOrderRecords: [JDFinanceTradeOrderRecord]
+        tradeOrderRecords: [JDFinanceTradeOrderRecord],
+        includeReconciliationCandidates: Bool
     ) async -> [JDFinanceHoldingProduct] {
         var enrichedProducts: [JDFinanceHoldingProduct] = []
         enrichedProducts.reserveCapacity(products.count)
@@ -83,7 +86,17 @@ struct JDFinanceHoldingsService: Sendable {
             {
                 product.pendingDetail = detail
             }
-            if let matchedRecords = Self.matchingTradeOrderRecords(for: product, in: tradeOrderRecords) {
+            if includeReconciliationCandidates, product.transactionTip == nil {
+                let candidateRecords = Self.candidateTradeOrderRecords(for: product, in: tradeOrderRecords)
+                if !candidateRecords.isEmpty {
+                    product.pendingDetail = Self.pendingDetail(
+                        product.pendingDetail,
+                        product: product,
+                        statusText: "已拉取京东交易流水用于对账",
+                        candidateTradeRecords: candidateRecords
+                    )
+                }
+            } else if let matchedRecords = Self.matchingTradeOrderRecords(for: product, in: tradeOrderRecords) {
                 product.pendingDetail = Self.mergedPendingDetail(
                     product.pendingDetail,
                     with: matchedRecords,
@@ -109,10 +122,11 @@ struct JDFinanceHoldingsService: Sendable {
 
     private func tradeOrderRecordsIfNeeded(
         for products: [JDFinanceHoldingProduct],
-        cookieHeader: String
+        cookieHeader: String,
+        forceFetch: Bool = false
     ) async -> [JDFinanceTradeOrderRecord] {
         let pendingProducts = products.filter { $0.transactionTip != nil }
-        guard !pendingProducts.isEmpty else {
+        guard forceFetch || !pendingProducts.isEmpty else {
             return []
         }
 

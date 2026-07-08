@@ -5,6 +5,7 @@ import Observation
 @MainActor
 final class MarketIndexStore {
     private(set) var quotes: [MarketIndexID: MarketIndexQuote] = [:]
+    private(set) var marketBreadth: MarketBreadth?
     private(set) var isRefreshing = false
     private(set) var lastRefreshAt: Date?
 
@@ -35,9 +36,14 @@ final class MarketIndexStore {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        let nextQuotes = await service.fetchQuotes(for: ids)
+        async let nextQuotesTask = service.fetchQuotes(for: ids)
+        async let nextBreadthTask = service.fetchMarketBreadth()
+        let (nextQuotes, nextBreadth) = await (nextQuotesTask, nextBreadthTask)
         if !nextQuotes.isEmpty {
             quotes.merge(nextQuotes) { _, new in new }
+        }
+        if let nextBreadth, nextBreadth.hasData {
+            marketBreadth = nextBreadth
         }
         lastRefreshAt = now
     }

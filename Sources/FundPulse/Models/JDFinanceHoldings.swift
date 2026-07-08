@@ -155,6 +155,65 @@ struct JDFinanceMissingLocalHolding: Identifiable, Equatable {
     var localAmount: Double?
 }
 
+struct JDFinanceSyncDifference: Equatable {
+    var amountDelta: Double?
+    var sharesDelta: Double?
+    var priceDelta: Double?
+
+    var hasDifference: Bool {
+        (amountDelta.map { abs($0) >= 0.01 } ?? false)
+            || (sharesDelta.map { abs($0) >= 0.000001 } ?? false)
+            || (priceDelta.map { abs($0) >= 0.000001 } ?? false)
+    }
+}
+
+enum JDFinanceSyncPreviewState: Equatable {
+    case localConfirmedJDPending(difference: JDFinanceSyncDifference)
+    case jdConfirmedNeedsOverwrite(difference: JDFinanceSyncDifference)
+    case conflict(String)
+}
+
+enum JDFinanceReconciliationKind: Equatable {
+    case trade(recordID: String, action: FundTradeAction)
+    case conversion(conversionID: String, outRecordID: String?, inRecordID: String?)
+}
+
+struct JDFinanceReconciliationValues: Equatable {
+    var amount: Double? = nil
+    var shares: Double? = nil
+    var price: Double? = nil
+    var inAmount: Double? = nil
+    var inShares: Double? = nil
+    var inPrice: Double? = nil
+    var statusText: String? = nil
+    var syncKey: String? = nil
+}
+
+struct JDFinanceReconciliationNotice: Identifiable, Equatable {
+    var id: String
+    var code: String
+    var name: String
+    var linkedCode: String?
+    var linkedName: String?
+    var tradeDate: String
+    var tradeTimeType: PositionTimeType
+    var kind: JDFinanceReconciliationKind
+    var state: JDFinanceSyncPreviewState
+    var localAmount: Double?
+    var jdAmount: Double?
+    var localShares: Double?
+    var jdShares: Double?
+    var values: JDFinanceReconciliationValues
+    var matchedTradeRecords: [JDFinanceTradeOrderRecord]
+
+    var isOverwritable: Bool {
+        if case .jdConfirmedNeedsOverwrite = state {
+            return true
+        }
+        return false
+    }
+}
+
 struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     var id: String { code }
     var code: String
@@ -166,6 +225,7 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     var yesterdayIncomeNotice: String? = nil
     var pendingDetail: JDFinancePendingTransactionDetail? = nil
     var importKind: JDFinancePendingImportKind? = nil
+    var syncState: JDFinanceSyncPreviewState? = nil
 
     var isImportable: Bool {
         canBuildLocalDraft(manualCompletion: nil)
@@ -356,7 +416,7 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
                 guard let amount = record.amount, amount > 0 else { return nil }
                 return FundTradeDraft(
                     action: .buy,
-                    code: code,
+                    code: normalizedRecordCode(record) ?? code,
                     mode: .amount,
                     amount: amount,
                     shares: nil,
@@ -367,7 +427,7 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
                 guard let shares = record.shares, shares > 0 else { return nil }
                 return FundTradeDraft(
                     action: .sell,
-                    code: code,
+                    code: normalizedRecordCode(record) ?? code,
                     mode: .share,
                     amount: nil,
                     shares: shares,
@@ -377,6 +437,11 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
             }
         }
         return drafts.count == matchedTradeRecords.count ? drafts : []
+    }
+
+    private func normalizedRecordCode(_ record: JDFinanceTradeOrderRecord) -> String? {
+        let trimmed = record.code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func localTradeDate(manualCompletion: JDFinancePendingManualCompletion?) -> String? {
@@ -394,17 +459,22 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
     var changedHoldings: [JDFinanceHoldingDifference]
     var missingLocalHoldings: [JDFinanceMissingLocalHolding]
     var pendingNotices: [JDFinanceHoldingPendingNotice]
+    var reconciliationNotices: [JDFinanceReconciliationNotice] = []
 
     var hasImportableChanges: Bool {
         !newHoldings.isEmpty
     }
 
     var hasActionableChanges: Bool {
-        !newHoldings.isEmpty || !changedHoldings.isEmpty || !importablePendingNotices.isEmpty
+        !newHoldings.isEmpty || !changedHoldings.isEmpty || !importablePendingNotices.isEmpty || !overwritableReconciliationNotices.isEmpty
     }
 
     var importablePendingNotices: [JDFinanceHoldingPendingNotice] {
         pendingNotices.filter(\.isImportable)
+    }
+
+    var overwritableReconciliationNotices: [JDFinanceReconciliationNotice] {
+        reconciliationNotices.filter(\.isOverwritable)
     }
 
     var isEmpty: Bool {
@@ -412,6 +482,7 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
             && changedHoldings.isEmpty
             && missingLocalHoldings.isEmpty
             && pendingNotices.isEmpty
+            && reconciliationNotices.isEmpty
     }
 }
 

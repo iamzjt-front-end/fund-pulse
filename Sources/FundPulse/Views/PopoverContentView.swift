@@ -873,57 +873,66 @@ struct PopoverContentView: View {
                 isMarketIndexExpanded = true
             }
         } label: {
-            HStack(spacing: 7) {
-                if let quote = primaryMarketIndexQuote {
-                    Text(marketIndexDisplayName(quote))
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .frame(width: 70, alignment: .leading)
-
-                    Spacer(minLength: 6)
-
-                    Text(marketIndexValueText(quote.value))
-                        .font(.system(size: 12, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(toneColor(for: quote.changeRate))
-                        .lineLimit(1)
-
-                    Text(marketIndexChangeText(quote.change))
-                        .font(.system(size: 11, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(toneColor(for: quote.changeRate))
-                        .lineLimit(1)
-                        .frame(width: 52, alignment: .trailing)
-
-                    Text(MoneyFormatter.percent(quote.changeRate, signed: true))
-                        .font(.system(size: 11, weight: .semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(toneColor(for: quote.changeRate))
-                        .lineLimit(1)
-                        .frame(width: 48, alignment: .trailing)
-                } else {
-                    Text(settingsStore.settings.defaultMarketIndexID.title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-                        .frame(width: 70, alignment: .leading)
-
-                    Spacer(minLength: 6)
-
-                    Text(marketIndexStore.isRefreshing ? "加载中" : "暂无数据")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            VStack(spacing: 0) {
+                if let breadth = marketIndexStore.marketBreadth {
+                    marketBreadthMiniSummary(breadth)
+                        .padding(.horizontal, 8)
+                        .padding(.top, 7)
                 }
 
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 14, height: 14)
+                HStack(spacing: 7) {
+                    if let quote = primaryMarketIndexQuote {
+                        Text(marketIndexDisplayName(quote))
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .frame(width: 70, alignment: .leading)
+
+                        Spacer(minLength: 6)
+
+                        Text(marketIndexValueText(quote.value))
+                            .font(.system(size: 12, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(toneColor(for: quote.changeRate))
+                            .lineLimit(1)
+
+                        Text(marketIndexChangeText(quote.change))
+                            .font(.system(size: 11, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(toneColor(for: quote.changeRate))
+                            .lineLimit(1)
+                            .frame(width: 52, alignment: .trailing)
+
+                        Text(MoneyFormatter.percent(quote.changeRate, signed: true))
+                            .font(.system(size: 11, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(toneColor(for: quote.changeRate))
+                            .lineLimit(1)
+                            .frame(width: 48, alignment: .trailing)
+                    } else {
+                        Text(settingsStore.settings.defaultMarketIndexID.title)
+                            .font(.system(size: 11, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                            .frame(width: 70, alignment: .leading)
+
+                        Spacer(minLength: 6)
+
+                        Text(marketIndexStore.isRefreshing ? "加载中" : "暂无数据")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+                }
+                .padding(.horizontal, 14)
+                .frame(height: marketIndexStore.marketBreadth == nil ? 30 : 25)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 30)
+            .frame(height: marketIndexStore.marketBreadth == nil ? 30 : 50)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -960,6 +969,11 @@ struct PopoverContentView: View {
             .buttonStyle(.plain)
             .focusable(false)
             .help("收起大盘指数")
+
+            if let breadth = marketIndexStore.marketBreadth {
+                marketBreadthSummary(breadth)
+                    .padding(.horizontal, 14)
+            }
 
             if marketIndexQuotes.isEmpty {
                 Text(marketIndexStore.isRefreshing ? "指数加载中" : "指数暂无数据")
@@ -1002,6 +1016,224 @@ struct PopoverContentView: View {
         .focusable(false)
         .help("选择\(marketIndexDisplayName(quote))")
         .accessibilityLabel("选择\(marketIndexDisplayName(quote))")
+    }
+
+    private func marketBreadthSummary(_ breadth: MarketBreadth) -> some View {
+        let sentiment = marketBreadthSentiment(for: breadth)
+
+        return VStack(spacing: 7) {
+            HStack(alignment: .center, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Text("大盘")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        Text(sentiment.title)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(sentiment.color)
+                            .lineLimit(1)
+                            .padding(.horizontal, 5)
+                            .frame(height: 16)
+                            .background(
+                                sentiment.color.opacity(colorScheme == .dark ? 0.18 : 0.10),
+                                in: Capsule()
+                            )
+                    }
+
+                    Text(sentiment.detail)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                marketBreadthMetric(title: "上涨", count: breadth.risingCount, color: toneColor(for: 1))
+
+                Rectangle()
+                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.20 : 0.14))
+                    .frame(width: 0.7, height: 24)
+
+                marketBreadthMetric(title: "下跌", count: breadth.fallingCount, color: toneColor(for: -1))
+            }
+
+            marketBreadthBar(breadth)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            marketBreadthSummaryBackground(sentiment.color),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(sentiment.color.opacity(colorScheme == .dark ? 0.14 : 0.09), lineWidth: 0.7)
+        )
+        .accessibilityLabel("A股全市场上涨\(breadth.risingCount)家，下跌\(breadth.fallingCount)家")
+    }
+
+    private func marketBreadthMetric(title: String, count: Int, color: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(count.formatted())
+                .font(.system(size: 14, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(color)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.78)
+        .frame(width: 56, alignment: .trailing)
+    }
+
+    private func marketBreadthBar(_ breadth: MarketBreadth) -> some View {
+        let total = max(breadth.activeCount, 1)
+        let risingRatio = min(max(CGFloat(breadth.risingCount) / CGFloat(total), 0), 1)
+        let fallingRatio = 1 - risingRatio
+
+        return GeometryReader { proxy in
+            let width = proxy.size.width
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.18 : 0.12))
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(toneColor(for: 1).opacity(colorScheme == .dark ? 0.88 : 0.78))
+                        .frame(width: width * risingRatio)
+                    Rectangle()
+                        .fill(toneColor(for: -1).opacity(colorScheme == .dark ? 0.88 : 0.78))
+                        .frame(width: width * fallingRatio)
+                }
+                .clipShape(Capsule())
+
+                Rectangle()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.26 : 0.18))
+                    .frame(width: 0.7)
+                    .offset(x: width / 2)
+            }
+        }
+        .frame(height: 5)
+    }
+
+    private func marketBreadthMiniSummary(_ breadth: MarketBreadth) -> some View {
+        HStack(spacing: 4) {
+            Text("大盘")
+                .font(.system(size: 8.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            marketBreadthMiniChip(
+                systemName: "arrowtriangle.up.fill",
+                count: breadth.risingCount,
+                color: toneColor(for: 1)
+            )
+            .fixedSize(horizontal: true, vertical: false)
+
+            marketBreadthMiniChip(
+                systemName: "arrowtriangle.down.fill",
+                count: breadth.fallingCount,
+                color: toneColor(for: -1)
+            )
+            .fixedSize(horizontal: true, vertical: false)
+
+            marketBreadthMiniBar(breadth)
+                .frame(minWidth: 0, maxWidth: .infinity)
+        }
+        .padding(.horizontal, 5)
+        .frame(height: 18)
+        .background(
+            Color.secondary.opacity(colorScheme == .dark ? 0.12 : 0.06),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.secondary.opacity(colorScheme == .dark ? 0.12 : 0.08), lineWidth: 0.7)
+        )
+        .accessibilityLabel("大盘上涨\(breadth.risingCount)家，下跌\(breadth.fallingCount)家")
+    }
+
+    private func marketBreadthMiniChip(
+        systemName: String,
+        count: Int,
+        color: Color
+    ) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: systemName)
+                .font(.system(size: 6.8, weight: .bold))
+                .frame(width: 7, height: 7)
+            Text(count.formatted())
+                .font(.system(size: 8.5, weight: .bold))
+                .monospacedDigit()
+        }
+        .foregroundStyle(color.opacity(colorScheme == .dark ? 0.92 : 0.84))
+        .lineLimit(1)
+        .minimumScaleFactor(0.78)
+        .padding(.horizontal, 4)
+        .frame(height: 14)
+        .background(
+            color.opacity(colorScheme == .dark ? 0.14 : 0.08),
+            in: Capsule()
+        )
+    }
+
+    private func marketBreadthMiniBar(_ breadth: MarketBreadth) -> some View {
+        let total = max(breadth.activeCount, 1)
+        let risingRatio = min(max(CGFloat(breadth.risingCount) / CGFloat(total), 0), 1)
+        let fallingRatio = 1 - risingRatio
+
+        return GeometryReader { proxy in
+            let width = proxy.size.width
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.13 : 0.09))
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(toneColor(for: 1).opacity(colorScheme == .dark ? 0.78 : 0.66))
+                        .frame(width: width * risingRatio)
+                    Rectangle()
+                        .fill(toneColor(for: -1).opacity(colorScheme == .dark ? 0.78 : 0.66))
+                        .frame(width: width * fallingRatio)
+                }
+                .clipShape(Capsule())
+            }
+        }
+        .frame(height: 4)
+        .accessibilityHidden(true)
+    }
+
+    private func marketBreadthSentiment(for breadth: MarketBreadth) -> (title: String, detail: String, color: Color) {
+        let activeCount = max(breadth.activeCount, 1)
+        let risingShare = Double(breadth.risingCount) / Double(activeCount)
+        let risingShareText = (risingShare * 100).formatted(.number.precision(.fractionLength(0)))
+        let detail = "涨占比 \(risingShareText)%"
+
+        if risingShare >= 0.58 {
+            return ("偏强", detail, toneColor(for: 1))
+        }
+        if risingShare <= 0.42 {
+            return ("偏弱", detail, toneColor(for: -1))
+        }
+        return ("均衡", detail, Color.secondary)
+    }
+
+    private func marketBreadthSummaryBackground(_ tone: Color) -> some ShapeStyle {
+        AnyShapeStyle(
+            LinearGradient(
+                colors: [
+                    tone.opacity(colorScheme == .dark ? 0.12 : 0.065),
+                    Color.primary.opacity(colorScheme == .dark ? 0.055 : 0.030)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
     }
 
     private func selectMarketIndex(_ id: MarketIndexID) {
@@ -3906,15 +4138,15 @@ private struct PendingTradeActivityRow: View {
     }
 
     private var rowMinHeight: CGFloat {
-        activity.isConversion ? 118 : 74
+        activity.isConversion ? 104 : 74
     }
 
     private var verticalPadding: CGFloat {
-        activity.isConversion ? 9 : 6
+        6
     }
 
     private var selectionBarHeight: CGFloat {
-        activity.isConversion ? 80 : 46
+        activity.isConversion ? 64 : 46
     }
 
     @ViewBuilder

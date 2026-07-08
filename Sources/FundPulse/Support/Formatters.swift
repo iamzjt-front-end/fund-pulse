@@ -41,6 +41,8 @@ enum MenuBarStatusFormatter {
             MoneyFormatter.percent(rate, signed: true)
         case .both:
             "\(signedAmount(amount)) | \(MoneyFormatter.percent(rate, signed: true))"
+        case .hidden:
+            ""
         }
     }
 

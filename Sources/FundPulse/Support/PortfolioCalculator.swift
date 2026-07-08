@@ -102,7 +102,7 @@ enum PortfolioCalculator {
 
         return PortfolioSnapshot(
             updateTime: now,
-            totalAmount: currentTotal,
+            totalAmount: snapshot.syncedAccountTotal?.amount ?? currentTotal,
             holdingIncome: holdingIncomeTotal,
             holdingIncomeRate: holdingIncomeRate,
             todayIncome: todayIncomeTotal,
@@ -112,7 +112,8 @@ enum PortfolioCalculator {
             migration: snapshot.migration,
             pendingTrades: snapshot.pendingTrades,
             pendingConversions: snapshot.pendingConversions,
-            tradeRecords: snapshot.tradeRecords
+            tradeRecords: snapshot.tradeRecords,
+            syncedAccountTotal: snapshot.syncedAccountTotal
         )
     }
 
