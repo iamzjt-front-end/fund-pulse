@@ -47,10 +47,10 @@ final class PortfolioStore {
                 return
             }
 
-            snapshot = .sample
+            snapshot = .empty
             loadState = .missingPlainData(hasLegacyStore: AppDataPaths.hasLegacyStore(in: dataDirectory))
         } catch {
-            snapshot = .sample
+            snapshot = .empty
             loadState = .failed(error.localizedDescription)
         }
     }
@@ -89,6 +89,12 @@ final class PortfolioStore {
 
         if case .loading = loadState {
             load()
+        }
+        if case .missingPlainData = loadState {
+            return
+        }
+        if case .failed = loadState {
+            return
         }
 
         let codes = snapshot.funds.map(\.code)

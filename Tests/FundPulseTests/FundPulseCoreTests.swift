@@ -7096,6 +7096,53 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testDeletingLegacyPendingFundWithoutTradeRecordRemovesFund() async throws {
+        let now = try chinaDate("2026-07-08 14:15")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-delete-legacy-pending-fund-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]), now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 1,
+                funds: [
+                    FundPosition(
+                        code: "588760",
+                        name: "科创人工智能ETF广发",
+                        dateText: "07-08 15:00前确认",
+                        todayIncome: 0,
+                        todayRate: 0,
+                        holdingIncome: 0,
+                        holdingRate: 0,
+                        currentAmount: 0,
+                        status: .pending,
+                        isUpdated: false,
+                        migratedShares: 0
+                    )
+                ],
+                migration: nil
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try await store.deleteFund(code: "588760")
+
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+        XCTAssertNil(store.snapshot.tradeRecords)
+        XCTAssertNil(store.snapshot.pendingTrades)
+        XCTAssertNil(store.snapshot.pendingConversions)
+    }
+
+    @MainActor
     func testDeletingConfirmedConversionRestoresLegacySourceWithoutCreatingInitialRecord() async throws {
         let now = try chinaDate("2026-06-23 09:30")
         let service = multiTradeQuoteService([
@@ -9216,6 +9263,32 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(importedStore.snapshot.funds.first?.positionDate, "2026-06-23")
         XCTAssertEqual(importedStore.snapshot.pendingTrades?.first?.createdAt, createdAt)
         XCTAssertEqual(importedStore.snapshot.tradeRecords?.first?.confirmedAt, confirmedAt)
+    }
+
+    @MainActor
+    func testMissingPortfolioDoesNotWriteSampleDuringRefresh() async throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-missing-data-refresh-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]))
+
+        store.load()
+        guard case .missingPlainData(let hasLegacyStore) = store.loadState else {
+            return XCTFail("Expected missing plain data state, got \(store.loadState)")
+        }
+        XCTAssertFalse(hasLegacyStore)
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.dataFileURL.path))
+
+        await store.refreshQuotes()
+
+        guard case .missingPlainData = store.loadState else {
+            return XCTFail("Expected missing plain data state after refresh, got \(store.loadState)")
+        }
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.dataFileURL.path))
     }
 
     private func makePendingHeaderActivity(

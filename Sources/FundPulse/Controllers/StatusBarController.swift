@@ -2009,9 +2009,12 @@ final class StatusBarController: NSObject {
     }
 
     private func deletePendingActivity(_ activity: PendingTradeActivity) async {
-        guard let recordID = activity.recordID else { return }
         do {
-            try await store.deleteTradeRecord(id: recordID)
+            if let recordID = activity.recordID {
+                try await store.deleteTradeRecord(id: recordID)
+            } else {
+                try await store.deleteFund(code: activity.code)
+            }
             updateStatusTitle()
             refreshVisiblePanels()
             updateMainPanelRootView()

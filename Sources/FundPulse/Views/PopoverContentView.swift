@@ -834,7 +834,7 @@ struct PopoverContentView: View {
                     PendingTradeActivityRow(
                         activity: activity,
                         isSelected: selectedFundCode == activity.code,
-                        onDelete: activity.recordID == nil ? nil : {
+                        onDelete: {
                             deletingPendingActivity = activity
                         }
                     ) {
@@ -2227,6 +2227,9 @@ struct PopoverContentView: View {
     private func deletePendingActivityConfirmationMessage(for activity: PendingTradeActivity) -> String {
         if activity.isConversion {
             return "这是一条基金转换待确认记录。删除后会连带删除同一次转换的转出、转入两条记录，并移除这笔待确认转换；已确认持仓不会被提前改动。"
+        }
+        if activity.recordID == nil {
+            return "确定删除“\(activity.name)”这条待确认基金吗？删除后会移除这条待确认记录，且无法撤销。"
         }
         return "确定删除 \(activity.tradeDate) \(activity.tradeTimeType.title) 的\(activity.kind.title)待确认记录吗？删除后会移除这笔待确认交易，且无法撤销。"
     }
