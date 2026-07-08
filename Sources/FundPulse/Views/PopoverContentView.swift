@@ -898,6 +898,7 @@ struct PopoverContentView: View {
                 )
                 FundRowView(
                     fund: fund,
+                    sortMode: sortMode,
                     isSelected: selectedFundCode == fund.code,
                     isClosedZeroPosition: isClosedZeroPosition,
                     masksAmounts: hidesHeaderAmounts,
@@ -2088,65 +2089,7 @@ struct PopoverContentView: View {
             }
         }
 
-        switch sortMode {
-        case .custom:
-            return funds
-        case .todayRate:
-            return sortDescending(funds) { $0.todayRate }
-        case .costAmount:
-            return sortDescending(funds, value: costAmount)
-        case .todayIncome:
-            return sortDescending(funds) { $0.todayIncome }
-        case .todayTotal:
-            return sortDescending(funds, value: currentTotal)
-        case .holdingIncome:
-            return sortDescending(funds, value: holdingIncome)
-        case .holdingRate:
-            return sortDescending(funds) { $0.holdingRate ?? -Double.greatestFiniteMagnitude }
-        case .name:
-            return funds.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-        }
-    }
-
-    private func sortDescending(
-        _ funds: [FundPosition],
-        value: (FundPosition) -> Double
-    ) -> [FundPosition] {
-        funds.sorted { lhs, rhs in
-            let lhsValue = value(lhs)
-            let rhsValue = value(rhs)
-            if lhsValue != rhsValue {
-                return lhsValue > rhsValue
-            }
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-        }
-    }
-
-    private func costAmount(for fund: FundPosition) -> Double {
-        if let shares = fund.migratedShares, let cost = fund.migratedCost {
-            return shares * cost
-        }
-        return fund.migratedPrincipal ?? 0
-    }
-
-    private func holdingIncome(for fund: FundPosition) -> Double {
-        if let holdingIncome = fund.holdingIncome {
-            return holdingIncome
-        }
-        guard let holdingRate = fund.holdingRate else { return 0 }
-        return costAmount(for: fund) * holdingRate / 100
-    }
-
-    private func currentTotal(for fund: FundPosition) -> Double {
-        if let currentAmount = fund.currentAmount {
-            return currentAmount
-        }
-        if let shares = fund.migratedShares,
-           let cost = fund.migratedCost {
-            let costTotal = shares * cost
-            return costTotal + holdingIncome(for: fund)
-        }
-        return fund.migratedPrincipal ?? 0
+        return FundListSorter.sort(funds, mode: sortMode)
     }
 
     private func count(for value: FundListFilter) -> Int {
@@ -2280,7 +2223,7 @@ private enum FundListFilter: String, CaseIterable, Identifiable {
     }
 }
 
-private enum FundSortMode: String, CaseIterable, Identifiable {
+enum FundSortMode: String, CaseIterable, Identifiable {
     case custom
     case todayRate
     case costAmount
@@ -2310,6 +2253,70 @@ private enum FundSortMode: String, CaseIterable, Identifiable {
             "持有收益率"
         case .name:
             "名称(A-Z)"
+        }
+    }
+}
+
+enum FundListSorter {
+    static func sort(_ funds: [FundPosition], mode: FundSortMode) -> [FundPosition] {
+        switch mode {
+        case .custom:
+            return funds
+        case .todayRate:
+            return sortDescending(funds) { $0.todayRate }
+        case .costAmount:
+            return sortDescending(funds, value: costAmount)
+        case .todayIncome:
+            return sortDescending(funds) { $0.todayIncome }
+        case .todayTotal:
+            return sortDescending(funds, value: currentTotal)
+        case .holdingIncome:
+            return sortDescending(funds, value: holdingIncome)
+        case .holdingRate:
+            return sortDescending(funds) { $0.holdingRate ?? -Double.greatestFiniteMagnitude }
+        case .name:
+            return funds.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+    }
+
+    static func costAmount(for fund: FundPosition) -> Double {
+        if let shares = fund.migratedShares, let cost = fund.migratedCost {
+            return shares * cost
+        }
+        return fund.migratedPrincipal ?? 0
+    }
+
+    static func holdingIncome(for fund: FundPosition) -> Double {
+        if let holdingIncome = fund.holdingIncome {
+            return holdingIncome
+        }
+        guard let holdingRate = fund.holdingRate else { return 0 }
+        return costAmount(for: fund) * holdingRate / 100
+    }
+
+    static func currentTotal(for fund: FundPosition) -> Double {
+        if let currentAmount = fund.currentAmount {
+            return currentAmount
+        }
+        if let shares = fund.migratedShares,
+           let cost = fund.migratedCost {
+            let costTotal = shares * cost
+            return costTotal + holdingIncome(for: fund)
+        }
+        return fund.migratedPrincipal ?? 0
+    }
+
+    private static func sortDescending(
+        _ funds: [FundPosition],
+        value: (FundPosition) -> Double
+    ) -> [FundPosition] {
+        funds.sorted { lhs, rhs in
+            let lhsValue = value(lhs)
+            let rhsValue = value(rhs)
+            if lhsValue != rhsValue {
+                return lhsValue > rhsValue
+            }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
         }
     }
 }
@@ -4436,6 +4443,7 @@ private struct PendingTradeActivityRow: View {
 
 struct FundRowView: View {
     let fund: FundPosition
+    let sortMode: FundSortMode
     let isSelected: Bool
     let isClosedZeroPosition: Bool
     let masksAmounts: Bool
@@ -4498,23 +4506,25 @@ struct FundRowView: View {
 
             Spacer(minLength: 6)
 
-            Text(MoneyFormatter.percent(fund.todayRate, signed: true))
+            Text(primaryMetricText)
                 .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(.white)
                 .padding(.horizontal, 8)
-                .frame(minWidth: 60, minHeight: 24)
-                .background(rateBadgeBackground(fund.todayRate), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .frame(minWidth: primaryMetricMinimumWidth, maxWidth: 86, minHeight: 24)
+                .background(rateBadgeBackground(primaryMetricTone), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(rateBadgeBorderColor(fund.todayRate), lineWidth: 1.1)
+                        .stroke(rateBadgeBorderColor(primaryMetricTone), lineWidth: 1.1)
                 )
                 .overlay(alignment: .top) {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(Color.white.opacity(colorScheme == .dark ? 0.18 : 0.28), lineWidth: 0.8)
                         .blendMode(.plusLighter)
                 }
-                .shadow(color: toneColor(for: fund.todayRate).opacity(fund.todayRate == 0 ? 0 : 0.24), radius: 7, x: 0, y: 3)
+                .shadow(color: toneColor(for: primaryMetricTone).opacity(primaryMetricTone == 0 ? 0 : 0.24), radius: 7, x: 0, y: 3)
         }
         .padding(.horizontal, 12)
         .frame(height: 54)
@@ -4530,7 +4540,7 @@ struct FundRowView: View {
     }
 
     private var selectionAccent: Color {
-        toneColor(for: fund.todayRate)
+        toneColor(for: primaryMetricTone)
     }
 
     private var selectionBackground: some View {
@@ -4624,6 +4634,52 @@ struct FundRowView: View {
 
     private var rowHoldingRateText: String {
         rowHoldingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%"
+    }
+
+    private var primaryMetricText: String {
+        switch sortMode {
+        case .todayIncome:
+            return FundRowAmountPrivacyFormatter.signedCompactMoney(fund.todayIncome, isMasked: masksAmounts)
+        case .holdingIncome:
+            return FundRowAmountPrivacyFormatter.signedCompactMoney(rowHoldingIncome, isMasked: masksAmounts)
+        case .holdingRate:
+            return MoneyFormatter.percent(rowHoldingRate ?? 0, signed: true)
+        case .costAmount:
+            return compactUnsignedMoney(principal)
+        case .todayTotal:
+            return compactUnsignedMoney(rowHoldingAmount)
+        case .custom, .todayRate, .name:
+            return MoneyFormatter.percent(fund.todayRate, signed: true)
+        }
+    }
+
+    private var primaryMetricTone: Double {
+        switch sortMode {
+        case .todayIncome:
+            return fund.todayIncome
+        case .holdingIncome:
+            return rowHoldingIncome
+        case .holdingRate:
+            return rowHoldingRate ?? 0
+        case .costAmount, .todayTotal:
+            return 0
+        case .custom, .todayRate, .name:
+            return fund.todayRate
+        }
+    }
+
+    private var primaryMetricMinimumWidth: CGFloat {
+        switch sortMode {
+        case .todayIncome, .holdingIncome, .costAmount, .todayTotal:
+            return 70
+        case .custom, .todayRate, .holdingRate, .name:
+            return 60
+        }
+    }
+
+    private func compactUnsignedMoney(_ value: Double) -> String {
+        FundRowAmountPrivacyFormatter.plainMoney(value, isMasked: masksAmounts)
+            .replacingOccurrences(of: "¥ ", with: "")
     }
 
     private var rowHoldingAmountText: String {

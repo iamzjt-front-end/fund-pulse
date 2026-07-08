@@ -4211,6 +4211,52 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(MoneyFormatter.percent(3.78, signed: true), "+3.78%")
     }
 
+    func testTodayIncomeSortUsesIncomeAmountNotGrowthRate() {
+        let funds = [
+            sortTestFund(code: "high-rate", name: "涨幅最高", todayIncome: 30, todayRate: 9.8),
+            sortTestFund(code: "high-income", name: "收益最高", todayIncome: 210, todayRate: 1.2),
+            sortTestFund(code: "middle-income", name: "收益居中", todayIncome: 90, todayRate: 3.4),
+            sortTestFund(code: "loss", name: "亏损", todayIncome: -20, todayRate: -0.5)
+        ]
+
+        XCTAssertEqual(
+            FundListSorter.sort(funds, mode: .todayIncome).map(\.code),
+            ["high-income", "middle-income", "high-rate", "loss"]
+        )
+        XCTAssertEqual(
+            FundListSorter.sort(funds, mode: .todayRate).map(\.code),
+            ["high-rate", "middle-income", "high-income", "loss"]
+        )
+    }
+
+    private func sortTestFund(
+        code: String,
+        name: String,
+        todayIncome: Double,
+        todayRate: Double
+    ) -> FundPosition {
+        FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-08 15:00",
+            todayIncome: todayIncome,
+            todayRate: todayRate,
+            holdingIncome: todayIncome,
+            holdingRate: todayRate,
+            currentAmount: 10_000,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: 10_000,
+            migratedCost: 1,
+            migratedPrincipal: 10_000,
+            incomeStartDate: "2026-07-08",
+            positionMode: .amount,
+            positionDate: "2026-07-08",
+            positionTimeType: .before15
+        )
+    }
+
     #if canImport(AppKit)
     func testStatusBarToneMenuBarColorsUseFundBabyStyleDepth() throws {
         XCTAssertEqual(try rgbHex(StatusBarTone.menuBarColor(forRate: 0)), "#8E8E93")
