@@ -8404,6 +8404,126 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testEditingConfirmedSameDayNewFundTradeStaysHoldingWhenNetValueIsAvailable() async throws {
+        let now = try chinaDate("2026-07-08 23:05")
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "022485",
+                name: "国金中证A500指数增强A",
+                netValueDate: "2026-07-08",
+                netValue: 1.5051,
+                estimatedNetValue: 1.5153,
+                growthRate: -1.79,
+                estimateTime: "2026-07-08 15:00"
+            ),
+            "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=022485&page=1&per=1": """
+            var apidata={ content:"<table><tbody><tr><td>2026-07-08</td><td class='tor bold'>1.5051</td><td>1.5051</td><td class='green'>-1.79%</td></tr></tbody></table>",records:1,pages:1,curpage:1};
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-edit-same-day-new-fund-record-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let createdAt = try chinaDate("2026-07-08 22:55")
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 116_552.60,
+                holdingIncome: -3_447.40,
+                holdingIncomeRate: -2.8728,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    FundPosition(
+                        code: "022485",
+                        name: "国金中证A500指数增强A",
+                        dateText: "07-08 15:00",
+                        todayIncome: 0,
+                        todayRate: -1.79,
+                        holdingRate: -2.8728,
+                        status: .holding,
+                        isUpdated: true,
+                        isIncomeActive: true,
+                        migratedShares: 77_438.442628,
+                        migratedCost: 1.549618,
+                        migratedPrincipal: 120_000,
+                        incomeStartDate: "2026-07-08",
+                        positionMode: .amount,
+                        positionDate: "2026-07-08",
+                        positionTimeType: .before15,
+                        lots: [
+                            FundPositionLot(
+                                id: "new-record",
+                                shares: 77_438.442628,
+                                cost: 1.549618,
+                                principal: 120_000,
+                                incomeStartDate: "2026-07-08",
+                                positionDate: "2026-07-08",
+                                positionTimeType: .before15
+                            )
+                        ]
+                    )
+                ],
+                migration: nil,
+                tradeRecords: [
+                    FundTradeRecord(
+                        id: "new-record",
+                        kind: .newFund,
+                        status: .confirmed,
+                        code: "022485",
+                        name: "国金中证A500指数增强A",
+                        mode: .amount,
+                        amount: 116_552.60,
+                        shares: nil,
+                        confirmedShares: 77_438.442628,
+                        price: 1.5051,
+                        profit: -3_447.40,
+                        tradeDate: "2026-07-08",
+                        tradeTimeType: .before15,
+                        acceptedDate: "2026-07-08",
+                        createdAt: createdAt,
+                        confirmedAt: createdAt,
+                        failureReason: nil
+                    )
+                ]
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try await store.editTradeRecord(
+            id: "new-record",
+            with: FundTradeDraft(
+                action: .buy,
+                code: "022485",
+                mode: .amount,
+                amount: 122_552.60,
+                shares: nil,
+                tradeDate: "2026-07-08",
+                tradeTimeType: .before15
+            )
+        )
+
+        let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "022485" })
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertEqual(fund.currentAmount ?? 0, 122_552.60, accuracy: 0.001)
+        XCTAssertEqual(fund.pendingAmount ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+
+        let record = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.id == "new-record" })
+        XCTAssertEqual(record.kind, .newFund)
+        XCTAssertEqual(record.status, .confirmed)
+        XCTAssertEqual(record.amount ?? 0, 122_552.60, accuracy: 0.0001)
+        XCTAssertEqual(record.confirmedShares ?? 0, 81_424.888712, accuracy: 0.000001)
+        XCTAssertEqual(record.price ?? 0, 1.5051, accuracy: 0.0001)
+        XCTAssertNil(store.snapshot.pendingTrades)
+    }
+
+    @MainActor
     func testEditingFundResetsHistoryAndUsesNewBaselineForFutureTrades() async throws {
         let now = try chinaDate("2026-06-24 09:30")
         let service = tradeQuoteService(date: "2026-06-23", netValue: 2.5)

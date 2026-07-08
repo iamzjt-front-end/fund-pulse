@@ -591,27 +591,59 @@ final class PortfolioStore {
             positionDate: draft.tradeDate,
             timeType: draft.tradeTimeType
         )
+        let latestQuote: FundQuote?
+        let confirmedNetValue: Double?
+        if originalKind == .newFund {
+            latestQuote = try? await quoteService.fetchQuote(code: code)
+            confirmedNetValue = await quoteService.fetchConfirmedNetValue(
+                code: code,
+                acceptedDate: acceptedDate,
+                latestQuote: latestQuote
+            )
+        } else {
+            latestQuote = nil
+            confirmedNetValue = nil
+        }
         let fundName = snapshot.funds.first { $0.code == code }?.name ?? records[index].name
         records[index].kind = originalKind == .newFund ? .newFund : tradeKind(for: draft.action)
-        records[index].status = .pending
+        records[index].status = originalKind == .newFund && confirmedNetValue != nil ? .confirmed : .pending
         records[index].name = fundName
         records[index].mode = draft.mode
         records[index].amount = draft.amount
         records[index].shares = draft.shares
-        records[index].confirmedShares = nil
-        records[index].price = nil
+        if originalKind == .newFund, let confirmedNetValue {
+            let existingFund = snapshot.funds.first { $0.code == code }
+            records[index].confirmedShares = confirmedInitialShares(
+                mode: draft.mode,
+                amount: draft.amount,
+                shares: draft.shares,
+                price: confirmedNetValue
+            )
+            records[index].price = confirmedInitialPrice(
+                mode: draft.mode,
+                amount: draft.amount,
+                confirmedShares: records[index].confirmedShares,
+                existingFund: existingFund,
+                confirmedNetValue: confirmedNetValue
+            )
+        } else {
+            records[index].confirmedShares = nil
+            records[index].price = nil
+        }
         records[index].buyFeeRate = draft.buyFeeRate
         records[index].sellFeeMode = draft.sellFeeMode
         records[index].sellFeeValue = draft.sellFeeValue
         records[index].tradeDate = draft.tradeDate
         records[index].tradeTimeType = draft.tradeTimeType
         records[index].acceptedDate = acceptedDate
-        records[index].confirmedAt = nil
+        records[index].confirmedAt = records[index].status == .confirmed ? .now : nil
         records[index].failureReason = nil
         snapshot.tradeRecords = records
         rebuildPendingTradesFromRecords(for: code)
         try rebuildFundPositionFromTradeRecords(code: code)
-        if originalKind == .newFund, let records = snapshot.tradeRecords {
+        if originalKind == .newFund,
+           records[index].status == .pending,
+           let records = snapshot.tradeRecords {
             restorePendingInitialPosition(for: code, records: records)
         }
         try save(snapshot)
@@ -2251,6 +2283,41 @@ final class PortfolioStore {
             return confirmedNetValue
         case .share:
             return fund.migratedCost ?? confirmedNetValue
+        }
+    }
+
+    private func confirmedInitialShares(
+        mode: PositionMode,
+        amount: Double?,
+        shares: Double?,
+        price: Double
+    ) -> Double? {
+        guard price > 0 else { return nil }
+        switch mode {
+        case .amount:
+            guard let amount, amount > 0 else { return nil }
+            return roundedStoredShares(amount / price)
+        case .share:
+            guard let shares, shares > 0 else { return nil }
+            return roundedDisplayedShares(shares)
+        }
+    }
+
+    private func confirmedInitialPrice(
+        mode: PositionMode,
+        amount: Double?,
+        confirmedShares: Double?,
+        existingFund: FundPosition?,
+        confirmedNetValue: Double
+    ) -> Double? {
+        switch mode {
+        case .amount:
+            if let amount, let confirmedShares, amount > 0, confirmedShares > 0 {
+                return roundedCost(amount / confirmedShares)
+            }
+            return confirmedNetValue
+        case .share:
+            return existingFund?.migratedCost ?? confirmedNetValue
         }
     }
 
