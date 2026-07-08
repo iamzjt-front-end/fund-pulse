@@ -4926,9 +4926,6 @@ enum FundRowAmountPrivacyFormatter {
 struct FundDetailView: View {
     let store: PortfolioStore
     private let initialFund: FundPosition
-    let totalAmount: Double
-    let pendingTradeCount: Int
-    let tradeRecords: [FundTradeRecord]
     let onBuy: (FundPosition) -> Void
     let onSell: (FundPosition) -> Void
     let onConvert: (FundPosition) -> Void
@@ -4951,9 +4948,6 @@ struct FundDetailView: View {
     init(
         store: PortfolioStore,
         fund: FundPosition,
-        totalAmount: Double,
-        pendingTradeCount: Int,
-        tradeRecords: [FundTradeRecord],
         onBuy: @escaping (FundPosition) -> Void,
         onSell: @escaping (FundPosition) -> Void,
         onConvert: @escaping (FundPosition) -> Void,
@@ -4965,9 +4959,6 @@ struct FundDetailView: View {
     ) {
         self.store = store
         self.initialFund = fund
-        self.totalAmount = totalAmount
-        self.pendingTradeCount = pendingTradeCount
-        self.tradeRecords = tradeRecords
         self.onBuy = onBuy
         self.onSell = onSell
         self.onConvert = onConvert
@@ -4980,6 +4971,10 @@ struct FundDetailView: View {
 
     private var fund: FundPosition {
         store.snapshot.funds.first { $0.code == initialFund.code } ?? initialFund
+    }
+
+    private var tradeRecords: [FundTradeRecord] {
+        store.snapshot.tradeRecords ?? []
     }
 
     private var detailUpdateStarColor: Color {

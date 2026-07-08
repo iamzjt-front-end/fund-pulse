@@ -791,7 +791,9 @@ final class PortfolioStore {
             zdfRange: draft.zdfRange,
             jzNotice: draft.jzNotice,
             memo: draft.memo.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : draft.memo,
-            lots: lots
+            lots: lots,
+            intradayRateDate: existingFund?.intradayRateDate,
+            intradayRateHistory: existingFund?.intradayRateHistory
         )
     }
 

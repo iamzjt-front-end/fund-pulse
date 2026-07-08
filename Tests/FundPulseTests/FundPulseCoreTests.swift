@@ -8137,6 +8137,106 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testEditingFundPreservesSameDayIntradayHistory() async throws {
+        let now = try chinaDate("2026-07-08 13:32")
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "011833",
+                name: "西部利得人工智能主题指数增强C",
+                netValueDate: "2026-07-07",
+                netValue: 1.9824,
+                estimatedNetValue: 2.0250,
+                growthRate: 2.15,
+                estimateTime: "2026-07-08 13:32"
+            ),
+            "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=011833&page=1&per=1": """
+            var apidata={ content:"<table><tbody><tr><td>2026-07-07</td><td class='tor bold'>1.9824</td><td>1.9824</td><td class='red'>0.42%</td></tr></tbody></table>",records:1,pages:1,curpage:1};
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-edit-intraday-history-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        let morningPoint = FundIntradayRatePoint(
+            timestamp: Int64(try chinaDate("2026-07-08 09:35").timeIntervalSince1970 * 1000),
+            rate: 3.21,
+            estimateTime: "2026-07-08 09:35"
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: try chinaDate("2026-07-08 09:35"),
+            totalAmount: 8_000,
+            holdingIncome: -500,
+            holdingIncomeRate: -5.88,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "011833",
+                    name: "西部利得人工智能主题指数增强C",
+                    dateText: "07-08 09:35",
+                    todayIncome: 0,
+                    todayRate: 3.21,
+                    holdingIncome: -500,
+                    holdingRate: -5.88,
+                    currentAmount: 8_000,
+                    status: .holding,
+                    isUpdated: false,
+                    isIncomeActive: true,
+                    migratedShares: 4_000,
+                    migratedCost: 2.125,
+                    migratedPrincipal: 8_500,
+                    incomeStartDate: "2026-07-07",
+                    positionMode: .amount,
+                    positionDate: "2026-07-07",
+                    positionTimeType: .before15,
+                    lots: [
+                        FundPositionLot(
+                            id: "existing-lot",
+                            shares: 4_000,
+                            cost: 2.125,
+                            principal: 8_500,
+                            incomeStartDate: "2026-07-07",
+                            positionDate: "2026-07-07",
+                            positionTimeType: .before15
+                        )
+                    ],
+                    intradayRateDate: "2026-07-08",
+                    intradayRateHistory: [morningPoint]
+                )
+            ],
+            migration: nil
+        )
+        try seedPortfolio(snapshot, into: store, directory: tempDirectory)
+
+        try await store.upsertFund(
+            FundPositionDraft(
+                code: "011833",
+                name: "西部利得人工智能主题指数增强C",
+                positionMode: .amount,
+                positionAmount: 8_557.86,
+                positionProfit: -442.14,
+                shares: nil,
+                cost: nil,
+                positionDate: "2026-07-07",
+                positionTimeType: .before15,
+                zdfRange: 5,
+                jzNotice: nil,
+                memo: ""
+            ),
+            replacing: "011833"
+        )
+
+        let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "011833" })
+        let points = try XCTUnwrap(fund.intradayRateHistory)
+        XCTAssertEqual(fund.intradayRateDate, "2026-07-08")
+        XCTAssertEqual(points.map(\.estimateTime), ["2026-07-08 09:35", "2026-07-08 13:32"])
+        XCTAssertEqual(points.map(\.rate), [3.21, 2.15])
+    }
+
+    @MainActor
     func testRefreshRepairsLegacyAmountFundSharesToStoredPrecision() async throws {
         let now = try chinaDate("2026-06-27 21:20")
         let service = quoteServiceWithMockResponses([

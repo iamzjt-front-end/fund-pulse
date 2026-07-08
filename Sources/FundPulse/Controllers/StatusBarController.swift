@@ -873,9 +873,6 @@ final class StatusBarController: NSObject {
             let view = FundDetailView(
                 store: store,
                 fund: fund,
-                totalAmount: store.snapshot.totalAmount,
-                pendingTradeCount: store.snapshot.pendingTrades?.filter { $0.code == fund.code }.count ?? 0,
-                tradeRecords: store.snapshot.tradeRecords ?? [],
                 onBuy: { [weak self] fund in
                     self?.showChildPanel(.buyFund(fund))
                 },
@@ -1187,27 +1184,12 @@ final class StatusBarController: NSObject {
     private func refreshVisiblePanels(animatedAppearance: Bool) {
         guard let mainPanelWindow, mainPanelWindow.isVisible else { return }
         applyPanelAppearance(to: mainPanelWindow, animated: animatedAppearance)
-        updateMainPanelRootView()
         let mainSize = mainPanelWindowSize
         mainPanelWindow.setContentSize(mainSize)
         positionMainPanel(window: mainPanelWindow, size: mainSize)
 
         guard let childPanelWindow, childPanelWindow.isVisible else { return }
         applyPanelAppearance(to: childPanelWindow, animated: animatedAppearance)
-        if let activeChildPanel,
-           let refreshedKind = refreshedDisplayPanelKind(for: activeChildPanel),
-           let (contentView, refreshedSize) = makeChildPanelContent(for: refreshedKind) {
-            self.activeChildPanel = refreshedKind
-            selectedFundCode = refreshedKind.selectedFundCode
-            let container = PanelCardContainerView(contentView: contentView)
-            container.frame = NSRect(origin: .zero, size: refreshedSize)
-            container.applyAppearance(panelAppearance)
-            childPanelWindow.contentView = container
-            childPanelWindow.setContentSize(refreshedSize)
-            positionChildPanel(window: childPanelWindow, size: refreshedSize)
-            return
-        }
-
         let size: NSSize
         switch activeChildPanel {
         case .settings:
@@ -1233,35 +1215,6 @@ final class StatusBarController: NSObject {
         }
         childPanelWindow.setContentSize(size)
         positionChildPanel(window: childPanelWindow, size: size)
-    }
-
-    private func refreshedDisplayPanelKind(for kind: ChildPanelKind) -> ChildPanelKind? {
-        switch kind {
-        case .portfolioBreakdown, .incomeRanking:
-            return kind
-        case .fundDetail(let fund):
-            return .fundDetail(freshFund(for: fund))
-        case .fundDailyIncome(let fund):
-            return .fundDailyIncome(freshFund(for: fund))
-        case .tradeRecords(let fund):
-            return .tradeRecords(freshFund(for: fund))
-        case .settings,
-             .jdFinanceSync,
-             .addFund,
-             .buyFund,
-             .sellFund,
-             .convertFund,
-             .editTradeRecord,
-             .editConversion,
-             .editPendingTradeRecord,
-             .editPendingConversion,
-             .editFund:
-            return nil
-        }
-    }
-
-    private func freshFund(for fund: FundPosition) -> FundPosition {
-        store.snapshot.funds.first { $0.code == fund.code } ?? fund
     }
 
     private func resizeAndPositionMainPanel() {
