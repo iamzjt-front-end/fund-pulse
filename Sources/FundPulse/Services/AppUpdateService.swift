@@ -71,21 +71,27 @@ struct AppUpdateService: Sendable {
         switch mode {
         case .interactive:
             return try await withTimeout(seconds: interactiveAPIRequestTimeout) {
-                try await checkGitHubAPI(
+                try await checkWithReleaseFeedFallback(
                     currentVersion: currentVersion,
-                    timeout: interactiveAPIRequestTimeout
+                    apiTimeout: interactiveAPIRequestTimeout
                 )
             }
         case .background:
-            return try await checkWithBackgroundFallback(currentVersion: currentVersion)
+            return try await checkWithReleaseFeedFallback(
+                currentVersion: currentVersion,
+                apiTimeout: backgroundAPIRequestTimeout
+            )
         }
     }
 
-    private func checkWithBackgroundFallback(currentVersion: String) async throws -> AppUpdateStatus {
+    private func checkWithReleaseFeedFallback(
+        currentVersion: String,
+        apiTimeout: TimeInterval
+    ) async throws -> AppUpdateStatus {
         do {
             return try await checkGitHubAPI(
                 currentVersion: currentVersion,
-                timeout: backgroundAPIRequestTimeout
+                timeout: apiTimeout
             )
         } catch {
             return try await checkMacReleaseFeed(currentVersion: currentVersion)

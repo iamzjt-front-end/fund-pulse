@@ -168,20 +168,24 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(info.downloadURL?.absoluteString, Self.githubZipDownloadURL(version: "1.0.30"))
     }
 
-    func testAppUpdateServiceInteractiveCheckDoesNotFallbackToMacReleaseFeedWhenAPIFails() async {
+    func testAppUpdateServiceInteractiveCheckFallsBackToMacReleaseFeedWhenAPIFails() async throws {
         let service = appUpdateServiceWithMockResponses(
             [
                 Self.githubLatestReleaseWebEndpoint(): "",
-                Self.githubMacReleaseFeedEndpoint(version: "1.0.29"): Self.macReleaseFeedResponse(version: "1.0.29")
+                Self.githubMacReleaseFeedEndpoint(version: "1.0.30"): Self.macReleaseFeedResponse(version: "1.0.30")
             ],
             finalURLs: [
-                Self.githubLatestReleaseWebEndpoint(): Self.githubReleaseTagURL(version: "1.0.29")
+                Self.githubLatestReleaseWebEndpoint(): Self.githubReleaseTagURL(version: "1.0.30")
             ]
         )
 
-        await XCTAssertThrowsErrorAsync {
-            _ = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+        let status = try await service.check(currentVersion: "1.0.29", mode: .interactive)
+
+        guard case .available(let info) = status else {
+            return XCTFail("Expected interactive check to fallback to mac release feed, got \(status)")
         }
+        XCTAssertEqual(info.version, "1.0.30")
+        XCTAssertEqual(info.downloadURL?.absoluteString, Self.githubZipDownloadURL(version: "1.0.30"))
     }
 
     func testAppUpdateServiceInteractiveCheckUsesHardTimeout() async {
