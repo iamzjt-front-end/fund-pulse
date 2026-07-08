@@ -55,7 +55,6 @@ struct SettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
     @State private var selectedMarketClosedAutoRefreshInterval: AutoRefreshInterval
-    @State private var mainPanelHeightText: String
     @State private var operationReminderTimeText: String
     @State private var operationReminderDraftHour: Int
     @State private var operationReminderDraftMinute: Int
@@ -66,10 +65,11 @@ struct SettingsView: View {
     @State private var displayedAppearanceMode: AppAppearanceMode
     @State private var displayedMenuBarContentMode: MenuBarContentMode
     @State private var displayedMenuBarDisplayMode: MenuBarDisplayMode
+    @State private var isClearHoldingsConfirmationPresented = false
+    @State private var clearHoldingsStatusMessage: String?
     @Namespace private var appearanceModeSelectionNamespace
     @Namespace private var menuBarContentModeSelectionNamespace
     @Namespace private var menuBarDisplayModeSelectionNamespace
-    @FocusState private var isMainPanelHeightFocused: Bool
 
     init(
         store: PortfolioStore,
@@ -95,7 +95,6 @@ struct SettingsView: View {
         _selectedMarketClosedAutoRefreshInterval = State(
             initialValue: settingsStore.settings.marketClosedAutoRefreshInterval
         )
-        _mainPanelHeightText = State(initialValue: "\(settingsStore.settings.mainPanelHeight)")
         _operationReminderTimeText = State(initialValue: settingsStore.settings.operationReminderTimeText)
         _operationReminderDraftHour = State(initialValue: settingsStore.settings.operationReminderTimeMinutes / 60)
         _operationReminderDraftMinute = State(initialValue: settingsStore.settings.operationReminderTimeMinutes % 60)
@@ -252,24 +251,6 @@ struct SettingsView: View {
                                     .frame(width: 54, height: 30)
                             }
 
-                            Divider()
-                                .overlay(.secondary.opacity(0.14))
-
-                            HStack {
-                                Text("高度")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                mainPanelHeightInput
-                            }
-
-                            Slider(
-                                value: mainPanelHeightBinding,
-                                in: Double(AppSettings.minMainPanelHeight)...Double(AppSettings.maxMainPanelHeight),
-                                step: Double(AppSettings.mainPanelHeightSliderStep)
-                            )
-                            .controlSize(.small)
-
                             if settingsStore.settings.showsMarketIndexes {
                                 Divider()
                                     .overlay(.secondary.opacity(0.14))
@@ -289,6 +270,9 @@ struct SettingsView: View {
                         .overlay(PanelDesign.border(cornerRadius: 9))
                     }
 
+                    PanelSection(title: "数据管理") {
+                        clearHoldingsSection
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 8)
@@ -306,7 +290,6 @@ struct SettingsView: View {
             displayedAppearanceMode = settingsStore.settings.appearanceMode
             displayedMenuBarContentMode = settingsStore.settings.menuBarContentMode
             displayedMenuBarDisplayMode = settingsStore.settings.menuBarDisplayMode
-            syncMainPanelHeightText()
             syncOperationReminderTimeText()
         }
         .onChange(of: settingsStore.settings.appearanceMode) { _, mode in
@@ -324,15 +307,18 @@ struct SettingsView: View {
         .onChange(of: settingsStore.settings.marketClosedAutoRefreshInterval) { _, interval in
             selectedMarketClosedAutoRefreshInterval = interval
         }
-        .onChange(of: settingsStore.settings.mainPanelHeight) { _, _ in
-            if !isMainPanelHeightFocused {
-                syncMainPanelHeightText()
-            }
-        }
         .onChange(of: settingsStore.settings.operationReminderTimeMinutes) { _, _ in
             if !isOperationReminderTimeSelectorPresented {
                 syncOperationReminderTimeText()
             }
+        }
+        .alert("清空所有持仓", isPresented: $isClearHoldingsConfirmationPresented) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) {
+                clearAllHoldings()
+            }
+        } message: {
+            Text("会删除全部基金、待确认操作和交易记录，并清空当前收益汇总。此操作无法撤销。")
         }
     }
 
@@ -420,6 +406,59 @@ struct SettingsView: View {
         .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 9))
         .animation(.easeInOut(duration: 0.16), value: settingsStore.settings.betaFeaturesEnabled)
+    }
+
+    private var clearHoldingsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("清空所有持仓")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("删除本地基金列表、待确认操作和交易记录，适合重新开始录入。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+            }
+
+            if let clearHoldingsStatusMessage {
+                Text(clearHoldingsStatusMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Button {
+                clearHoldingsStatusMessage = nil
+                isClearHoldingsConfirmationPresented = true
+            } label: {
+                PanelButtonLabel(
+                    title: "清空所有持仓",
+                    systemImage: "trash",
+                    style: .destructive
+                )
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(!canClearHoldings)
+            .help(canClearHoldings ? "清空所有本地持仓数据" : "当前没有可清空的持仓数据")
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var canClearHoldings: Bool {
+        !store.snapshot.funds.isEmpty
+            || store.snapshot.pendingTrades?.isEmpty == false
+            || store.snapshot.pendingConversions?.isEmpty == false
+            || store.snapshot.tradeRecords?.isEmpty == false
+            || store.snapshot.syncedAccountTotal != nil
     }
 
     private func autoRefreshIntervalControl(
@@ -651,17 +690,6 @@ struct SettingsView: View {
         )
     }
 
-    private var mainPanelHeightBinding: Binding<Double> {
-        Binding(
-            get: { Double(settingsStore.settings.mainPanelHeight) },
-            set: { height in
-                settingsStore.setMainPanelHeight(Int(height.rounded()))
-                syncMainPanelHeightText()
-                onSettingsChanged?()
-            }
-        )
-    }
-
     private var marketIndexesShownBinding: Binding<Bool> {
         Binding(
             get: { settingsStore.settings.showsMarketIndexes },
@@ -705,39 +733,6 @@ struct SettingsView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-    }
-
-    private var mainPanelHeightInput: some View {
-        HStack(spacing: 4) {
-            TextField("", text: $mainPanelHeightText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, weight: .semibold))
-                .monospacedDigit()
-                .multilineTextAlignment(.trailing)
-                .focused($isMainPanelHeightFocused)
-                .onSubmit {
-                    commitMainPanelHeightText()
-                }
-                .onChange(of: mainPanelHeightText) { _, newValue in
-                    let filtered = newValue.filter(\.isNumber)
-                    if filtered != newValue {
-                        mainPanelHeightText = filtered
-                    }
-                }
-                .onChange(of: isMainPanelHeightFocused) { _, isFocused in
-                    if !isFocused {
-                        commitMainPanelHeightText()
-                    }
-                }
-
-            Text("px")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .frame(width: 84, height: 26)
-        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 7))
     }
 
     private var operationReminderTimeInput: some View {
@@ -1048,25 +1043,6 @@ struct SettingsView: View {
         operationReminderDraftMinute = settingsStore.settings.operationReminderTimeMinutes % 60
     }
 
-    private func commitMainPanelHeightText() {
-        guard let height = Int(mainPanelHeightText) else {
-            syncMainPanelHeightText()
-            return
-        }
-
-        let previousHeight = settingsStore.settings.mainPanelHeight
-        settingsStore.setMainPanelHeight(height)
-        syncMainPanelHeightText()
-
-        if settingsStore.settings.mainPanelHeight != previousHeight {
-            onSettingsChanged?()
-        }
-    }
-
-    private func syncMainPanelHeightText() {
-        mainPanelHeightText = "\(settingsStore.settings.mainPanelHeight)"
-    }
-
     private func commitOperationReminderTimeText() {
         guard let minutes = parsedReminderTimeMinutes(operationReminderTimeText) else {
             syncOperationReminderTimeText()
@@ -1306,6 +1282,19 @@ struct SettingsView: View {
     private func checkUpdate() {
         Task {
             await onCheckUpdate?()
+        }
+    }
+
+    private func clearAllHoldings() {
+        do {
+            try store.clearAllHoldings()
+            clearHoldingsStatusMessage = "已清空所有本地持仓数据。"
+            onSettingsChanged?()
+            Task {
+                await onRefresh?()
+            }
+        } catch {
+            clearHoldingsStatusMessage = "清空失败：\(error.localizedDescription)"
         }
     }
 }

@@ -54,7 +54,7 @@ enum PortfolioCalculator {
             let status = effectiveStatus(totalShares: totalShares, hasManualHolding: hasManualHolding)
             let netValue = quote?.netValue ?? cost
             let dailyState = quote.map { dailyQuoteState(for: $0, now: now) } ?? .inactive
-            let dailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, now: now)
+            let dailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, fund: fund, now: now)
             let manualDailyIncomeAmount = shouldPreserveSyncedManualAmount ? manualAmount : nil
             let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
             let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
@@ -205,7 +205,10 @@ enum PortfolioCalculator {
         )
     }
 
-    private static func sharesParticipatingInDailyIncome(lots: [FundPositionLot], now: Date) -> Double {
+    private static func sharesParticipatingInDailyIncome(lots: [FundPositionLot], fund: FundPosition, now: Date) -> Double {
+        if fund.status == .holding, fund.positionMode == .amount {
+            return lots.reduce(0) { $0 + $1.shares }
+        }
         let today = DateOnlyFormatter.string(from: now)
         return lots.reduce(0) { total, lot in
             guard DateOnlyFormatter.parse(lot.incomeStartDate) != nil else {

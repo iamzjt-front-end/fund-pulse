@@ -592,7 +592,6 @@ final class StatusBarController: NSObject {
             marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             uiState: popoverState,
-            mainPanelHeight: mainPanelHeight,
             selectedFundCode: selectedFundCode,
             onRefresh: { [weak self] in
                 await self?.refreshQuotesAndStatusTitleAsync()

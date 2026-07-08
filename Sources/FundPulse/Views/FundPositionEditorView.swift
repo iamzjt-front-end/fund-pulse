@@ -149,20 +149,6 @@ struct FundPositionEditorView: View {
                     }
                     .animation(.easeInOut(duration: 0.18), value: shouldShowTradeTimeControls)
 
-                    PanelSection(title: "备注") {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("备注")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.secondary)
-                            TextEditor(text: $memo)
-                                .frame(height: 58)
-                                .scrollContentBackground(.hidden)
-                                .padding(8)
-                                .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                                .overlay(PanelDesign.border(cornerRadius: 8))
-                        }
-                    }
-
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.system(size: 11, weight: .medium))

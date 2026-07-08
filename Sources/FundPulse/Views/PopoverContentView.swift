@@ -7,7 +7,6 @@ struct MainPanelWindowView: View {
     let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
     let uiState: PopoverUIState
-    let mainPanelHeight: CGFloat
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
@@ -30,62 +29,145 @@ struct MainPanelWindowView: View {
     let onOpenUpdate: (() -> Void)?
 
     var body: some View {
-        let contentSize = mainPanelContentSize
+        GeometryReader { proxy in
+            let contentHeight = mainPanelContentHeight(for: proxy.size.height)
+            let windowHeight = contentHeight + PopoverLayout.arrowHeight
 
-        ZStack(alignment: .top) {
-            PopoverChromeShape(arrowX: uiState.arrowX)
-                .fill(popoverChromeFillColor)
-                .overlay(
-                    PopoverChromeShape(arrowX: uiState.arrowX)
-                        .stroke(panelBorderColor, lineWidth: 0.5)
+            ZStack(alignment: .top) {
+                PopoverChromeShape(arrowX: uiState.arrowX)
+                    .fill(popoverChromeFillColor)
+                    .overlay(
+                        PopoverChromeShape(arrowX: uiState.arrowX)
+                            .stroke(panelBorderColor, lineWidth: 0.5)
+                    )
+
+                PopoverContentView(
+                    store: store,
+                    settingsStore: settingsStore,
+                    marketIndexStore: marketIndexStore,
+                    updateStore: updateStore,
+                    selectedFundCode: selectedFundCode,
+                    onRefresh: onRefresh,
+                    onOpenSettings: onOpenSettings,
+                    onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
+                    onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
+                    onOpenTodayRateRanking: onOpenTodayRateRanking,
+                    onOpenHoldingIncomeRanking: onOpenHoldingIncomeRanking,
+                    onOpenHoldingRateRanking: onOpenHoldingRateRanking,
+                    onAddFund: onAddFund,
+                    onOpenFundDetail: onOpenFundDetail,
+                    onOpenTradeRecords: onOpenTradeRecords,
+                    onOpenPendingActivity: onOpenPendingActivity,
+                    onDeletePendingActivity: onDeletePendingActivity,
+                    onBuyFund: onBuyFund,
+                    onSellFund: onSellFund,
+                    onEditFund: onEditFund,
+                    onDeleteFund: onDeleteFund,
+                    onCheckUpdate: onCheckUpdate,
+                    onOpenUpdate: onOpenUpdate
                 )
-            
-            PopoverContentView(
-                store: store,
-                settingsStore: settingsStore,
-                marketIndexStore: marketIndexStore,
-                updateStore: updateStore,
-                selectedFundCode: selectedFundCode,
-                onRefresh: onRefresh,
-                onOpenSettings: onOpenSettings,
-                onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
-                onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
-                onOpenTodayRateRanking: onOpenTodayRateRanking,
-                onOpenHoldingIncomeRanking: onOpenHoldingIncomeRanking,
-                onOpenHoldingRateRanking: onOpenHoldingRateRanking,
-                onAddFund: onAddFund,
-                onOpenFundDetail: onOpenFundDetail,
-                onOpenTradeRecords: onOpenTradeRecords,
-                onOpenPendingActivity: onOpenPendingActivity,
-                onDeletePendingActivity: onDeletePendingActivity,
-                onBuyFund: onBuyFund,
-                onSellFund: onSellFund,
-                onEditFund: onEditFund,
-                onDeleteFund: onDeleteFund,
-                onCheckUpdate: onCheckUpdate,
-                onOpenUpdate: onOpenUpdate
-            )
-            .frame(width: contentSize.width, height: contentSize.height)
-            .clipShape(RoundedRectangle(cornerRadius: PopoverLayout.cornerRadius, style: .continuous))
-            .offset(y: PopoverLayout.arrowHeight)
+                .frame(width: PopoverLayout.mainWidth, height: contentHeight)
+                .clipShape(RoundedRectangle(cornerRadius: PopoverLayout.cornerRadius, style: .continuous))
+                .offset(y: PopoverLayout.arrowHeight)
+
+                MainPanelBottomResizeArea(settingsStore: settingsStore)
+                    .frame(height: bottomResizeEdgeHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .zIndex(10)
+            }
+            .frame(width: PopoverLayout.mainWidth, height: windowHeight, alignment: .top)
         }
-        .frame(
-            width: contentSize.width,
-            height: contentSize.height + PopoverLayout.arrowHeight,
-            alignment: .top
-        )
+        .frame(width: PopoverLayout.mainWidth)
         .background(Color.clear)
     }
 
-    private var mainPanelContentSize: NSSize {
-        NSSize(
-            width: PopoverLayout.mainWidth,
-            height: PopoverLayout.clampedMainPanelHeight(mainPanelHeight)
-        )
+    private func mainPanelContentHeight(for proposedWindowHeight: CGFloat) -> CGFloat {
+        guard proposedWindowHeight > PopoverLayout.arrowHeight else {
+            return PopoverLayout.clampedMainPanelHeight(CGFloat(settingsStore.settings.mainPanelHeight))
+        }
+        return PopoverLayout.clampedMainPanelHeight(proposedWindowHeight - PopoverLayout.arrowHeight)
     }
 
     private var popoverChromeFillColor: Color {
         PanelDesign.panelChromeBackground
+    }
+
+    private var bottomResizeEdgeHeight: CGFloat {
+        12
+    }
+}
+
+private struct MainPanelBottomResizeArea: NSViewRepresentable {
+    let settingsStore: AppSettingsStore
+
+    func makeNSView(context: Context) -> MainPanelBottomResizeView {
+        MainPanelBottomResizeView(settingsStore: settingsStore)
+    }
+
+    func updateNSView(_ view: MainPanelBottomResizeView, context: Context) {
+        view.settingsStore = settingsStore
+    }
+}
+
+private final class MainPanelBottomResizeView: NSView {
+    var settingsStore: AppSettingsStore
+    private var dragStartFrame: NSRect?
+    private var dragStartMouseLocation: NSPoint?
+
+    init(settingsStore: AppSettingsStore) {
+        self.settingsStore = settingsStore
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .resizeUpDown)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        dragStartFrame = window?.frame
+        dragStartMouseLocation = NSEvent.mouseLocation
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window,
+              let dragStartFrame,
+              let dragStartMouseLocation
+        else { return }
+
+        let currentMouseLocation = NSEvent.mouseLocation
+        let minWindowHeight = PopoverLayout.mainWindowHeight(forHeight: CGFloat(AppSettings.minMainPanelHeight))
+        let maxWindowHeight = PopoverLayout.mainWindowHeight(forHeight: CGFloat(AppSettings.maxMainPanelHeight))
+        let proposedHeight = dragStartFrame.height + dragStartMouseLocation.y - currentMouseLocation.y
+        let nextHeight = min(max(proposedHeight, minWindowHeight), maxWindowHeight)
+        let nextFrame = NSRect(
+            x: dragStartFrame.minX,
+            y: dragStartFrame.maxY - nextHeight,
+            width: PopoverLayout.mainWidth,
+            height: nextHeight
+        )
+        window.setFrame(nextFrame, display: true)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        defer {
+            dragStartFrame = nil
+            dragStartMouseLocation = nil
+        }
+
+        guard let window else { return }
+        let contentHeight = PopoverLayout.clampedMainPanelHeight(window.frame.height - PopoverLayout.arrowHeight)
+        settingsStore.setMainPanelHeight(Int(contentHeight.rounded()))
     }
 }
 
@@ -301,7 +383,7 @@ struct PopoverContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
-        .padding(.bottom, 10)
+        .padding(.bottom, 6)
         .background(headerSurfaceBackground)
         .overlay(alignment: .bottom) {
             LinearGradient(

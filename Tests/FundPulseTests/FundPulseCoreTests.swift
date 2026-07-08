@@ -5486,7 +5486,52 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testPrematureSameDayNewFundConfirmationIsRestoredToPending() async throws {
+    func testHistoricalNewFundWithoutNetValueStillBecomesHolding() async throws {
+        let now = try chinaDate("2026-06-24 14:45")
+        let service = quoteServiceWithMockResponses([:])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-historical-fund-missing-nav-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        let draft = FundPositionDraft(
+            code: "024418",
+            name: "华夏上证科创板半导体材料设备主题ETF联接A",
+            positionMode: .amount,
+            positionAmount: 5_000,
+            positionProfit: 0,
+            shares: nil,
+            cost: nil,
+            positionDate: "2026-06-24",
+            positionTimeType: .before15,
+            memo: "",
+            requiresTradeConfirmation: false
+        )
+
+        try await store.upsertFund(draft)
+
+        let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "024418" })
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertEqual(fund.currentAmount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.pendingAmount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedPrincipal ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(fund.isIncomeActive, true)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+        XCTAssertEqual(store.snapshot.totalAmount, 5_000, accuracy: 0.0001)
+        XCTAssertNil(store.snapshot.pendingTrades)
+
+        let record = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(record.kind, .newFund)
+        XCTAssertEqual(record.status, .confirmed)
+        XCTAssertEqual(record.amount ?? 0, 5_000, accuracy: 0.0001)
+        XCTAssertNil(record.confirmedShares)
+        XCTAssertNil(record.price)
+    }
+
+    @MainActor
+    func testConfirmedSameDayManualNewFundStaysHolding() async throws {
         let now = try chinaDate("2026-06-23 21:48")
         let createdAt = try chinaDate("2026-06-23 15:41")
         let service = quoteServiceWithMockResponses([
@@ -5577,15 +5622,14 @@ final class FundPulseCoreTests: XCTestCase {
         await store.refreshQuotes()
 
         let restoredFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "025833" })
-        XCTAssertEqual(restoredFund.status, .pending)
-        XCTAssertEqual(restoredFund.pendingAmount ?? 0, 5_000, accuracy: 0.0001)
-        XCTAssertEqual(restoredFund.migratedShares ?? 0, 0, accuracy: 0.0001)
-        XCTAssertEqual(store.snapshot.pendingCount, 1)
+        XCTAssertEqual(restoredFund.status, .holding)
+        XCTAssertEqual(restoredFund.migratedShares ?? 0, 3304.692664, accuracy: 0.000001)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
         let restoredRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first)
-        XCTAssertEqual(restoredRecord.status, .pending)
-        XCTAssertNil(restoredRecord.confirmedShares)
-        XCTAssertNil(restoredRecord.price)
-        XCTAssertNil(restoredRecord.confirmedAt)
+        XCTAssertEqual(restoredRecord.status, .confirmed)
+        XCTAssertEqual(restoredRecord.confirmedShares ?? 0, 3304.692664, accuracy: 0.000001)
+        XCTAssertEqual(restoredRecord.price ?? 0, 1.5130, accuracy: 0.0001)
+        XCTAssertNotNil(restoredRecord.confirmedAt)
     }
 
     @MainActor
@@ -7466,6 +7510,188 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testDeletingLastFundClearsHeaderAggregatesAndSyncedTotal() async throws {
+        let now = try chinaDate("2026-07-08 14:30")
+        let syncedAt = try chinaDate("2026-07-08 14:20")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-delete-last-fund-clears-aggregates-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]), now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: syncedAt,
+                totalAmount: 100,
+                holdingIncome: -0.0000002,
+                holdingIncomeRate: -0.0000002,
+                todayIncome: 0.73,
+                todayIncomeRate: 0.73,
+                pendingCount: 0,
+                funds: [
+                    FundPosition(
+                        code: "588760",
+                        name: "科创人工智能ETF广发",
+                        dateText: "07-08 15:00前确认",
+                        todayIncome: 0.73,
+                        todayRate: 0.73,
+                        holdingIncome: 0,
+                        holdingRate: 0,
+                        currentAmount: 100,
+                        status: .holding,
+                        isUpdated: false,
+                        migratedShares: 100,
+                        migratedCost: 1
+                    )
+                ],
+                migration: nil,
+                syncedAccountTotal: PortfolioSyncedAccountTotal(source: .jdFinance, amount: 100, syncedAt: syncedAt)
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try await store.deleteFund(code: "588760")
+
+        XCTAssertEqual(store.snapshot.updateTime, now)
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+        XCTAssertEqual(store.snapshot.totalAmount, 0)
+        XCTAssertEqual(store.snapshot.holdingIncome, 0)
+        XCTAssertEqual(store.snapshot.holdingIncomeRate, 0)
+        XCTAssertEqual(store.snapshot.todayIncome, 0)
+        XCTAssertEqual(store.snapshot.todayIncomeRate, 0)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+        XCTAssertNil(store.snapshot.syncedAccountTotal)
+
+        let reloadedStore = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]), now: { now })
+        reloadedStore.load()
+        XCTAssertTrue(reloadedStore.snapshot.funds.isEmpty)
+        XCTAssertEqual(reloadedStore.snapshot.totalAmount, 0)
+        XCTAssertEqual(reloadedStore.snapshot.todayIncome, 0)
+        XCTAssertNil(reloadedStore.snapshot.syncedAccountTotal)
+    }
+
+    @MainActor
+    func testClearingAllHoldingsRemovesFundsPendingRecordsAndSyncedTotal() throws {
+        let now = try chinaDate("2026-07-08 14:30")
+        let createdAt = try chinaDate("2026-07-08 14:00")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-clear-all-holdings-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]), now: { now })
+        let pendingTrade = FundPendingTrade(
+            id: "pending-buy",
+            recordID: "pending-buy-record",
+            action: .buy,
+            code: "588760",
+            mode: .amount,
+            amount: 1000,
+            shares: nil,
+            tradeDate: "2026-07-08",
+            tradeTimeType: .before15,
+            createdAt: createdAt
+        )
+        let pendingConversion = FundPendingConversion(
+            id: "conversion-1",
+            outRecordID: "conversion-out",
+            inRecordID: "conversion-in",
+            fromCode: "588760",
+            toCode: "026210",
+            toName: Self.tradeTestName,
+            shares: 100,
+            tradeDate: "2026-07-08",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-08",
+            createdAt: createdAt,
+            sellFeeMode: .rate,
+            sellFeeValue: 0.5,
+            buyFeeRate: 0.15,
+            failureReason: nil
+        )
+        let tradeRecord = FundTradeRecord(
+            id: "pending-buy-record",
+            kind: .buy,
+            status: .pending,
+            code: "588760",
+            name: "科创人工智能ETF广发",
+            mode: .amount,
+            amount: 1000,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-08",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-08",
+            createdAt: createdAt,
+            confirmedAt: nil,
+            failureReason: nil
+        )
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: createdAt,
+                totalAmount: 12_345,
+                holdingIncome: 123,
+                holdingIncomeRate: 1,
+                todayIncome: 45,
+                todayIncomeRate: 0.5,
+                pendingCount: 2,
+                funds: [
+                    FundPosition(
+                        code: "588760",
+                        name: "科创人工智能ETF广发",
+                        dateText: "07-08 15:00前确认",
+                        todayIncome: 45,
+                        todayRate: 1.2,
+                        holdingIncome: 123,
+                        holdingRate: 1,
+                        currentAmount: 12_345,
+                        status: .holding,
+                        isUpdated: true,
+                        migratedShares: 100,
+                        migratedCost: 1.2
+                    )
+                ],
+                migration: MigrationInfo(
+                    source: "legacy",
+                    currentWalletCode: "default",
+                    walletName: "默认钱包",
+                    eyeStatus: true
+                ),
+                pendingTrades: [pendingTrade],
+                pendingConversions: [pendingConversion],
+                tradeRecords: [tradeRecord],
+                syncedAccountTotal: PortfolioSyncedAccountTotal(source: .jdFinance, amount: 20_000, syncedAt: createdAt)
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try store.clearAllHoldings()
+
+        XCTAssertEqual(store.loadState, .loaded)
+        XCTAssertEqual(store.snapshot.updateTime, now)
+        XCTAssertEqual(store.snapshot.totalAmount, 0)
+        XCTAssertEqual(store.snapshot.holdingIncome, 0)
+        XCTAssertEqual(store.snapshot.todayIncome, 0)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+        XCTAssertNil(store.snapshot.migration)
+        XCTAssertNil(store.snapshot.pendingTrades)
+        XCTAssertNil(store.snapshot.pendingConversions)
+        XCTAssertNil(store.snapshot.tradeRecords)
+        XCTAssertNil(store.snapshot.syncedAccountTotal)
+
+        let reloadedStore = PortfolioStore(dataDirectory: tempDirectory, quoteService: quoteServiceWithMockResponses([:]), now: { now })
+        reloadedStore.load()
+        XCTAssertEqual(reloadedStore.loadState, .loaded)
+        XCTAssertTrue(reloadedStore.snapshot.funds.isEmpty)
+        XCTAssertNil(reloadedStore.snapshot.tradeRecords)
+        XCTAssertNil(reloadedStore.snapshot.syncedAccountTotal)
+    }
+
+    @MainActor
     func testDeletingConfirmedConversionRestoresLegacySourceWithoutCreatingInitialRecord() async throws {
         let now = try chinaDate("2026-06-23 09:30")
         let service = multiTradeQuoteService([
@@ -9013,6 +9239,80 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.todayIncomeRate, 3.21, accuracy: 0.0001)
     }
 
+    func testHistoricalAmountHoldingEnteredTodayParticipatesInTodayIncome() throws {
+        let now = try chinaDate("2026-07-08 15:09")
+        let amount = 122_552.60
+        let profit = -3_447.40
+        let principal = amount - profit
+        let netValue = 1.5051
+        let shares = 81_424.888712
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "022485",
+                    name: "国金中证A500指数增强A",
+                    dateText: "07-08 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: profit / principal * 100,
+                    status: .holding,
+                    isUpdated: true,
+                    isIncomeActive: true,
+                    migratedShares: shares,
+                    migratedCost: principal / shares,
+                    migratedPrincipal: principal,
+                    incomeStartDate: "2026-07-08",
+                    positionMode: .amount,
+                    positionDate: "2026-07-08",
+                    positionTimeType: .before15,
+                    lots: [
+                        FundPositionLot(
+                            id: "022485-new",
+                            shares: shares,
+                            cost: principal / shares,
+                            principal: principal,
+                            incomeStartDate: "2026-07-08",
+                            positionDate: "2026-07-08",
+                            positionTimeType: .before15
+                        )
+                    ]
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "022485",
+            name: "国金中证A500指数增强A",
+            netValue: netValue,
+            estimatedNetValue: 1.5153,
+            growthRate: -1.79,
+            estimateTime: "2026-07-08 15:00",
+            netValueDate: "2026-07-08"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["022485": quote],
+            now: now
+        )
+
+        let fund = result.funds[0]
+        let expectedTodayIncome = shares * netValue * quote.growthRate / (100 + quote.growthRate)
+        let expectedTodayBase = shares * netValue / (1 + quote.growthRate / 100)
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertEqual(fund.todayRate, -1.79, accuracy: 0.0001)
+        XCTAssertEqual(fund.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, expectedTodayIncome / expectedTodayBase * 100, accuracy: 0.0001)
+    }
+
     func testHoldingIncomeAndAmountUseOfficialNetValueWhileTodayIncomeUsesEstimate() throws {
         let now = try chinaDate("2026-06-22 11:52")
         let shares = 11_518.08
@@ -10295,7 +10595,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.rate), [-4.65, -5.16])
     }
 
-    func testIntradayRateHistoryRecordsLatestEstimateOutsideOpenAndRestartsNextTradingDay() throws {
+    func testIntradayRateHistoryPausesOutsideOpenAndRestartsNextTradingDay() throws {
         let sameDayPoint = FundIntradayRatePoint(
             timestamp: Int64(try chinaDate("2026-06-24 10:58").timeIntervalSince1970 * 1000),
             rate: 1.12,
@@ -10325,13 +10625,31 @@ final class FundPulseCoreTests: XCTestCase {
             ],
             migration: nil
         )
-        let sameDayQuote = FundQuote(
+        let middayQuote = FundQuote(
             code: "026210",
             name: "平安科技精选混合发起式A",
             netValue: 2,
             estimatedNetValue: 2.04,
             growthRate: 1.65,
             estimateTime: "2026-06-24 11:30",
+            netValueDate: "2026-06-23"
+        )
+        let afternoonQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.05,
+            growthRate: 1.80,
+            estimateTime: "2026-06-24 13:01",
+            netValueDate: "2026-06-23"
+        )
+        let closeQuote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2,
+            estimatedNetValue: 2.06,
+            growthRate: 1.95,
+            estimateTime: "2026-06-24 15:00",
             netValueDate: "2026-06-23"
         )
         let nextDayQuote = FundQuote(
@@ -10346,19 +10664,28 @@ final class FundPulseCoreTests: XCTestCase {
 
         let middayBreak = FundIntradayRateHistoryRecorder.applyingQuotes(
             to: snapshot,
-            quotes: ["026210": sameDayQuote],
+            quotes: ["026210": middayQuote],
             now: try chinaDate("2026-06-24 12:00")
         )
         let middayPoints = try XCTUnwrap(middayBreak.funds[0].intradayRateHistory)
-        XCTAssertEqual(middayPoints.map(\.rate), [1.12, 1.65])
+        XCTAssertEqual(middayPoints.map(\.rate), [1.12])
+        XCTAssertEqual(middayPoints.map(\.estimateTime), ["2026-06-24 10:58"])
+
+        let afternoonOpen = FundIntradayRateHistoryRecorder.applyingQuotes(
+            to: middayBreak,
+            quotes: ["026210": afternoonQuote],
+            now: try chinaDate("2026-06-24 13:01")
+        )
+        let afternoonPoints = try XCTUnwrap(afternoonOpen.funds[0].intradayRateHistory)
+        XCTAssertEqual(afternoonPoints.map(\.rate), [1.12, 1.80])
         XCTAssertEqual(
-            middayPoints.last?.timestamp,
-            Int64(try chinaDate("2026-06-24 11:30").timeIntervalSince1970 * 1000)
+            afternoonPoints.map(\.estimateTime),
+            ["2026-06-24 10:58", "2026-06-24 13:01"]
         )
 
         let afterClose = FundIntradayRateHistoryRecorder.applyingQuotes(
-            to: middayBreak,
-            quotes: ["026210": sameDayQuote],
+            to: afternoonOpen,
+            quotes: ["026210": closeQuote],
             now: try chinaDate("2026-06-24 15:10")
         )
         XCTAssertEqual(afterClose.funds[0].intradayRateHistory?.count, 2)

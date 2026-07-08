@@ -83,6 +83,22 @@ final class PortfolioStore {
         loadState = .loaded
     }
 
+    func clearAllHoldings() throws {
+        snapshot = PortfolioSnapshot(
+            updateTime: nowProvider(),
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [],
+            migration: nil
+        )
+        try save(snapshot)
+        loadState = .loaded
+    }
+
     func refreshQuotes() async {
         isRefreshingQuotes = true
         defer { isRefreshingQuotes = false }
@@ -99,7 +115,7 @@ final class PortfolioStore {
 
         let codes = snapshot.funds.map(\.code)
         guard !codes.isEmpty else {
-            snapshot.updateTime = .now
+            resetEmptyPortfolioAggregates(updateTime: nowProvider())
             loadState = .loaded
             try? save(snapshot)
             return
@@ -107,7 +123,6 @@ final class PortfolioStore {
 
         do {
             let quotes = await quoteService.fetchQuotes(codes: codes)
-            normalizePrematureInitialConfirmations()
             repairAmountModeSharePrecisionFromTradeRecords()
             await processPendingTrades(quotes: quotes)
             await processPendingConversions(quotes: quotes)
@@ -159,7 +174,14 @@ final class PortfolioStore {
             acceptedDate: acceptedDate,
             latestQuote: quote
         )
-        let confirmedNetValue = canConfirmInitialPosition ? fetchedConfirmedNetValue : nil
+        let confirmedNetValue = canConfirmInitialPosition
+            ? resolvedInitialConfirmedNetValue(
+                fetchedConfirmedNetValue,
+                draft: draft,
+                quote: quote,
+                isCreatingFund: isCreatingFund
+            )
+            : nil
         let fund = try makeFundPosition(
             from: persistedDraft,
             existingFund: existingFund,
@@ -546,6 +568,7 @@ final class PortfolioStore {
             try rebuildFundPositionFromTradeRecords(code: affectedCode)
         }
 
+        resetEmptyPortfolioAggregates(updateTime: nowProvider())
         try save(snapshot)
         await refreshQuotes()
     }
@@ -730,6 +753,10 @@ final class PortfolioStore {
         let status: FundHoldingStatus
         let pendingAmount: Double?
         let pendingProfit: Double?
+        let manualCurrentAmount: Double?
+        let manualHoldingIncome: Double?
+        let manualHoldingRate: Double?
+        let manualPrincipal: Double?
 
         switch draft.positionMode {
         case .amount:
@@ -741,21 +768,33 @@ final class PortfolioStore {
                 status = .holding
                 pendingAmount = nil
                 pendingProfit = nil
+                manualCurrentAmount = nil
+                manualHoldingIncome = nil
+                manualHoldingRate = nil
+                manualPrincipal = nil
             } else {
                 let amount = draft.positionAmount ?? 0
                 guard amount > 0 else { throw PortfolioStoreError.invalidPosition }
                 let principal = amount - draft.positionProfit
                 guard principal > 0 else { throw PortfolioStoreError.invalidCost }
                 position = nil
-                status = .pending
+                status = draft.requiresTradeConfirmation ? .pending : .holding
                 pendingAmount = amount
                 pendingProfit = draft.positionProfit == 0 ? nil : draft.positionProfit
+                manualCurrentAmount = status == .holding ? amount : nil
+                manualHoldingIncome = status == .holding ? draft.positionProfit : nil
+                manualHoldingRate = status == .holding ? draft.positionProfit / principal * 100 : nil
+                manualPrincipal = status == .holding ? principal : nil
             }
         case .share:
             position = try resolvedPosition(draft: draft, netValue: draft.cost)
             status = .holding
             pendingAmount = nil
             pendingProfit = nil
+            manualCurrentAmount = nil
+            manualHoldingIncome = nil
+            manualHoldingRate = nil
+            manualPrincipal = nil
         }
 
         let lots: [FundPositionLot]? = position.map {
@@ -781,13 +820,17 @@ final class PortfolioStore {
             dateText: resolvedDateText,
             todayIncome: existingFund?.todayIncome ?? 0,
             todayRate: quote?.growthRate ?? existingFund?.todayRate ?? 0,
-            holdingRate: existingFund?.holdingRate,
+            holdingIncome: manualHoldingIncome,
+            holdingRate: manualHoldingRate ?? existingFund?.holdingRate,
+            confirmedHoldingIncome: manualHoldingIncome,
+            confirmedHoldingRate: manualHoldingRate,
+            currentAmount: manualCurrentAmount,
             status: status,
             isUpdated: quote.map(quoteIsUpdated) ?? existingFund?.isUpdated ?? false,
             isIncomeActive: status == .holding,
             migratedShares: position?.shares ?? 0,
             migratedCost: position?.cost,
-            migratedPrincipal: position?.principal ?? 0,
+            migratedPrincipal: position?.principal ?? manualPrincipal ?? 0,
             incomeStartDate: incomeStartDate,
             positionMode: draft.positionMode,
             positionDate: draft.positionDate,
@@ -1160,6 +1203,26 @@ final class PortfolioStore {
         return netValueDate
     }
 
+    private func resolvedInitialConfirmedNetValue(
+        _ fetchedNetValue: Double?,
+        draft: FundPositionDraft,
+        quote: FundQuote?,
+        isCreatingFund: Bool
+    ) -> Double? {
+        if let fetchedNetValue, fetchedNetValue > 0 {
+            return fetchedNetValue
+        }
+        guard isCreatingFund,
+              !draft.requiresTradeConfirmation,
+              let quote,
+              !quote.netValueDate.isEmpty,
+              quote.netValue > 0
+        else {
+            return nil
+        }
+        return quote.netValue
+    }
+
     private func normalizePrematureInitialConfirmations() {
         guard var records = snapshot.tradeRecords, !records.isEmpty else {
             return
@@ -1172,6 +1235,7 @@ final class PortfolioStore {
                   records[index].status == .confirmed,
                   records[index].mode == .amount,
                   !isJDFinanceSyncedManualHolding(fundsByCode[records[index].code]),
+                  !isManualAmountHolding(fundsByCode[records[index].code]),
                   !shouldConfirmPendingTrade(acceptedDate: records[index].acceptedDate)
             else {
                 continue
@@ -1231,6 +1295,17 @@ final class PortfolioStore {
               fund.positionMode == .amount,
               (fund.pendingAmount ?? 0) > 0,
               fund.memo?.contains("京东金融同步") == true
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func isManualAmountHolding(_ fund: FundPosition?) -> Bool {
+        guard let fund,
+              fund.status == .holding,
+              fund.positionMode == .amount,
+              (fund.pendingAmount ?? 0) > 0
         else {
             return false
         }
@@ -1840,6 +1915,18 @@ final class PortfolioStore {
         snapshot.funds[index] = fund
     }
 
+    private func resetEmptyPortfolioAggregates(updateTime: Date) {
+        guard snapshot.funds.isEmpty else { return }
+        snapshot.updateTime = updateTime
+        snapshot.totalAmount = 0
+        snapshot.holdingIncome = 0
+        snapshot.holdingIncomeRate = 0
+        snapshot.todayIncome = 0
+        snapshot.todayIncomeRate = 0
+        snapshot.pendingCount = (snapshot.pendingTrades?.count ?? 0) + (snapshot.pendingConversions?.count ?? 0)
+        snapshot.syncedAccountTotal = nil
+    }
+
     private func shouldRestoreLegacyFundAfterDeletingTrade(
         code: String,
         remainingRecords: [FundTradeRecord],
@@ -2107,7 +2194,15 @@ final class PortfolioStore {
         confirmedNetValue: Double?
     ) {
         let status: FundTradeRecordStatus = fund.status.isPendingDisplay ? .pending : .confirmed
-        let confirmedShares = status == .confirmed ? fund.migratedShares : nil
+        let confirmedShares: Double? = {
+            guard status == .confirmed,
+                  let shares = fund.migratedShares,
+                  shares > 0
+            else {
+                return nil
+            }
+            return shares
+        }()
         let amount = draft.positionAmount ?? confirmedShares.flatMap { shares in
             (fund.migratedCost ?? confirmedNetValue).map { roundedMoney(shares * $0) }
         }

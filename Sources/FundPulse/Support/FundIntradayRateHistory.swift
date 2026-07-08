@@ -34,6 +34,10 @@ enum FundIntradayRateHistoryRecorder {
             var updatedFund = resetIfNeeded(fund, tradingDay: tradingDay)
             updatedFund = normalizeHistoryIfNeeded(updatedFund)
 
+            guard TradingCalendar.marketSessionState(now: now) == .open else {
+                return updatedFund
+            }
+
             guard let quote = quotes[fund.code],
                   quote.growthRate.isFinite,
                   quoteHasCurrentIntradayEstimate(quote, tradingDay: tradingDay),

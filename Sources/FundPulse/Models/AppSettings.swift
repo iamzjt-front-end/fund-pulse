@@ -5,7 +5,6 @@ struct AppSettings: Codable, Equatable {
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
-    static let mainPanelHeightSliderStep = 10
     static let defaultOperationReminderTimeMinutes = 14 * 60 + 30
     static let defaultThresholdReminderInterval: FundThresholdReminderInterval = .thirtyMinutes
     static let defaultDailyGrowthReminderEnabled = false
