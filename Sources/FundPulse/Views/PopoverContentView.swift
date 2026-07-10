@@ -3470,7 +3470,7 @@ private enum TodayIncomeRankingMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum IncomeRankingKind {
+enum IncomeRankingKind: Equatable {
     case today
     case holding
 
@@ -3550,7 +3550,7 @@ enum IncomeRankingKind {
     }
 }
 
-enum IncomeRankingMetric {
+enum IncomeRankingMetric: Equatable {
     case amount
     case rate
 }
@@ -4865,9 +4865,22 @@ private struct FundDailyIncomeDisplayRow: Identifiable {
     let amount: Double
 }
 
+private func unavailableRoutedFund(code: String) -> FundPosition {
+    FundPosition(
+        code: code,
+        name: "",
+        dateText: "--",
+        todayIncome: 0,
+        todayRate: 0,
+        holdingRate: nil,
+        status: .watch,
+        isUpdated: false
+    )
+}
+
 struct FundDailyIncomePanelView: View {
     let store: PortfolioStore
-    private let initialFund: FundPosition
+    private let fundCode: String
     let onClose: () -> Void
 
     @State private var supplement: FundDetailSupplement = .empty
@@ -4879,16 +4892,16 @@ struct FundDailyIncomePanelView: View {
 
     init(
         store: PortfolioStore,
-        fund: FundPosition,
+        fundCode: String,
         onClose: @escaping () -> Void
     ) {
         self.store = store
-        self.initialFund = fund
+        self.fundCode = fundCode
         self.onClose = onClose
     }
 
     private var fund: FundPosition {
-        store.snapshot.funds.first { $0.code == initialFund.code } ?? initialFund
+        store.snapshot.funds.first { $0.code == fundCode } ?? unavailableRoutedFund(code: fundCode)
     }
 
     var body: some View {
@@ -5085,7 +5098,7 @@ enum FundRowAmountPrivacyFormatter {
 
 struct FundDetailView: View {
     let store: PortfolioStore
-    private let initialFund: FundPosition
+    private let fundCode: String
     let onBuy: (FundPosition) -> Void
     let onSell: (FundPosition) -> Void
     let onConvert: (FundPosition) -> Void
@@ -5107,7 +5120,7 @@ struct FundDetailView: View {
 
     init(
         store: PortfolioStore,
-        fund: FundPosition,
+        fundCode: String,
         onBuy: @escaping (FundPosition) -> Void,
         onSell: @escaping (FundPosition) -> Void,
         onConvert: @escaping (FundPosition) -> Void,
@@ -5118,7 +5131,7 @@ struct FundDetailView: View {
         onClose: @escaping () -> Void
     ) {
         self.store = store
-        self.initialFund = fund
+        self.fundCode = fundCode
         self.onBuy = onBuy
         self.onSell = onSell
         self.onConvert = onConvert
@@ -5130,7 +5143,7 @@ struct FundDetailView: View {
     }
 
     private var fund: FundPosition {
-        store.snapshot.funds.first { $0.code == initialFund.code } ?? initialFund
+        store.snapshot.funds.first { $0.code == fundCode } ?? unavailableRoutedFund(code: fundCode)
     }
 
     private var tradeRecords: [FundTradeRecord] {
@@ -6148,8 +6161,8 @@ private enum TradeRecordFilter: String, CaseIterable, Identifiable {
 }
 
 struct FundTradeRecordsPanelView: View {
-    let fund: FundPosition
-    let tradeRecords: [FundTradeRecord]
+    let store: PortfolioStore
+    let fundCode: String
     let onEdit: (FundTradeRecord) -> Void
     let onDelete: (FundTradeRecord) async -> Void
     let onClose: () -> Void
@@ -6157,6 +6170,14 @@ struct FundTradeRecordsPanelView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var filter: TradeRecordFilter = .all
     @State private var deletingRecord: FundTradeRecord?
+
+    private var fund: FundPosition {
+        store.snapshot.funds.first { $0.code == fundCode } ?? unavailableRoutedFund(code: fundCode)
+    }
+
+    private var tradeRecords: [FundTradeRecord] {
+        store.snapshot.tradeRecords ?? []
+    }
 
     var body: some View {
         VStack(spacing: 0) {

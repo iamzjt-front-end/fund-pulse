@@ -4458,6 +4458,74 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(batches, [[Self.tradeTestCode], [Self.tradeTestCode, "290008"]])
     }
 
+    func testChildPanelRouteCarriesStableIdentifiers() {
+        XCTAssertEqual(
+            ChildPanelRoute.fundDetail(fundCode: Self.tradeTestCode).selectedFundCode,
+            Self.tradeTestCode
+        )
+        XCTAssertEqual(
+            ChildPanelRoute.editConversion(
+                sourceFundCode: Self.tradeTestCode,
+                recordID: "conversion-record",
+                returnFundCode: "290008"
+            ).selectedFundCode,
+            Self.tradeTestCode
+        )
+        XCTAssertNil(ChildPanelRoute.settings.selectedFundCode)
+    }
+
+    func testChildPanelRouteResolverReadsLatestSnapshotValues() throws {
+        let route = ChildPanelRoute.tradeRecords(fundCode: Self.tradeTestCode)
+        let originalSnapshot = transactionTestSnapshot()
+        var updatedSnapshot = originalSnapshot
+        updatedSnapshot.funds[0].name = "刷新后的基金名称"
+        updatedSnapshot.tradeRecords?[0].status = .failed
+
+        XCTAssertEqual(
+            ChildPanelRouteResolver.fund(for: route, in: updatedSnapshot)?.name,
+            "刷新后的基金名称"
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(ChildPanelRouteResolver.tradeRecords(for: route, in: updatedSnapshot)).first?.status,
+            .failed
+        )
+    }
+
+    func testMissingEditedRecordRedirectsToLiveTradeRecords() {
+        let snapshot = transactionTestSnapshot()
+        let route = ChildPanelRoute.editTradeRecord(
+            fundCode: Self.tradeTestCode,
+            recordID: "missing-record"
+        )
+
+        XCTAssertEqual(
+            ChildPanelRouteResolver.disposition(for: route, in: snapshot),
+            .redirect(.tradeRecords(fundCode: Self.tradeTestCode))
+        )
+    }
+
+    func testEditedRouteStaysAvailableWhenRecordValuesRefresh() {
+        var snapshot = transactionTestSnapshot()
+        let recordID = snapshot.tradeRecords?[0].id ?? ""
+        let route = ChildPanelRoute.editTradeRecord(
+            fundCode: Self.tradeTestCode,
+            recordID: recordID
+        )
+        snapshot.tradeRecords?[0].status = .failed
+
+        XCTAssertEqual(ChildPanelRouteResolver.disposition(for: route, in: snapshot), .available)
+        XCTAssertEqual(ChildPanelRouteResolver.record(for: route, in: snapshot)?.status, .failed)
+    }
+
+    func testMissingRoutedFundClosesChildPanel() {
+        let route = ChildPanelRoute.fundDetail(fundCode: "missing-fund")
+
+        XCTAssertEqual(
+            ChildPanelRouteResolver.disposition(for: route, in: transactionTestSnapshot()),
+            .close
+        )
+    }
+
     func testFundThresholdReminderEvaluatorUsesGlobalDailyGrowthTiers() throws {
         let date = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
         let settings = AppSettings(
