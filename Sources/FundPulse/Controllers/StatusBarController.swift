@@ -378,7 +378,6 @@ final class StatusBarController: NSObject {
     private var contextMenuUpdateStatusOverride: AppUpdateStatus?
     private var contextMenuUpdateCheck: ContextMenuUpdateCheck?
     private var operationReminderConfigurationTask: Task<Void, Never>?
-    private var isRefreshingQuotes = false
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
 
@@ -1807,10 +1806,6 @@ final class StatusBarController: NSObject {
     }
 
     private func refreshQuotesAndStatusTitleAsync() async {
-        guard !isRefreshingQuotes else { return }
-        isRefreshingQuotes = true
-        defer { isRefreshingQuotes = false }
-
         await store.refreshQuotes()
         await refreshMarketIndexesIfNeeded()
         updateStatusTitle()

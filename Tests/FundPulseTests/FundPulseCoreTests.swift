@@ -4388,6 +4388,76 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(store.isRefreshingQuotes)
     }
 
+    @MainActor
+    func testConcurrentRefreshesNeverOverlapNetworkPasses() async throws {
+        let store = try refreshConcurrencyTestStore(prefix: "single-flight")
+        defer { try? FileManager.default.removeItem(at: store.dataDirectory) }
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 180_000_000)
+
+        let firstRefresh = Task { await store.refreshQuotes() }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let secondRefresh = Task { await store.refreshQuotes() }
+        await firstRefresh.value
+        await secondRefresh.value
+
+        XCTAssertEqual(MockURLProtocol.responseStore.requests().count, 2)
+        XCTAssertEqual(MockURLProtocol.responseStore.maximumConcurrentRequestCount(), 1)
+    }
+
+    @MainActor
+    func testRefreshRequestsDuringActivePassCoalesceIntoOneTrailingPass() async throws {
+        let store = try refreshConcurrencyTestStore(prefix: "trailing-pass")
+        defer { try? FileManager.default.removeItem(at: store.dataDirectory) }
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 180_000_000)
+
+        let firstRefresh = Task { await store.refreshQuotes() }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let secondRefresh = Task { await store.refreshQuotes() }
+        let thirdRefresh = Task { await store.refreshQuotes() }
+        try await Task.sleep(nanoseconds: 190_000_000)
+
+        XCTAssertTrue(store.isRefreshingQuotes)
+
+        await firstRefresh.value
+        await secondRefresh.value
+        await thirdRefresh.value
+        XCTAssertFalse(store.isRefreshingQuotes)
+        XCTAssertEqual(MockURLProtocol.responseStore.requests().count, 2)
+        XCTAssertEqual(MockURLProtocol.responseStore.maximumConcurrentRequestCount(), 1)
+    }
+
+    @MainActor
+    func testTrailingRefreshUsesLatestFundCodes() async throws {
+        let store = try refreshConcurrencyTestStore(prefix: "latest-codes")
+        defer { try? FileManager.default.removeItem(at: store.dataDirectory) }
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 180_000_000)
+
+        let firstRefresh = Task { await store.refreshQuotes() }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        var updatedSnapshot = store.snapshot
+        updatedSnapshot.funds.append(
+            conversionFund(code: "290008", name: "测试新增基金", shares: 100, cost: 1)
+        )
+        let importURL = store.dataDirectory.appending(path: "latest-codes.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(updatedSnapshot).write(to: importURL, options: .atomic)
+        try store.importPortfolio(from: importURL)
+        let trailingRefresh = Task { await store.refreshQuotes() }
+
+        await firstRefresh.value
+        await trailingRefresh.value
+
+        let batches = MockURLProtocol.responseStore.requests().compactMap { request -> Set<String>? in
+            guard let url = request.url,
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let codes = components.queryItems?.first(where: { $0.name == "FCODES" })?.value
+            else { return nil }
+            return Set(codes.split(separator: ",").map(String.init))
+        }
+        XCTAssertEqual(batches, [[Self.tradeTestCode], [Self.tradeTestCode, "290008"]])
+    }
+
     func testFundThresholdReminderEvaluatorUsesGlobalDailyGrowthTiers() throws {
         let date = try XCTUnwrap(DateOnlyFormatter.parse("2026-06-24"))
         let settings = AppSettings(
@@ -10584,6 +10654,42 @@ final class FundPulseCoreTests: XCTestCase {
         )
     }
 
+    @MainActor
+    private func refreshConcurrencyTestStore(prefix: String) throws -> PortfolioStore {
+        let now = try chinaDate("2026-07-10 10:00")
+        let response = Self.coreQuoteResponse([
+            CoreQuoteMock(
+                code: Self.tradeTestCode,
+                name: Self.tradeTestName,
+                netValueDate: "2026-07-09",
+                netValue: 2,
+                estimatedNetValue: 2.02,
+                growthRate: 1,
+                estimateTime: "2026-07-10 10:00"
+            ),
+            CoreQuoteMock(
+                code: "290008",
+                name: "测试新增基金",
+                netValueDate: "2026-07-09",
+                netValue: 1,
+                estimatedNetValue: 1.01,
+                growthRate: 1,
+                estimateTime: "2026-07-10 10:00"
+            )
+        ])
+        let tempDirectory = temporaryPortfolioDirectory(prefix: prefix)
+        let store = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: quoteServiceWithMockResponses([
+                "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": response
+            ]),
+            now: { now }
+        )
+        try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)
+        MockURLProtocol.responseStore.clearRecordedRequests()
+        return store
+    }
+
     private func thresholdReminderSnapshot(funds: [FundPosition]) -> PortfolioSnapshot {
         PortfolioSnapshot(
             updateTime: .now,
@@ -11324,6 +11430,8 @@ private final class MockResponseStore: @unchecked Sendable {
     private var finalURLStorage: [String: URL] = [:]
     private var requestStorage: [URLRequest] = []
     private var delayNanoseconds: UInt64 = 0
+    private var concurrentRequestCount = 0
+    private var maximumConcurrentRequests = 0
 
     func set(_ responses: [String: Data], finalURLs: [String: URL] = [:]) {
         lock.lock()
@@ -11352,6 +11460,8 @@ private final class MockResponseStore: @unchecked Sendable {
         finalURLStorage = [:]
         requestStorage = []
         delayNanoseconds = 0
+        concurrentRequestCount = 0
+        maximumConcurrentRequests = 0
         lock.unlock()
     }
 
@@ -11365,6 +11475,33 @@ private final class MockResponseStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return requestStorage
+    }
+
+    func clearRecordedRequests() {
+        lock.lock()
+        requestStorage = []
+        concurrentRequestCount = 0
+        maximumConcurrentRequests = 0
+        lock.unlock()
+    }
+
+    func beginRequest() {
+        lock.lock()
+        concurrentRequestCount += 1
+        maximumConcurrentRequests = max(maximumConcurrentRequests, concurrentRequestCount)
+        lock.unlock()
+    }
+
+    func finishRequest() {
+        lock.lock()
+        concurrentRequestCount = max(0, concurrentRequestCount - 1)
+        lock.unlock()
+    }
+
+    func maximumConcurrentRequestCount() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return maximumConcurrentRequests
     }
 
     func response(for url: String, body: String? = nil) -> Data? {
@@ -11448,6 +11585,8 @@ private final class MockURLProtocol: URLProtocol {
 
     override func startLoading() {
         Self.responseStore.appendRequest(request)
+        Self.responseStore.beginRequest()
+        defer { Self.responseStore.finishRequest() }
         guard let url = request.url?.absoluteString,
               let data = Self.responseStore.response(
                 for: url,

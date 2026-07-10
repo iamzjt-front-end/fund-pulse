@@ -12,6 +12,8 @@ final class PortfolioStore {
     private let nowProvider: () -> Date
     private let repository: any PortfolioRepository
     private var persistedSnapshot: PortfolioSnapshot?
+    private var refreshTask: Task<Void, Never>?
+    private var refreshRequestGeneration = 0
 
     enum LoadState: Equatable {
         case loading
@@ -112,9 +114,35 @@ final class PortfolioStore {
     }
 
     func refreshQuotes() async {
-        isRefreshingQuotes = true
-        defer { isRefreshingQuotes = false }
+        refreshRequestGeneration &+= 1
+        if let refreshTask {
+            await refreshTask.value
+            return
+        }
 
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await drainRefreshRequests()
+        }
+        refreshTask = task
+        await task.value
+    }
+
+    private func drainRefreshRequests() async {
+        isRefreshingQuotes = true
+        defer {
+            isRefreshingQuotes = false
+            refreshTask = nil
+        }
+
+        var processedGeneration = 0
+        repeat {
+            processedGeneration = refreshRequestGeneration
+            await performRefreshPass()
+        } while processedGeneration != refreshRequestGeneration
+    }
+
+    private func performRefreshPass() async {
         if case .loading = loadState {
             load()
         }
