@@ -10328,6 +10328,115 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testClearAllHoldingsKeepsPublishedSnapshotWhenPersistenceFails() throws {
+        let tempDirectory = temporaryPortfolioDirectory(prefix: "clear-transaction")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = PortfolioStore(dataDirectory: tempDirectory)
+        try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)
+        let originalSnapshot = store.snapshot
+        try makePortfolioStorageUnwritable(for: store)
+
+        XCTAssertThrowsError(try store.clearAllHoldings())
+        XCTAssertEqual(store.snapshot, originalSnapshot)
+    }
+
+    @MainActor
+    func testPendingTradeKeepsPublishedSnapshotWhenPersistenceFails() async throws {
+        let tempDirectory = temporaryPortfolioDirectory(prefix: "trade-transaction")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = PortfolioStore(dataDirectory: tempDirectory)
+        try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)
+        let originalSnapshot = store.snapshot
+        try makePortfolioStorageUnwritable(for: store)
+
+        do {
+            try await store.adjustFundPosition(
+                FundTradeDraft(
+                    action: .buy,
+                    code: Self.tradeTestCode,
+                    mode: .amount,
+                    amount: 100,
+                    shares: nil,
+                    tradeDate: "2026-07-10",
+                    tradeTimeType: .before15
+                )
+            )
+            XCTFail("Expected persistence failure")
+        } catch {
+            XCTAssertEqual(store.snapshot, originalSnapshot)
+        }
+    }
+
+    @MainActor
+    func testPendingConversionKeepsPublishedSnapshotWhenPersistenceFails() async throws {
+        let tempDirectory = temporaryPortfolioDirectory(prefix: "conversion-transaction")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let store = PortfolioStore(dataDirectory: tempDirectory)
+        try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)
+        let originalSnapshot = store.snapshot
+        try makePortfolioStorageUnwritable(for: store)
+
+        do {
+            try await store.convertFundPosition(
+                FundConversionDraft(
+                    fromCode: Self.tradeTestCode,
+                    toCode: "290008",
+                    toName: "测试转换目标基金",
+                    shares: 10,
+                    tradeDate: "2026-07-10",
+                    tradeTimeType: .before15
+                )
+            )
+            XCTFail("Expected persistence failure")
+        } catch {
+            XCTAssertEqual(store.snapshot, originalSnapshot)
+        }
+    }
+
+    @MainActor
+    func testRefreshKeepsPublishedSnapshotWhenPersistenceFails() async throws {
+        let tempDirectory = temporaryPortfolioDirectory(prefix: "refresh-transaction")
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let response = Self.coreQuoteResponse(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            netValueDate: "2026-07-09",
+            netValue: 2.2,
+            estimatedNetValue: 2.3,
+            growthRate: 1.5,
+            estimateTime: "2026-07-10 10:30"
+        )
+        let store = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: quoteServiceWithMockResponses([
+                "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": response
+            ])
+        )
+        try seedPortfolio(transactionTestSnapshot(), into: store, directory: tempDirectory)
+        let originalSnapshot = store.snapshot
+        try makePortfolioStorageUnwritable(for: store)
+
+        await store.refreshQuotes()
+
+        XCTAssertEqual(store.snapshot, originalSnapshot)
+        guard case .failed = store.loadState else {
+            return XCTFail("Expected refresh persistence failure, got \(store.loadState)")
+        }
+    }
+
+    @MainActor
+    func testSuccessfulPortfolioMutationPublishesPersistedSnapshot() throws {
+        let repository = RecordingPortfolioRepository(initialSnapshot: transactionTestSnapshot())
+        let store = PortfolioStore(repository: repository)
+        store.load()
+
+        try store.clearAllHoldings()
+
+        XCTAssertEqual(repository.savedSnapshots.last, store.snapshot)
+        XCTAssertTrue(store.snapshot.funds.isEmpty)
+    }
+
+    @MainActor
     func testMissingPortfolioDoesNotWriteSampleDuringRefresh() async throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appending(path: "fund-pulse-missing-data-refresh-test-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -10395,6 +10504,84 @@ final class FundPulseCoreTests: XCTestCase {
         let seedData = try encoder.encode(snapshot)
         try seedData.write(to: importURL, options: .atomic)
         try store.importPortfolio(from: importURL)
+    }
+
+    private func temporaryPortfolioDirectory(prefix: String) -> URL {
+        FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-\(prefix)-\(UUID().uuidString)", directoryHint: .isDirectory)
+    }
+
+    @MainActor
+    private func makePortfolioStorageUnwritable(for store: PortfolioStore) throws {
+        try FileManager.default.removeItem(at: store.dataFileURL)
+        try FileManager.default.createDirectory(at: store.dataFileURL, withIntermediateDirectories: false)
+    }
+
+    private func transactionTestSnapshot() -> PortfolioSnapshot {
+        let fund = FundPosition(
+            code: Self.tradeTestCode,
+            name: Self.tradeTestName,
+            dateText: "07-09 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            confirmedHoldingIncome: 0,
+            confirmedHoldingRate: 0,
+            currentAmount: 2_000,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: 1_000,
+            migratedCost: 2,
+            migratedPrincipal: 2_000,
+            incomeStartDate: "2026-07-09",
+            positionMode: .share,
+            positionDate: "2026-07-09",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "transaction-lot",
+                    shares: 1_000,
+                    cost: 2,
+                    principal: 2_000,
+                    incomeStartDate: "2026-07-09",
+                    positionDate: "2026-07-09",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        return PortfolioSnapshot(
+            updateTime: Date(timeIntervalSince1970: 1_783_587_600),
+            totalAmount: 2_000,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [fund],
+            migration: nil,
+            tradeRecords: [
+                FundTradeRecord(
+                    id: "transaction-initial-record",
+                    kind: .newFund,
+                    status: .confirmed,
+                    code: Self.tradeTestCode,
+                    name: Self.tradeTestName,
+                    mode: .share,
+                    amount: nil,
+                    shares: 1_000,
+                    confirmedShares: 1_000,
+                    price: 2,
+                    tradeDate: "2026-07-09",
+                    tradeTimeType: .before15,
+                    acceptedDate: "2026-07-09",
+                    createdAt: Date(timeIntervalSince1970: 1_783_587_600),
+                    confirmedAt: Date(timeIntervalSince1970: 1_783_587_600),
+                    failureReason: nil
+                )
+            ]
+        )
     }
 
     private func thresholdReminderSnapshot(funds: [FundPosition]) -> PortfolioSnapshot {
@@ -11223,6 +11410,28 @@ private struct MockBodyResponseRule {
 private extension Double {
     var roundedMoneyForTest: Double {
         (self * 100).rounded() / 100
+    }
+}
+
+private final class RecordingPortfolioRepository: PortfolioRepository {
+    let dataDirectory = FileManager.default.temporaryDirectory
+        .appending(path: "fund-pulse-recording-repository", directoryHint: .isDirectory)
+    var dataFileURL: URL {
+        dataDirectory.appending(path: "portfolio.json")
+    }
+    private let initialSnapshot: PortfolioSnapshot?
+    private(set) var savedSnapshots: [PortfolioSnapshot] = []
+
+    init(initialSnapshot: PortfolioSnapshot?) {
+        self.initialSnapshot = initialSnapshot
+    }
+
+    func load() throws -> PortfolioSnapshot? {
+        initialSnapshot
+    }
+
+    func save(_ snapshot: PortfolioSnapshot) throws {
+        savedSnapshots.append(snapshot)
     }
 }
 

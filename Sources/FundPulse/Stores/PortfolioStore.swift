@@ -10,6 +10,8 @@ final class PortfolioStore {
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
     private let nowProvider: () -> Date
+    private let repository: any PortfolioRepository
+    private var persistedSnapshot: PortfolioSnapshot?
 
     enum LoadState: Equatable {
         case loading
@@ -26,31 +28,41 @@ final class PortfolioStore {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
         self.nowProvider = now
+        self.repository = JSONPortfolioRepository(dataDirectory: dataDirectory)
+    }
+
+    init(
+        repository: any PortfolioRepository,
+        quoteService: FundQuoteService = FundQuoteService(),
+        now: @escaping () -> Date = { .now }
+    ) {
+        self.dataDirectory = repository.dataDirectory
+        self.quoteService = quoteService
+        self.nowProvider = now
+        self.repository = repository
     }
 
     var dataFileURL: URL {
-        dataDirectory.appending(path: "portfolio.json")
+        repository.dataFileURL
     }
 
     func load() {
         loadState = .loading
 
         do {
-            try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-            let url = dataFileURL
-            if FileManager.default.fileExists(atPath: url.path) {
-                let data = try Data(contentsOf: url)
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                snapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
+            if let loadedSnapshot = try repository.load() {
+                snapshot = loadedSnapshot
+                persistedSnapshot = loadedSnapshot
                 loadState = .loaded
                 return
             }
 
             snapshot = .empty
+            persistedSnapshot = nil
             loadState = .missingPlainData(hasLegacyStore: AppDataPaths.hasLegacyStore(in: dataDirectory))
         } catch {
             snapshot = .empty
+            persistedSnapshot = nil
             loadState = .failed(error.localizedDescription)
         }
     }
@@ -3209,13 +3221,15 @@ final class PortfolioStore {
     }
 
     private func save(_ snapshot: PortfolioSnapshot) throws {
-        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-        let url = dataFileURL
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(snapshot)
-        try data.write(to: url, options: .atomic)
+        do {
+            try repository.save(snapshot)
+            persistedSnapshot = snapshot
+        } catch {
+            if let persistedSnapshot {
+                self.snapshot = persistedSnapshot
+            }
+            throw error
+        }
     }
 }
 
