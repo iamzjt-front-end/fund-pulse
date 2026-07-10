@@ -22,7 +22,10 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run test
+      - name: Run release workflow tests
+        run: npm run test:release
+
+      - name: Run Swift tests
         run: swift test
 
       - name: Run build

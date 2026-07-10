@@ -18,6 +18,7 @@ NOTARY_PROFILE="${FUND_PULSE_NOTARY_PROFILE:-fund-pulse}"
 SKIP_NOTARY="${FUND_PULSE_SKIP_NOTARY:-0}"
 SKIP_DMG_LAYOUT="${FUND_PULSE_SKIP_DMG_LAYOUT:-0}"
 SIGNING_KIND="custom"
+SIGN_TIMESTAMP_OPTION="--timestamp"
 MOUNT_DIR=""
 
 cd "$ROOT_DIR"
@@ -167,6 +168,7 @@ if [[ -z "$SIGN_IDENTITY" ]]; then
     SIGN_IDENTITY="$(find_apple_development_identity || true)"
     if [[ -n "$SIGN_IDENTITY" ]]; then
       SIGNING_KIND="apple-development"
+      SIGN_TIMESTAMP_OPTION="--timestamp=none"
       SKIP_NOTARY="1"
     fi
   fi
@@ -174,6 +176,7 @@ elif [[ "$SIGN_IDENTITY" == Developer\ ID\ Application:* ]]; then
   SIGNING_KIND="developer-id"
 elif [[ "$SIGN_IDENTITY" == Apple\ Development:* ]]; then
   SIGNING_KIND="apple-development"
+  SIGN_TIMESTAMP_OPTION="--timestamp=none"
   SKIP_NOTARY="1"
 fi
 
@@ -232,7 +235,7 @@ fi
 rm -rf "$WORK_DIR" "$NOTARY_ZIP_PATH"
 mkdir -p "$OUT_DIR" "$WORK_DIR"
 
-codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+codesign --force --deep --options runtime "$SIGN_TIMESTAMP_OPTION" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_ZIP_PATH"
@@ -249,7 +252,7 @@ ln -s /Applications "$WORK_DIR/Applications"
 
 create_dmg
 
-codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_PATH"
+codesign --force "$SIGN_TIMESTAMP_OPTION" --sign "$SIGN_IDENTITY" "$DMG_PATH"
 codesign --verify --verbose=2 "$DMG_PATH"
 
 if [[ "$SKIP_NOTARY" != "1" ]]; then

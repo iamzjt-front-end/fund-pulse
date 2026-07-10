@@ -46,3 +46,24 @@ pnpm run swift:migrate
 ## 版本
 
 当前版本以 `package.json` 为准，历史更新记录以本项目 `CHANGELOG.md` 为准。
+
+每项面向用户的改动都应在 `.release-notes/` 增加一个 Markdown 片段，并和对应代码一起提交。发布脚本会按类型生成中文 GitHub Release 正文、更新 `CHANGELOG.md`，然后消费已发布的片段。
+
+```markdown
+---
+type: optimization
+---
+
+行情刷新改为串行合并，避免并发请求造成状态覆盖。
+```
+
+支持的类型为 `breaking`、`feature`、`fix`、`optimization` 和 `other`。正文使用一句面向用户的中文说明，不要填写提交标题或占位内容。
+
+发布前先提交所有业务改动并保持 `main` 与 `origin/main` 同步：
+
+```bash
+npm run release:dry
+npm run release -- --yes
+```
+
+正式发布会先创建 Draft Release，校验正文、tag、ZIP、DMG 和 `latest-mac.yml` 后再公开。没有变更片段时默认拒绝发布；纯重新打包必须显式传入 `--allow-empty-notes`。
