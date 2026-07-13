@@ -65,7 +65,20 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_BUNDLE"
+SIGN_IDENTITY="${FUND_PULSE_SIGN_IDENTITY:-}"
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$({
+    security find-identity -p codesigning -v 2>/dev/null \
+      | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p'
+  } | head -n 1)"
+fi
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+else
+  echo "warning: no stable code-signing identity found; using ad-hoc signing" >&2
+  codesign --force --deep --sign - "$APP_BUNDLE"
+fi
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

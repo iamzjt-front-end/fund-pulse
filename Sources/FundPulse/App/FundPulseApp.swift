@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     let settingsStore = AppSettingsStore()
     let marketIndexStore = MarketIndexStore()
     let updateStore = AppUpdateStore()
+    nonisolated private let operationReminderPresentationGate = OperationReminderNotificationPresentationGate()
     private var statusBarController: StatusBarController?
 
     var appVersion: String {
@@ -73,6 +74,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .sound]
+        let request = notification.request
+        let candidate = OperationReminderNotificationCandidate(
+            identifier: request.identifier,
+            title: request.content.title,
+            body: request.content.body
+        )
+        guard await operationReminderPresentationGate.shouldPresent(candidate) else {
+            return []
+        }
+        return [.banner, .sound]
     }
 }
