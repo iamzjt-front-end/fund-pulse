@@ -341,10 +341,12 @@ final class StatusBarController: NSObject {
     private var contextMenuUpdateCheck: ContextMenuUpdateCheck?
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
+    private let operationReminderScheduler: OperationReminderNotificationScheduler
 
-    private lazy var operationReminderScheduler: OperationReminderNotificationScheduler = {
+    private static func makeOperationReminderScheduler() -> OperationReminderNotificationScheduler {
         let center = UNUserNotificationCenter.current()
         return OperationReminderNotificationScheduler(
+            maximumRemovalAttempts: 40,
             pendingRequests: {
                 await center.pendingNotificationRequests().map(
                     Self.operationReminderNotificationCandidate(from:)
@@ -381,9 +383,12 @@ final class StatusBarController: NSObject {
                         trigger: trigger
                     )
                 )
+            },
+            waitAfterRemovalAttempt: {
+                try? await Task<Never, Never>.sleep(nanoseconds: 50_000_000)
             }
         )
-    }()
+    }
 
     private var mainPanelHeight: CGFloat {
         PopoverLayout.clampedMainPanelHeight(CGFloat(settingsStore.settings.mainPanelHeight))
@@ -413,6 +418,7 @@ final class StatusBarController: NSObject {
         self.appVersion = appVersion
         self.onCheckUpdate = onCheckUpdate
         self.onOpenUpdate = onOpenUpdate
+        self.operationReminderScheduler = Self.makeOperationReminderScheduler()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 

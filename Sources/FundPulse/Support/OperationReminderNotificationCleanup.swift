@@ -79,16 +79,14 @@ final class OperationReminderNotificationScheduler {
     private var configurationTask: Task<Void, Never>?
 
     init(
-        maximumRemovalAttempts: Int = 40,
+        maximumRemovalAttempts: Int,
         pendingRequests: @escaping @MainActor () async -> [OperationReminderNotificationCandidate],
         removePendingRequests: @escaping @MainActor ([String]) -> Void,
         deliveredNotifications: @escaping @MainActor () async -> [OperationReminderNotificationCandidate],
         removeDeliveredNotifications: @escaping @MainActor ([String]) -> Void,
         requestAuthorization: @escaping @MainActor () async throws -> Bool,
         addRequest: @escaping @MainActor (OperationReminderNotificationRequest) async throws -> Void,
-        waitAfterRemovalAttempt: @escaping @MainActor () async -> Void = {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
+        waitAfterRemovalAttempt: @escaping @MainActor () async -> Void
     ) {
         self.maximumRemovalAttempts = max(maximumRemovalAttempts, 1)
         self.pendingRequests = pendingRequests
