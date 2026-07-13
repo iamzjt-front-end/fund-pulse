@@ -9518,6 +9518,102 @@ final class FundPulseCoreTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testOperationReminderSchedulerWaitsUntilDuplicateRequestsAreRemovedBeforeAdding() async throws {
+        let reminderDate = try chinaDate("2026-07-14 14:30")
+        let request = OperationReminderNotificationRequest(
+            identifier: "fund-pulse.operation-reminder.2026-07-14",
+            title: OperationReminderNotificationContent.title,
+            body: OperationReminderNotificationContent.body,
+            fireDate: reminderDate
+        )
+        let duplicateCandidate = OperationReminderNotificationCandidate(
+            identifier: request.identifier,
+            title: request.title,
+            body: request.body
+        )
+        let notificationCenter = OperationReminderNotificationCenterFake(
+            pendingRequests: [duplicateCandidate, duplicateCandidate],
+            removalWaitCount: 2
+        )
+        let scheduler = makeOperationReminderNotificationScheduler(center: notificationCenter)
+
+        scheduler.configure(isEnabled: true, requests: [request])
+        await scheduler.waitUntilIdle()
+
+        XCTAssertFalse(notificationCenter.didAddBeforePendingRequestsWereRemoved)
+        XCTAssertEqual(notificationCenter.addedRequests, [request])
+        XCTAssertEqual(
+            notificationCenter.pendingRequests.filter { $0.identifier == request.identifier }.count,
+            1
+        )
+        XCTAssertGreaterThanOrEqual(notificationCenter.removePendingCallCount, 1)
+        XCTAssertEqual(notificationCenter.waitCallCount, 2)
+    }
+
+    @MainActor
+    func testOperationReminderSchedulerKeepsOnlyLatestConsecutiveConfiguration() async throws {
+        let firstRequest = OperationReminderNotificationRequest(
+            identifier: "fund-pulse.operation-reminder.2026-07-14",
+            title: OperationReminderNotificationContent.title,
+            body: OperationReminderNotificationContent.body,
+            fireDate: try chinaDate("2026-07-14 14:30")
+        )
+        let latestRequest = OperationReminderNotificationRequest(
+            identifier: "fund-pulse.operation-reminder.2026-07-15",
+            title: OperationReminderNotificationContent.title,
+            body: OperationReminderNotificationContent.body,
+            fireDate: try chinaDate("2026-07-15 14:30")
+        )
+        let notificationCenter = OperationReminderNotificationCenterFake()
+        let scheduler = makeOperationReminderNotificationScheduler(center: notificationCenter)
+
+        scheduler.configure(isEnabled: true, requests: [firstRequest])
+        scheduler.configure(isEnabled: true, requests: [latestRequest])
+        await scheduler.waitUntilIdle()
+
+        XCTAssertEqual(notificationCenter.authorizationRequestCount, 1)
+        XCTAssertEqual(notificationCenter.addedRequests, [latestRequest])
+    }
+
+    func testOperationReminderPresentationGateSuppressesConsecutiveDuplicateBanners() async throws {
+        let gate = OperationReminderNotificationPresentationGate(duplicateWindow: 60)
+        let candidate = OperationReminderNotificationCandidate(
+            identifier: "fund-pulse.operation-reminder.2026-07-14",
+            title: OperationReminderNotificationContent.title,
+            body: OperationReminderNotificationContent.body
+        )
+        let firstDelivery = try chinaDate("2026-07-14 14:30")
+        let shouldPresentFirst = await gate.shouldPresent(candidate, at: firstDelivery)
+        let shouldPresentDuplicate = await gate.shouldPresent(
+            candidate,
+            at: firstDelivery.addingTimeInterval(1)
+        )
+        let shouldPresentAfterWindow = await gate.shouldPresent(
+            candidate,
+            at: firstDelivery.addingTimeInterval(61)
+        )
+
+        XCTAssertTrue(shouldPresentFirst)
+        XCTAssertFalse(shouldPresentDuplicate)
+        XCTAssertTrue(shouldPresentAfterWindow)
+    }
+
+    func testOperationReminderPresentationGateDoesNotSuppressOtherNotifications() async throws {
+        let gate = OperationReminderNotificationPresentationGate(duplicateWindow: 60)
+        let testReminder = OperationReminderNotificationCandidate(
+            identifier: "fund-pulse.test-reminder.1",
+            title: "fund-pulse 测试提醒",
+            body: "如果你看到这条通知，说明系统通知权限正常。"
+        )
+        let deliveryDate = try chinaDate("2026-07-14 14:30")
+        let shouldPresentFirst = await gate.shouldPresent(testReminder, at: deliveryDate)
+        let shouldPresentSecond = await gate.shouldPresent(testReminder, at: deliveryDate)
+
+        XCTAssertTrue(shouldPresentFirst)
+        XCTAssertTrue(shouldPresentSecond)
+    }
+
     func testPortfolioCalculatorKeepsHoldingAmountAtOfficialNetValueDuringIntradayEstimate() throws {
         let now = try chinaDate("2026-06-22 10:35")
         let snapshot = PortfolioSnapshot(
@@ -11488,6 +11584,100 @@ private func XCTAssertThrowsErrorAsync(
         XCTFail("Expected error to be thrown", file: file, line: line)
     } catch {
         errorHandler(error)
+    }
+}
+
+@MainActor
+private func makeOperationReminderNotificationScheduler(
+    center: OperationReminderNotificationCenterFake
+) -> OperationReminderNotificationScheduler {
+    OperationReminderNotificationScheduler(
+        maximumRemovalAttempts: 5,
+        pendingRequests: { center.pendingRequests },
+        removePendingRequests: { center.removePendingRequests(withIdentifiers: $0) },
+        deliveredNotifications: { center.deliveredNotifications },
+        removeDeliveredNotifications: { center.removeDeliveredNotifications(withIdentifiers: $0) },
+        requestAuthorization: { center.requestAuthorization() },
+        addRequest: { try await center.add($0) },
+        waitAfterRemovalAttempt: { await center.waitAfterRemovalAttempt() }
+    )
+}
+
+@MainActor
+private final class OperationReminderNotificationCenterFake {
+    private(set) var pendingRequests: [OperationReminderNotificationCandidate]
+    private(set) var deliveredNotifications: [OperationReminderNotificationCandidate]
+    private(set) var addedRequests: [OperationReminderNotificationRequest] = []
+    private(set) var removePendingCallCount = 0
+    private(set) var waitCallCount = 0
+    private(set) var authorizationRequestCount = 0
+    private(set) var didAddBeforePendingRequestsWereRemoved = false
+
+    private let removalWaitCount: Int
+    private var remainingRemovalWaitCount: Int?
+    private var pendingRemovalIdentifiers: Set<String> = []
+
+    init(
+        pendingRequests: [OperationReminderNotificationCandidate] = [],
+        deliveredNotifications: [OperationReminderNotificationCandidate] = [],
+        removalWaitCount: Int = 0
+    ) {
+        self.pendingRequests = pendingRequests
+        self.deliveredNotifications = deliveredNotifications
+        self.removalWaitCount = removalWaitCount
+    }
+
+    func removePendingRequests(withIdentifiers identifiers: [String]) {
+        removePendingCallCount += 1
+        pendingRemovalIdentifiers.formUnion(identifiers)
+
+        if removalWaitCount == 0 {
+            finishPendingRemoval()
+        } else if remainingRemovalWaitCount == nil {
+            remainingRemovalWaitCount = removalWaitCount
+        }
+    }
+
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        let identifierSet = Set(identifiers)
+        deliveredNotifications.removeAll { identifierSet.contains($0.identifier) }
+    }
+
+    func requestAuthorization() -> Bool {
+        authorizationRequestCount += 1
+        return true
+    }
+
+    func add(_ request: OperationReminderNotificationRequest) async throws {
+        if !pendingRequests.isEmpty {
+            didAddBeforePendingRequestsWereRemoved = true
+        }
+        addedRequests.append(request)
+        pendingRequests.append(
+            OperationReminderNotificationCandidate(
+                identifier: request.identifier,
+                title: request.title,
+                body: request.body
+            )
+        )
+    }
+
+    func waitAfterRemovalAttempt() async {
+        waitCallCount += 1
+        if let remainingRemovalWaitCount {
+            let nextCount = remainingRemovalWaitCount - 1
+            self.remainingRemovalWaitCount = nextCount
+            if nextCount == 0 {
+                finishPendingRemoval()
+            }
+        }
+        await Task.yield()
+    }
+
+    private func finishPendingRemoval() {
+        pendingRequests.removeAll { pendingRemovalIdentifiers.contains($0.identifier) }
+        pendingRemovalIdentifiers.removeAll()
+        remainingRemovalWaitCount = nil
     }
 }
 

@@ -339,9 +339,56 @@ final class StatusBarController: NSObject {
     private var contextMenuUpdateAnimationFrame = 2
     private var contextMenuUpdateStatusOverride: AppUpdateStatus?
     private var contextMenuUpdateCheck: ContextMenuUpdateCheck?
-    private var operationReminderConfigurationTask: Task<Void, Never>?
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
+    private let operationReminderScheduler: OperationReminderNotificationScheduler
+
+    private static func makeOperationReminderScheduler() -> OperationReminderNotificationScheduler {
+        let center = UNUserNotificationCenter.current()
+        return OperationReminderNotificationScheduler(
+            maximumRemovalAttempts: 40,
+            pendingRequests: {
+                await center.pendingNotificationRequests().map(
+                    Self.operationReminderNotificationCandidate(from:)
+                )
+            },
+            removePendingRequests: {
+                center.removePendingNotificationRequests(withIdentifiers: $0)
+            },
+            deliveredNotifications: {
+                await center.deliveredNotifications().map {
+                    Self.operationReminderNotificationCandidate(from: $0.request)
+                }
+            },
+            removeDeliveredNotifications: {
+                center.removeDeliveredNotifications(withIdentifiers: $0)
+            },
+            requestAuthorization: {
+                try await center.requestAuthorization(options: [.alert, .sound])
+            },
+            addRequest: { request in
+                let content = UNMutableNotificationContent()
+                content.title = request.title
+                content.body = request.body
+                content.sound = .default
+
+                let trigger = UNCalendarNotificationTrigger(
+                    dateMatching: TradingCalendar.notificationDateComponents(from: request.fireDate),
+                    repeats: false
+                )
+                try await center.add(
+                    UNNotificationRequest(
+                        identifier: request.identifier,
+                        content: content,
+                        trigger: trigger
+                    )
+                )
+            },
+            waitAfterRemovalAttempt: {
+                try? await Task<Never, Never>.sleep(nanoseconds: 50_000_000)
+            }
+        )
+    }
 
     private var mainPanelHeight: CGFloat {
         PopoverLayout.clampedMainPanelHeight(CGFloat(settingsStore.settings.mainPanelHeight))
@@ -371,6 +418,7 @@ final class StatusBarController: NSObject {
         self.appVersion = appVersion
         self.onCheckUpdate = onCheckUpdate
         self.onOpenUpdate = onOpenUpdate
+        self.operationReminderScheduler = Self.makeOperationReminderScheduler()
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -388,8 +436,7 @@ final class StatusBarController: NSObject {
         autoRefreshTimer?.invalidate()
         autoRefreshTimer = nil
         stopContextMenuUpdateRefresh(cancelPendingCheck: true)
-        operationReminderConfigurationTask?.cancel()
-        operationReminderConfigurationTask = nil
+        operationReminderScheduler.invalidate()
         removeEventMonitors()
     }
 
@@ -1859,59 +1906,18 @@ final class StatusBarController: NSObject {
     }
 
     private func configureOperationReminder() {
-        let center = UNUserNotificationCenter.current()
         let isEnabled = settingsStore.settings.operationReminderEnabled
         let reminderMinutes = settingsStore.settings.operationReminderTimeMinutes
-
-        operationReminderConfigurationTask?.cancel()
-        operationReminderConfigurationTask = Task {
-            let pendingRequests = await center.pendingNotificationRequests()
-            guard !Task.isCancelled else { return }
-
-            let pendingOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
-                from: pendingRequests.map(Self.operationReminderNotificationCandidate(from:))
+        let clampedMinutes = AppSettings.clampedReminderTimeMinutes(reminderMinutes)
+        let requests = TradingCalendar.nextMarketOpenReminderDates(minutes: clampedMinutes).map { reminderDate in
+            OperationReminderNotificationRequest(
+                identifier: "\(operationReminderNotificationPrefix)\(DateOnlyFormatter.string(from: reminderDate))",
+                title: OperationReminderNotificationContent.title,
+                body: OperationReminderNotificationContent.body,
+                fireDate: reminderDate
             )
-            center.removePendingNotificationRequests(withIdentifiers: pendingOperationReminderIDs)
-
-            let deliveredNotifications = await center.deliveredNotifications()
-            guard !Task.isCancelled else { return }
-
-            let deliveredOperationReminderIDs = Self.operationReminderNotificationIdentifiersToClear(
-                from: deliveredNotifications.map { Self.operationReminderNotificationCandidate(from: $0.request) }
-            )
-            center.removeDeliveredNotifications(withIdentifiers: deliveredOperationReminderIDs)
-
-            guard isEnabled else { return }
-
-            let clampedMinutes = AppSettings.clampedReminderTimeMinutes(reminderMinutes)
-            let reminderDates = TradingCalendar.nextMarketOpenReminderDates(minutes: clampedMinutes)
-            guard !reminderDates.isEmpty else { return }
-
-            guard (try? await center.requestAuthorization(options: [.alert, .sound])) == true else {
-                return
-            }
-
-            for reminderDate in reminderDates {
-                guard !Task.isCancelled else { return }
-
-                let dateKey = DateOnlyFormatter.string(from: reminderDate)
-                let content = UNMutableNotificationContent()
-                content.title = OperationReminderNotificationContent.title
-                content.body = OperationReminderNotificationContent.body
-                content.sound = .default
-
-                let trigger = UNCalendarNotificationTrigger(
-                    dateMatching: TradingCalendar.notificationDateComponents(from: reminderDate),
-                    repeats: false
-                )
-                let request = UNNotificationRequest(
-                    identifier: "\(operationReminderNotificationPrefix)\(dateKey)",
-                    content: content,
-                    trigger: trigger
-                )
-                try? await center.add(request)
-            }
         }
+        operationReminderScheduler.configure(isEnabled: isEnabled, requests: requests)
     }
 
     nonisolated static func operationReminderNotificationIdentifiersToClear(from identifiers: [String]) -> [String] {
