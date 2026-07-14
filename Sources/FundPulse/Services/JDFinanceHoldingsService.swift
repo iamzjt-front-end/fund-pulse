@@ -1,6 +1,16 @@
 import Foundation
 
 struct JDFinanceHoldingsService: Sendable {
+    private struct TradeOrderFetchBatch {
+        var records: [JDFinanceTradeOrderRecord]
+        var state: JDFinanceTradeOrderFetchState
+    }
+
+    private struct TradeOrderPageBatch {
+        var records: [JDFinanceTradeOrderRecord]
+        var reachedEnd: Bool
+    }
+
     static let endpoint = URL(string: "https://ms.jr.jd.com/gw/generic/base/h5/m/fundHoldGroup")!
     static let detailEndpoint = URL(string: "https://ms.jr.jd.com/gw/generic/jj/newna/m/getNewFundPositionDetail")!
     static let tradeOrderListEndpoint = URL(
@@ -18,7 +28,11 @@ struct JDFinanceHoldingsService: Sendable {
         self.networkProbe = networkProbe
     }
 
-    func fetchSnapshot(cookieHeader: String?, needsTradeOrderRecords: Bool = false) async throws -> JDFinanceHoldingsSnapshot {
+    func fetchSnapshot(
+        cookieHeader: String?,
+        needsTradeOrderRecords: Bool = false,
+        tradeOrderStartDate: String? = nil
+    ) async throws -> JDFinanceHoldingsSnapshot {
         var components = URLComponents(url: Self.endpoint, resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "reqData", value: Self.requestPayload)
@@ -51,21 +65,27 @@ struct JDFinanceHoldingsService: Sendable {
             }
             var snapshot = try JDFinanceHoldingsParser.parse(data: data)
             if let cookieHeader, !cookieHeader.isEmpty {
-                let tradeOrderRecords = await tradeOrderRecordsIfNeeded(
+                let tradeOrderBatch = await tradeOrderRecords(
                     for: snapshot.products,
                     cookieHeader: cookieHeader,
-                    forceFetch: needsTradeOrderRecords
+                    startDate: tradeOrderStartDate
                 )
+                snapshot.tradeOrders = tradeOrderBatch.records
+                snapshot.tradeOrderFetchState = tradeOrderBatch.state
                 snapshot.products = await productsByFillingPendingDetails(
                     for: snapshot.products,
                     cookieHeader: cookieHeader,
-                    tradeOrderRecords: tradeOrderRecords,
+                    tradeOrderRecords: tradeOrderBatch.records,
                     includeReconciliationCandidates: needsTradeOrderRecords
                 )
             }
             return snapshot
         } catch let error as JDFinanceHoldingsError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
         } catch {
             throw JDFinanceHoldingsError.network(error.localizedDescription)
         }
@@ -75,7 +95,7 @@ struct JDFinanceHoldingsService: Sendable {
         for products: [JDFinanceHoldingProduct],
         cookieHeader: String,
         tradeOrderRecords: [JDFinanceTradeOrderRecord],
-        includeReconciliationCandidates: Bool
+        includeReconciliationCandidates _: Bool
     ) async -> [JDFinanceHoldingProduct] {
         var enrichedProducts: [JDFinanceHoldingProduct] = []
         enrichedProducts.reserveCapacity(products.count)
@@ -86,23 +106,16 @@ struct JDFinanceHoldingsService: Sendable {
             {
                 product.pendingDetail = detail
             }
-            if includeReconciliationCandidates, product.transactionTip == nil {
-                let candidateRecords = Self.candidateTradeOrderRecords(for: product, in: tradeOrderRecords)
-                if !candidateRecords.isEmpty {
-                    product.pendingDetail = Self.pendingDetail(
-                        product.pendingDetail,
-                        product: product,
-                        statusText: "已拉取京东交易流水用于对账",
-                        candidateTradeRecords: candidateRecords
-                    )
-                }
-            } else if let matchedRecords = Self.matchingTradeOrderRecords(for: product, in: tradeOrderRecords) {
+            if product.transactionTip != nil,
+               let matchedRecords = Self.matchingTradeOrderRecords(for: product, in: tradeOrderRecords)
+            {
                 product.pendingDetail = Self.mergedPendingDetail(
                     product.pendingDetail,
                     with: matchedRecords,
                     for: product
                 )
-            } else if let unmatchedStatus = Self.unmatchedTradeOrderStatus(
+            } else if product.transactionTip != nil,
+                      let unmatchedStatus = Self.unmatchedTradeOrderStatus(
                 for: product,
                 in: tradeOrderRecords
             ) {
@@ -120,25 +133,55 @@ struct JDFinanceHoldingsService: Sendable {
         return enrichedProducts
     }
 
-    private func tradeOrderRecordsIfNeeded(
+    private func tradeOrderRecords(
         for products: [JDFinanceHoldingProduct],
         cookieHeader: String,
-        forceFetch: Bool = false
-    ) async -> [JDFinanceTradeOrderRecord] {
+        startDate: String?
+    ) async -> TradeOrderFetchBatch {
+        guard !Task.isCancelled else {
+            return TradeOrderFetchBatch(records: [], state: .incomplete(["同步已取消"]))
+        }
         let pendingProducts = products.filter { $0.transactionTip != nil }
-        guard forceFetch || !pendingProducts.isEmpty else {
-            return []
+        var warnings: [String] = []
+        var records: [JDFinanceTradeOrderRecord] = []
+
+        do {
+            let globalBatch = try await fetchTradeOrderRecords(
+                cookieHeader: cookieHeader,
+                startDate: startDate
+            )
+            Self.mergeTradeOrderRecords(globalBatch.records, into: &records)
+            warnings.append(contentsOf: globalBatch.state.warnings)
+        } catch {
+            warnings.append("京东全局交易流水拉取失败：\(error.localizedDescription)")
         }
 
-        var records = (try? await fetchTradeOrderRecords(cookieHeader: cookieHeader)) ?? []
-        for product in pendingProducts {
-            let productRecords = (try? await fetchTradeOrderRecords(
-                for: product,
-                cookieHeader: cookieHeader
-            )) ?? []
-            records.append(contentsOf: productRecords)
+        guard !Task.isCancelled else {
+            return TradeOrderFetchBatch(records: [], state: .incomplete(["同步已取消"]))
         }
-        return await recordsByResolvingConversionTargets(Self.deduplicatedTradeOrderRecords(records))
+
+        for product in pendingProducts {
+            guard !Task.isCancelled else { break }
+            do {
+                let productBatch = try await fetchTradeOrderRecords(
+                    for: product,
+                    cookieHeader: cookieHeader,
+                    startDate: startDate
+                )
+                Self.mergeTradeOrderRecords(productBatch.records, into: &records)
+                warnings.append(contentsOf: productBatch.state.warnings)
+            } catch {
+                warnings.append("\(product.name)交易流水补充拉取失败：\(error.localizedDescription)")
+            }
+        }
+
+        let resolvedRecords = await recordsByResolvingConversionTargets(
+            records
+        )
+        return TradeOrderFetchBatch(
+            records: resolvedRecords,
+            state: warnings.isEmpty ? .complete : .incomplete(Array(Set(warnings)).sorted())
+        )
     }
 
     private func recordsByResolvingConversionTargets(_ records: [JDFinanceTradeOrderRecord]) async -> [JDFinanceTradeOrderRecord] {
@@ -148,6 +191,7 @@ struct JDFinanceHoldingsService: Sendable {
         result.reserveCapacity(records.count)
 
         for var record in records {
+            guard !Task.isCancelled else { break }
             if record.action == .conversion,
                record.conversionTargetCode == nil,
                let targetName = record.conversionTargetName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -215,36 +259,66 @@ struct JDFinanceHoldingsService: Sendable {
     private func fetchTradeOrderRecords(
         for product: JDFinanceHoldingProduct? = nil,
         cookieHeader: String,
-        pageLimit: Int = 8
-    ) async throws -> [JDFinanceTradeOrderRecord] {
+        startDate: String?,
+        pageLimit: Int = 20
+    ) async throws -> TradeOrderFetchBatch {
         var firstError: Error?
         var hasSuccessfulRequest = false
+        var legacyEndpointSucceeded = false
         var allRecords: [JDFinanceTradeOrderRecord] = []
+        var warnings: [String] = []
+        var endpointFailures: [(endpoint: URL, error: Error)] = []
         for endpoint in [Self.tradeOrderListEndpoint, Self.legacyTradeOrderListEndpoint] {
             do {
-                let records = try await fetchTradeOrderRecords(
+                let batch = try await fetchTradeOrderRecords(
                     from: endpoint,
                     product: product,
                     cookieHeader: cookieHeader,
+                    startDate: startDate,
                     pageLimit: pageLimit
                 )
                 hasSuccessfulRequest = true
-                if !records.isEmpty {
-                    allRecords.append(contentsOf: records)
+                if endpoint == Self.legacyTradeOrderListEndpoint {
+                    legacyEndpointSucceeded = true
+                }
+                if !batch.records.isEmpty {
+                    Self.mergeTradeOrderRecords(batch.records, into: &allRecords)
+                }
+                if !batch.reachedEnd {
+                    warnings.append("京东交易流水达到 \(pageLimit) 页上限，结果可能不完整")
                 }
             } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
                 if firstError == nil {
                     firstError = error
                 }
+                endpointFailures.append((endpoint, error))
+            }
+        }
+
+        for failure in endpointFailures {
+            let isExpectedNativeAliasLoginFailure = failure.endpoint == Self.tradeOrderListEndpoint
+                && legacyEndpointSucceeded
+                && (failure.error as? JDFinanceHoldingsError) == .notLoggedIn
+            if !isExpectedNativeAliasLoginFailure {
+                warnings.append("京东交易流水接口部分失败：\(failure.error.localizedDescription)")
             }
         }
 
         if !allRecords.isEmpty {
-            return Self.deduplicatedTradeOrderRecords(allRecords)
+            return TradeOrderFetchBatch(
+                records: allRecords,
+                state: warnings.isEmpty ? .complete : .incomplete(Array(Set(warnings)).sorted())
+            )
         }
 
         if hasSuccessfulRequest {
-            return []
+            return TradeOrderFetchBatch(
+                records: [],
+                state: warnings.isEmpty ? .complete : .incomplete(Array(Set(warnings)).sorted())
+            )
         }
         throw firstError ?? JDFinanceHoldingsError.network("京东交易记录接口请求失败")
     }
@@ -253,29 +327,38 @@ struct JDFinanceHoldingsService: Sendable {
         from endpoint: URL,
         product: JDFinanceHoldingProduct?,
         cookieHeader: String,
+        startDate: String?,
         pageLimit: Int
-    ) async throws -> [JDFinanceTradeOrderRecord] {
+    ) async throws -> TradeOrderPageBatch {
         var records: [JDFinanceTradeOrderRecord] = []
         for page in 1...pageLimit {
             let pageRecords = try await fetchTradeOrderRecords(
                 from: endpoint,
                 page: page,
                 product: product,
-                cookieHeader: cookieHeader
+                cookieHeader: cookieHeader,
+                startDate: startDate
             )
-            if pageRecords.isEmpty { break }
-            records.append(contentsOf: pageRecords)
+            if pageRecords.isEmpty {
+                return TradeOrderPageBatch(records: records, reachedEnd: true)
+            }
+            Self.mergeTradeOrderRecords(pageRecords, into: &records)
         }
-        return records
+        return TradeOrderPageBatch(records: records, reachedEnd: false)
     }
 
     private func fetchTradeOrderRecords(
         from endpoint: URL,
         page: Int,
         product: JDFinanceHoldingProduct?,
-        cookieHeader: String
+        cookieHeader: String,
+        startDate: String?
     ) async throws -> [JDFinanceTradeOrderRecord] {
-        let payload = try Self.tradeOrderRequestPayload(page: page, product: product)
+        let payload = try Self.tradeOrderRequestPayload(
+            page: page,
+            product: product,
+            startDate: startDate
+        )
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.httpBody = Self.formEncodedBody(name: "reqData", value: payload)
@@ -303,13 +386,16 @@ struct JDFinanceHoldingsService: Sendable {
     }
 
     private static func deduplicatedTradeOrderRecords(_ records: [JDFinanceTradeOrderRecord]) -> [JDFinanceTradeOrderRecord] {
-        var seenKeys = Set<String>()
+        var seenStableKeys = Set<String>()
         var result: [JDFinanceTradeOrderRecord] = []
         result.reserveCapacity(records.count)
 
         for record in records {
-            let key = tradeOrderRecordDedupeKey(record)
-            if seenKeys.insert(key).inserted {
+            guard let stableOrderKey = record.stableOrderKey, !stableOrderKey.isEmpty else {
+                result.append(record)
+                continue
+            }
+            if seenStableKeys.insert(stableOrderKey).inserted {
                 result.append(record)
             }
         }
@@ -317,8 +403,51 @@ struct JDFinanceHoldingsService: Sendable {
         return result
     }
 
+    /// Merge overlapping API sources without collapsing two real legacy orders that
+    /// happen to share the same visible fields. Stable order keys are unique. For
+    /// records without an order ID, retain the largest occurrence count returned by
+    /// any one source instead of summing copies from new/legacy or global/product APIs.
+    private static func mergeTradeOrderRecords(
+        _ incomingRecords: [JDFinanceTradeOrderRecord],
+        into records: inout [JDFinanceTradeOrderRecord]
+    ) {
+        let incoming = deduplicatedTradeOrderRecords(incomingRecords)
+        var seenStableKeys = Set(records.compactMap(\.stableOrderKey))
+        let existingCounts = Dictionary(
+            grouping: records.filter { $0.stableOrderKey == nil },
+            by: tradeOrderRecordDedupeKey
+        ).mapValues(\.count)
+        let incomingCounts = Dictionary(
+            grouping: incoming.filter { $0.stableOrderKey == nil },
+            by: tradeOrderRecordDedupeKey
+        ).mapValues(\.count)
+        var remainingCounts = incomingCounts.mapValues { count in count }
+        for (key, existingCount) in existingCounts {
+            remainingCounts[key] = max(0, (remainingCounts[key] ?? 0) - existingCount)
+        }
+
+        for record in incoming {
+            if let stableOrderKey = record.stableOrderKey {
+                if seenStableKeys.insert(stableOrderKey).inserted {
+                    records.append(record)
+                }
+                continue
+            }
+
+            let key = tradeOrderRecordDedupeKey(record)
+            guard let remaining = remainingCounts[key], remaining > 0 else {
+                continue
+            }
+            records.append(record)
+            remainingCounts[key] = remaining - 1
+        }
+    }
+
     private static func tradeOrderRecordDedupeKey(_ record: JDFinanceTradeOrderRecord) -> String {
-        [
+        if let stableOrderKey = record.stableOrderKey, !stableOrderKey.isEmpty {
+            return stableOrderKey
+        }
+        return [
             record.code ?? "",
             record.productName ?? "",
             record.conversionTargetCode ?? "",
@@ -328,6 +457,8 @@ struct JDFinanceHoldingsService: Sendable {
             record.shares.map { String(format: "%.4f", $0) } ?? "",
             record.tradeDate ?? "",
             record.tradeTimeType?.rawValue ?? "",
+            record.submittedAt ?? "",
+            record.effectiveStatus.rawValue,
             record.statusText ?? ""
         ].joined(separator: "|")
     }
@@ -343,15 +474,18 @@ struct JDFinanceHoldingsService: Sendable {
     static func tradeOrderRequestPayload(
         page: Int,
         now: Date = .now,
-        product: JDFinanceHoldingProduct? = nil
+        product: JDFinanceHoldingProduct? = nil,
+        startDate: String? = nil
     ) throws -> String {
-        let dateRange = tradeOrderDateRange(now: now)
+        let dateRange = tradeOrderDateRange(now: now, startDate: startDate)
         var payloadObject: [String: Any] = [
             "businessCode": "FUND",
             "tradeTypeCodeList": [],
             "pageNo": page,
             "pageType": "na",
             "title": "基金交易",
+            "clientType": "h5",
+            "clientVersion": "999.999.999",
             "orderCreateStartDate": "\(dateRange.start) 00:00:00",
             "orderCreateEndDate": "\(dateRange.end) 23:59:59"
         ]
@@ -398,12 +532,13 @@ struct JDFinanceHoldingsService: Sendable {
             ?? "https://roma.jd.com/wealth/tradeorder/list?pageShowType=1&businessCode=FUND"
     }
 
-    private static func tradeOrderDateRange(now: Date) -> (start: String, end: String) {
+    private static func tradeOrderDateRange(now: Date, startDate: String?) -> (start: String, end: String) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
-        let startDate = calendar.date(byAdding: .year, value: -10, to: now) ?? now
+        let fallbackStartDate = calendar.date(byAdding: .day, value: -90, to: now) ?? now
+        let resolvedStart = startDate.flatMap(DateOnlyFormatter.parse) ?? fallbackStartDate
         return (
-            DateOnlyFormatter.string(from: startDate),
+            DateOnlyFormatter.string(from: min(resolvedStart, now)),
             DateOnlyFormatter.string(from: now)
         )
     }
@@ -466,7 +601,8 @@ struct JDFinanceHoldingsService: Sendable {
             return countedRecords
         }
 
-        if let matchedRecord = candidates.first(where: { matchesAmount($0, product: product) }) {
+        let amountMatches = candidates.filter { matchesAmount($0, product: product) }
+        if amountMatches.count == 1, let matchedRecord = amountMatches.first {
             return [matchedRecord]
         }
 
@@ -568,22 +704,7 @@ struct JDFinanceHoldingsService: Sendable {
     }
 
     private static func matchesUsableStatus(_ record: JDFinanceTradeOrderRecord) -> Bool {
-        guard let statusText = record.statusText else {
-            return true
-        }
-
-        let normalized = statusText.uppercased()
-        let rejectedTokens = [
-            "取消",
-            "撤单",
-            "撤销",
-            "失败",
-            "退款",
-            "CANCEL",
-            "FAIL",
-            "REFUND"
-        ]
-        return !rejectedTokens.contains { normalized.contains($0) }
+        record.effectiveStatus != .cancelled && record.effectiveStatus != .failed
     }
 
     private static func matchingTradeOrderRecordGroup(
@@ -592,17 +713,14 @@ struct JDFinanceHoldingsService: Sendable {
         expectedCount: Int
     ) -> [JDFinanceTradeOrderRecord]? {
         guard expectedCount > 1 else { return nil }
-        let groups = recordsGroupedByTradeTiming(records)
-        for group in groups {
-            if let subset = matchingAmountSubset(
+        let matches = recordsGroupedByTradeTiming(records).compactMap { group in
+            matchingAmountSubset(
                 in: group.records,
                 expectedAmount: expectedAmount,
                 expectedCount: expectedCount
-            ) {
-                return subset
-            }
+            )
         }
-        return nil
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private static func matchingAggregateTradeOrderRecord(
@@ -634,11 +752,13 @@ struct JDFinanceHoldingsService: Sendable {
     ) -> [JDFinanceTradeOrderRecord]? {
         guard expectedCount > 1 else { return nil }
 
-        for group in recordsGroupedByTradeTiming(records) where group.records.count == expectedCount {
-            return group.records
+        let groupedMatches = recordsGroupedByTradeTiming(records)
+            .filter { $0.records.count == expectedCount }
+            .map(\.records)
+        if groupedMatches.count == 1 {
+            return groupedMatches[0]
         }
-
-        return records.count == expectedCount ? records : nil
+        return groupedMatches.isEmpty && records.count == expectedCount ? records : nil
     }
 
     private struct TradeTimingGroup {
@@ -681,32 +801,40 @@ struct JDFinanceHoldingsService: Sendable {
         }
 
         var selected: [JDFinanceTradeOrderRecord] = []
-        return findAmountSubset(
+        var matches: [[JDFinanceTradeOrderRecord]] = []
+        collectAmountSubsets(
             in: candidates,
             startIndex: 0,
             expectedAmount: expectedAmount,
             expectedCount: expectedCount,
             selectedAmount: 0,
-            selected: &selected
+            selected: &selected,
+            matches: &matches
         )
+        return matches.count == 1 ? matches[0] : nil
     }
 
-    private static func findAmountSubset(
+    private static func collectAmountSubsets(
         in records: [JDFinanceTradeOrderRecord],
         startIndex: Int,
         expectedAmount: Double,
         expectedCount: Int,
         selectedAmount: Double,
-        selected: inout [JDFinanceTradeOrderRecord]
-    ) -> [JDFinanceTradeOrderRecord]? {
+        selected: inout [JDFinanceTradeOrderRecord],
+        matches: inout [[JDFinanceTradeOrderRecord]]
+    ) {
+        guard matches.count < 2 else { return }
         if selected.count == expectedCount {
-            return abs(selectedAmount - expectedAmount) < 0.01 ? selected : nil
+            if abs(selectedAmount - expectedAmount) < 0.01 {
+                matches.append(selected)
+            }
+            return
         }
 
-        guard startIndex < records.count else { return nil }
+        guard startIndex < records.count else { return }
 
         let remainingSlots = expectedCount - selected.count
-        guard records.count - startIndex >= remainingSlots else { return nil }
+        guard records.count - startIndex >= remainingSlots else { return }
 
         for index in startIndex..<records.count {
             guard let amount = records[index].amount else { continue }
@@ -714,20 +842,18 @@ struct JDFinanceHoldingsService: Sendable {
             if nextAmount > expectedAmount + 0.01 { continue }
 
             selected.append(records[index])
-            if let result = findAmountSubset(
+            collectAmountSubsets(
                 in: records,
                 startIndex: index + 1,
                 expectedAmount: expectedAmount,
                 expectedCount: expectedCount,
                 selectedAmount: nextAmount,
-                selected: &selected
-            ) {
-                return result
-            }
+                selected: &selected,
+                matches: &matches
+            )
             selected.removeLast()
+            if matches.count >= 2 { return }
         }
-
-        return nil
     }
 
     private static func mergedPendingDetail(
@@ -865,15 +991,15 @@ enum JDFinanceHoldingsParser {
 
         let headAssetsData = payload["headAssetsData"] as? [String: Any]
         let fundData = payload["fundData"] as? [String: Any]
-        let fundList = fundData?["fundList"] as? [[String: Any]] ?? []
+        guard let fundData,
+              let fundList = fundData["fundList"] as? [[String: Any]]
+        else {
+            throw JDFinanceHoldingsError.invalidResponse
+        }
         let productRows = fundList.flatMap { row in
             row["productList"] as? [[String: Any]] ?? []
         }
         let products = productRows.compactMap(parseProduct)
-
-        guard !products.isEmpty else {
-            throw JDFinanceHoldingsError.emptyHoldings
-        }
 
         return JDFinanceHoldingsSnapshot(
             totalAssets: numericValue(headAssetsData?["totalAssets"]),
@@ -1505,6 +1631,7 @@ enum JDFinanceTradeOrderParser {
 
     private static func parseRecord(_ dictionary: [String: Any]) -> JDFinanceTradeOrderRecord? {
         let timing = parseTradeTiming(in: dictionary)
+        let submittedAt = parseSubmittedAt(in: dictionary)
         let productName = firstStringValue(
             in: dictionary,
             keys: ["productName", "sellProductName", "fundName", "productFullName", "productTitle", "skuName", "name"]
@@ -1514,9 +1641,13 @@ enum JDFinanceTradeOrderParser {
             keys: ["sellProductName", "targetProductName", "targetFundName", "toProductName", "toFundName"]
         )
         let conversionTargetCode = conversionTargetFundCode(in: dictionary)
+        let statusCode = firstStringValue(
+            in: dictionary,
+            keys: ["statusCode", "orderStatus"]
+        )
         let statusText = firstStringValue(
             in: dictionary,
-            keys: ["statusName", "statusDesc", "statusText", "statusCode", "orderStatus", "orderStatusName"]
+            keys: ["statusName", "statusDesc", "statusText", "orderStatusName"]
         )
 
         guard productName != nil || explicitFundCode(in: dictionary) != nil else {
@@ -1526,21 +1657,36 @@ enum JDFinanceTradeOrderParser {
         let code = explicitFundCode(in: dictionary)
         let action = parseAction(in: dictionary)
         let amount = firstNumericValue(in: dictionary, keys: tradeAmountKeys)
-        let shares = numericValue(dictionary["share"])
-            ?? numericValue(dictionary["shares"])
-            ?? numericValue(dictionary["tradeShare"])
-        let resolvedShares = shares ?? ((action == .conversion || action == .sell) ? amount : nil)
+        let shares = firstNumericValue(
+            in: dictionary,
+            keys: [
+                "share", "shares", "tradeShare", "tradeShares", "confirmShare",
+                "confirmedShare", "applyShare", "redeemShare", "shareAmount"
+            ]
+        )
+        let rawOrderID = firstStringValue(
+            in: dictionary,
+            keys: [
+                "orderId", "orderID", "order_id", "tradeOrderId", "tradeOrderID",
+                "businessOrderId", "businessOrderID", "bizOrderId", "bizOrderID"
+            ]
+        )
 
         return JDFinanceTradeOrderRecord(
+            stableOrderKey: JDFinanceSyncFingerprint.stableOrderKey(rawOrderID: rawOrderID),
             code: code,
+            codeResolution: code == nil ? .unresolved : .explicit,
             productName: productName,
             conversionTargetCode: action == .conversion ? conversionTargetCode : nil,
             conversionTargetName: action == .conversion ? conversionTargetName : nil,
             action: action,
             amount: amount,
-            shares: resolvedShares,
+            shares: shares,
             tradeDate: timing?.date,
             tradeTimeType: timing?.timeType,
+            submittedAt: submittedAt,
+            status: JDFinanceTradeOrderStatus.classify(statusCode: statusCode, statusText: statusText),
+            statusCode: statusCode,
             statusText: statusText
         )
     }
@@ -1616,6 +1762,14 @@ enum JDFinanceTradeOrderParser {
             return (fallbackDate, fallbackTimeType)
         }
         return nil
+    }
+
+    private static func parseSubmittedAt(in dictionary: [String: Any]) -> String? {
+        let preferredLeaves = leafValues(in: dictionary).filter(isTradeTimingCandidate).sorted { lhs, rhs in
+            score(lhs.path, keywords: ["biztime", "trade", "apply", "order", "create", "submit", "time"]) >
+                score(rhs.path, keywords: ["biztime", "trade", "apply", "order", "create", "submit", "time"])
+        }
+        return preferredLeaves.lazy.compactMap { normalizedFullTimestamp(from: $0.value) }.first
     }
 
     private static func isTradeTimingCandidate(_ leaf: Leaf) -> Bool {
@@ -1749,6 +1903,40 @@ enum JDFinanceTradeOrderParser {
         formatter.timeZone = .current
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: date)
+    }
+
+    private static func normalizedFullTimestamp(from text: String) -> String? {
+        if let timestamp = normalizedTimestampText(from: text) {
+            return timestamp
+        }
+
+        let patterns = [
+            #"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})(?:日)?\s+([0-2]?\d)[:：]([0-5]\d)[:：]([0-5]\d)"#,
+            #"(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})(?:日)?\s+([0-2]?\d)[:：]([0-5]\d)"#
+        ]
+        for pattern in patterns {
+            guard let captures = regexCaptures(pattern: pattern, in: text),
+                  captures.count >= 5,
+                  let year = Int(captures[0]),
+                  let month = Int(captures[1]),
+                  let day = Int(captures[2]),
+                  let hour = Int(captures[3]),
+                  let minute = Int(captures[4])
+            else {
+                continue
+            }
+            let second = captures.count > 5 ? (Int(captures[5]) ?? 0) : 0
+            let dateText = String(format: "%04d-%02d-%02d", year, month, day)
+            guard DateOnlyFormatter.parse(dateText) != nil,
+                  (0...23).contains(hour),
+                  (0...59).contains(minute),
+                  (0...59).contains(second)
+            else {
+                continue
+            }
+            return String(format: "%@ %02d:%02d:%02d", dateText, hour, minute, second)
+        }
+        return nil
     }
 
     private static func normalizedDate(from text: String) -> String? {

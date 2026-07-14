@@ -459,7 +459,61 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.amount ?? 0, 1_000, accuracy: 0.0001)
         XCTAssertEqual(record.tradeDate, "2026-07-03")
         XCTAssertEqual(record.tradeTimeType, .before15)
+        XCTAssertEqual(record.submittedAt, "2026-07-03 14:35:12")
+        XCTAssertEqual(record.effectiveStatus, .pending)
+        XCTAssertNotNil(record.stableOrderKey)
+        XCTAssertFalse(record.stableOrderKey?.contains("secret-order") ?? true)
         XCTAssertEqual(record.statusText, "买入确认中")
+    }
+
+    func testJDFinanceTradeOrderStatusOnlyAllowsConfirmedFundStatesToSucceed() {
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("确认成功"), .succeeded)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("订单完成"), .succeeded)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("赎回成功"), .succeeded)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify(statusCode: "REDEEM_SUCC", statusText: "转出完成"), .succeeded)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("支付成功"), .pending)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("PAY_SUCCESS"), .pending)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify(statusCode: "PAY_SUCC", statusText: "支付成功"), .pending)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("处理中"), .pending)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("退款完成"), .cancelled)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify(statusCode: "REFUND_SUCC", statusText: "退款完成"), .cancelled)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("交易失败"), .failed)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify("新的未知状态"), .unknown)
+        XCTAssertEqual(JDFinanceTradeOrderStatus.classify(nil), .unknown)
+    }
+
+    func testJDFinanceTradeOrderParserKeepsSameValueOrdersWithDifferentOrderIDs() throws {
+        let response = """
+        {"resultCode":0,"resultData":{"data":{"orderList":[
+          {"orderId":"order-a","productCode":"013284","fundName":"上银价值增长3个月持有期混合A","tradeTypeCode":"TRANSFER_IN","applyAmount":"1,000.00","orderCreateTime":"2026-07-13 10:00:00","statusName":"确认成功"},
+          {"orderId":"order-b","productCode":"013284","fundName":"上银价值增长3个月持有期混合A","tradeTypeCode":"TRANSFER_IN","applyAmount":"1,000.00","orderCreateTime":"2026-07-13 10:00:00","statusName":"确认成功"}
+        ]}}}
+        """
+
+        let records = try JDFinanceTradeOrderParser.parse(data: Data(response.utf8))
+
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(Set(records.compactMap(\.stableOrderKey)).count, 2)
+        XCTAssertTrue(records.allSatisfy { record in
+            guard let key = record.stableOrderKey,
+                  key.hasPrefix("jd-order-")
+            else {
+                return false
+            }
+            return key.dropFirst("jd-order-".count).allSatisfy(\.isHexDigit)
+        })
+    }
+
+    func testJDFinanceTradeOrderParserNormalizesMinutePrecisionSubmissionTime() throws {
+        let response = """
+        {"resultCode":0,"resultData":{"data":{"orderList":[
+          {"productCode":"013284","fundName":"上银价值增长3个月持有期混合A","tradeTypeCode":"TRANSFER_IN","applyAmount":"1,000.00","orderCreateTime":"2026-07-13 10:05","statusName":"确认成功"}
+        ]}}}
+        """
+
+        let record = try XCTUnwrap(JDFinanceTradeOrderParser.parse(data: Data(response.utf8)).first)
+
+        XCTAssertEqual(record.submittedAt, "2026-07-13 10:05:00")
     }
 
     func testJDFinanceTradeOrderParserCombinesSplitTradeDateAndTime() throws {
@@ -517,6 +571,25 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString.contains("/cfGateway/newna/m/queryTradeOrderList"))
     }
 
+    func testJDFinanceWebTradeEndpointLoginFailureDoesNotMarkSuccessfulH5FlowIncomplete() async throws {
+        let nativeLoginResponse = """
+        {"success":false,"resultCode":3,"resultMsg":"请先登录京东账号"}
+        """
+        let webSuccessResponse = """
+        {"success":true,"resultCode":0,"resultData":{"data":{"tradeOrderVoList":[]}}}
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceEmptyHoldingsResponse(total: 0),
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: nativeLoginResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: webSuccessResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+
+        XCTAssertEqual(snapshot.tradeOrderFetchState, .complete)
+        XCTAssertTrue(snapshot.tradeOrders.isEmpty)
+    }
+
     func testJDFinanceTradeOrderProductScopedPayloadMatchesWebTradeRecordPage() throws {
         let product = JDFinanceHoldingProduct(
             skuID: "1025500",
@@ -571,6 +644,27 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(object["productId"] as? String, "113387")
         XCTAssertNil(object["productCode"])
         XCTAssertNil(object["fundCode"])
+    }
+
+    func testJDFinanceTradeOrderPayloadUsesNinetyDaysAndCanTraceOlderWaitingRecord() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let defaultPayload = try JDFinanceHoldingsService.tradeOrderRequestPayload(page: 1, now: now)
+        let defaultObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(defaultPayload.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(defaultObject["clientType"] as? String, "h5")
+        XCTAssertEqual(defaultObject["clientVersion"] as? String, "999.999.999")
+        XCTAssertEqual(defaultObject["orderCreateStartDate"] as? String, "2026-04-15 00:00:00")
+
+        let tracedPayload = try JDFinanceHoldingsService.tradeOrderRequestPayload(
+            page: 1,
+            now: now,
+            startDate: "2025-12-01"
+        )
+        let tracedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(tracedPayload.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(tracedObject["orderCreateStartDate"] as? String, "2025-12-01 00:00:00")
     }
 
     func testJDFinanceTradeOrderParserReadsGenericTradeRows() throws {
@@ -640,13 +734,13 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.conversionTargetName, "华夏上证科创板半导体材料设备主题ETF发起式联接C")
         XCTAssertEqual(record.action, .conversion)
         XCTAssertEqual(record.amount ?? 0, 971.77, accuracy: 0.0001)
-        XCTAssertEqual(record.shares ?? 0, 971.77, accuracy: 0.0001)
+        XCTAssertNil(record.shares)
         XCTAssertEqual(record.tradeDate, "2026-07-07")
         XCTAssertEqual(record.tradeTimeType, .before15)
         XCTAssertEqual(record.statusText, "处理中")
     }
 
-    func testJDFinanceTradeOrderParserTreatsRedeemAmountAsSharesWhenShareFieldIsMissing() throws {
+    func testJDFinanceTradeOrderParserDoesNotTreatRedeemAmountAsSharesWhenShareFieldIsMissing() throws {
         let response = """
         {
           "success": true,
@@ -676,7 +770,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.productName, "转出-同泰竞争优势混合C")
         XCTAssertEqual(record.action, .sell)
         XCTAssertEqual(record.amount ?? 0, 7_171.54, accuracy: 0.0001)
-        XCTAssertEqual(record.shares ?? 0, 7_171.54, accuracy: 0.0001)
+        XCTAssertNil(record.shares)
         XCTAssertEqual(record.tradeDate, "2026-07-07")
         XCTAssertEqual(record.tradeTimeType, .before15)
         XCTAssertEqual(record.statusText, "转出中")
@@ -1683,6 +1777,116 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinanceSyncStoreIgnoresOlderRequestCompletion() async throws {
+        let emptyOrders = #"{"resultCode":0,"resultData":{"data":{"orderList":[]}}}"#
+        MockURLProtocol.responseStore.set([
+            JDFinanceHoldingsService.endpoint.absoluteString: Data(Self.jdFinanceEmptyHoldingsResponse(total: 100).utf8),
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: Data(emptyOrders.utf8),
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: Data(emptyOrders.utf8)
+        ])
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 120_000_000)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: URLSession(configuration: configuration))
+        )
+        let repository = RecordingPortfolioRepository(initialSnapshot: .empty)
+        let portfolioStore = PortfolioStore(repository: repository)
+        portfolioStore.load()
+
+        let olderTask = Task { @MainActor in
+            await syncStore.synchronize(
+                portfolioStore: portfolioStore,
+                cookieHeader: "pt_key=old; pt_pin=test"
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        MockURLProtocol.responseStore.set([
+            JDFinanceHoldingsService.endpoint.absoluteString: Data(Self.jdFinanceEmptyHoldingsResponse(total: 200).utf8),
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: Data(emptyOrders.utf8),
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: Data(emptyOrders.utf8)
+        ])
+        let newerTask = Task { @MainActor in
+            await syncStore.synchronize(
+                portfolioStore: portfolioStore,
+                cookieHeader: "pt_key=new; pt_pin=test"
+            )
+        }
+
+        await olderTask.value
+        await newerTask.value
+
+        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 200)
+        XCTAssertEqual(portfolioStore.snapshot.syncedAccountTotal?.amount, 200)
+        XCTAssertEqual(repository.savedSnapshots.count, 1)
+        XCTAssertFalse(syncStore.isSyncing)
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsSelectedUnrecordedSuccessfulOrder() async throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let holdingsResponse = """
+        {"success":true,"resultCode":0,"resultMsg":"success","resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":{"text":"1,000.00"}},"fundData":{"fundList":[{"productList":[{"skuId":"1013284","fundCode":"013284","productName":"上银价值增长3个月持有期混合A","totalAmount":{"text":"1,000.00"},"holdIncome":{"text":"0.00"}}]}]}}}}
+        """
+        let orderResponse = """
+        {"resultCode":0,"resultData":{"data":{"orderList":[{"orderId":"raw-order-must-not-persist","productCode":"013284","fundName":"上银价值增长3个月持有期混合A","tradeTypeCode":"TRANSFER_IN","applyAmount":"1,000.00","confirmShare":"100.00","orderCreateTime":"2026-07-13 10:00:00","statusName":"确认成功"}]}}}
+        """
+        let quoteResponse = Self.coreQuoteResponse(
+            code: "013284",
+            name: "上银价值增长3个月持有期混合A",
+            netValueDate: "2026-07-13",
+            netValue: 10,
+            estimateTime: "2026-07-14 10:00"
+        )
+        MockURLProtocol.responseStore.set([
+            JDFinanceHoldingsService.endpoint.absoluteString: Data(holdingsResponse.utf8),
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: Data(orderResponse.utf8),
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: Data(orderResponse.utf8),
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Data(quoteResponse.utf8)
+        ])
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let repository = RecordingPortfolioRepository(initialSnapshot: jdPortfolio(
+            funds: [conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 100, cost: 10)],
+            records: [],
+            now: now
+        ))
+        let portfolioStore = PortfolioStore(
+            repository: repository,
+            quoteService: FundQuoteService(session: URLSession(configuration: configuration)),
+            now: { now }
+        )
+        portfolioStore.load()
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: URLSession(configuration: configuration)),
+            now: { now }
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+        XCTAssertEqual(syncStore.preview?.importableUnrecordedOrders.count, 1)
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: false,
+            reconcileConfirmed: false,
+            importUnrecorded: true
+        )
+
+        XCTAssertNil(syncStore.errorMessage)
+        let imported = try XCTUnwrap(portfolioStore.snapshot.tradeRecords?.last)
+        XCTAssertEqual(imported.externalStatus, .externalConfirmed)
+        XCTAssertEqual(imported.waitsForExternalConfirmation, false)
+        XCTAssertTrue(imported.syncKey?.hasPrefix("jd-order-") == true)
+        XCTAssertFalse(imported.syncKey?.contains("raw-order-must-not-persist") == true)
+        XCTAssertTrue(syncStore.preview?.unrecordedOrders.isEmpty == true)
+    }
+
+    @MainActor
     func testJDFinanceSyncStoreResolvesMissingCodeByExactFundName() async throws {
         let response = """
         {"success":true,"resultCode":0,"resultMsg":"success","resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":{"text":"14,019.17"},"holdIncome":{"text":"-1,980.83"}},"fundData":{"fundList":[{"productList":[{"skuId":"113387","productName":"华商均衡成长混合C","totalAmount":{"text":"14,019.17"},"holdIncome":{"text":"-1,980.83"}}]}]}}}}
@@ -2016,6 +2220,7 @@ final class FundPulseCoreTests: XCTestCase {
                   "tradeTypeName": "转换",
                   "tradeTypeCode": "TRANSFORM",
                   "allAmount": "¥ 971.77",
+                  "tradeShare": "971.77",
                   "bizTime": "2026-07-07 15:00前",
                   "statusName": "处理中",
                   "statusCode": "PROCESS"
@@ -2027,6 +2232,7 @@ final class FundPulseCoreTests: XCTestCase {
                   "tradeTypeName": "转换",
                   "tradeTypeCode": "TRANSFORM",
                   "allAmount": "¥ 971.78",
+                  "tradeShare": "971.78",
                   "bizTime": "2026-07-07 15:00前",
                   "statusName": "处理中",
                   "statusCode": "PROCESS"
@@ -2189,6 +2395,7 @@ final class FundPulseCoreTests: XCTestCase {
                   "tradeTypeName": "转换",
                   "tradeTypeCode": "TRANSFORM",
                   "allAmount": "¥ 2,773.85",
+                  "tradeShare": "2773.85",
                   "bizTime": "2026-07-07 15:00前",
                   "statusName": "处理中",
                   "statusCode": "PROCESS"
@@ -2371,15 +2578,24 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(JDFinanceWebSession.hasUsableCookieHeader("thor=abc; pin=test"))
     }
 
-    func testJDFinanceHoldingsParserRejectsEmptyProductList() {
+    func testJDFinanceHoldingsParserAcceptsValidEmptyProductListAndZeroTotal() throws {
         let response = """
-        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{},"fundData":{"fundList":[{"productList":[]}]}}}}
+        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":"0.00"},"fundData":{"fundList":[{"productList":[]}]}}}}
         """
 
-        XCTAssertThrowsError(
-            try JDFinanceHoldingsParser.parse(data: Data(response.utf8))
-        ) { error in
-            XCTAssertEqual(error as? JDFinanceHoldingsError, .emptyHoldings)
+        let snapshot = try JDFinanceHoldingsParser.parse(data: Data(response.utf8))
+
+        XCTAssertTrue(snapshot.products.isEmpty)
+        XCTAssertEqual(snapshot.totalAssets, 0)
+    }
+
+    func testJDFinanceHoldingsParserRejectsMissingFundListStructure() {
+        let response = """
+        {"success":true,"resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":"0.00"}}}}
+        """
+
+        XCTAssertThrowsError(try JDFinanceHoldingsParser.parse(data: Data(response.utf8))) { error in
+            XCTAssertEqual(error as? JDFinanceHoldingsError, .invalidResponse)
         }
     }
 
@@ -2662,7 +2878,10 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(preview.changedHoldings.isEmpty)
         XCTAssertTrue(preview.missingLocalHoldings.isEmpty)
         XCTAssertEqual(preview.pendingNotices.map(\.code), ["025500"])
-        XCTAssertEqual(preview.pendingNotices.first?.message, "本地已有待确认记录，确认后再参与金额对比")
+        XCTAssertEqual(
+            preview.pendingNotices.first?.message,
+            "本次同步已完成；京东仍标记为交易处理中，尚未完成基金份额确认。"
+        )
         XCTAssertNil(preview.pendingNotices.first?.importKind)
         XCTAssertFalse(preview.pendingNotices.first?.isImportable ?? true)
     }
@@ -2977,7 +3196,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(drafts.map(\.tradeTimeType), [.before15, .after15])
     }
 
-    func testJDFinanceSyncPreviewUsesMatchedTradeRecordCodeWhenSkuCodePointsToAnotherFund() throws {
+    func testJDFinanceSyncPreviewUsesMatchedTradeRecordCodeWhenHoldingCodeIsMissing() throws {
         let remoteSnapshot = JDFinanceHoldingsSnapshot(
             totalAssets: 31_345.05,
             yesterdayIncome: nil,
@@ -2987,7 +3206,8 @@ final class FundPulseCoreTests: XCTestCase {
             products: [
                 JDFinanceHoldingProduct(
                     skuID: "1013284",
-                    code: "013284",
+                    code: "",
+                    codeResolution: .unresolved,
                     name: "易方达上证科创50ETF联接C",
                     totalAmount: 31_345.05,
                     yesterdayIncome: nil,
@@ -3804,6 +4024,869 @@ final class FundPulseCoreTests: XCTestCase {
         } else {
             XCTFail("Expected sync conflict")
         }
+    }
+
+    func testJDFinanceFinalTradeOrderWithEqualValuesPlansAutomaticConfirmation() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let localRecord = jdWaitingRecord(
+            id: "equal-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 1_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1013284",
+                    code: "013284",
+                    name: "上银价值增长3个月持有期混合A",
+                    totalAmount: 1_000
+                )
+            ],
+            tradeOrders: [
+                jdOrder(
+                    key: "jd-order-equal-buy",
+                    code: "013284",
+                    action: .buy,
+                    amount: 1_000,
+                    shares: 100,
+                    status: .succeeded
+                )
+            ],
+            tradeOrderFetchState: .complete
+        )
+        let localSnapshot = jdPortfolio(
+            funds: [conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 100, cost: 10)],
+            records: [localRecord],
+            now: now
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertEqual(preview.automaticConfirmations.map(\.recordIDs), [["equal-buy"]])
+        XCTAssertTrue(preview.reconciliationNotices.isEmpty)
+    }
+
+    func testJDFinanceOrderCompletedWithoutSharesPlansAutomaticConfirmation() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let localRecord = jdWaitingRecord(
+            id: "order-completed-buy",
+            kind: .buy,
+            code: "022364",
+            amount: 2_000,
+            shares: nil,
+            now: now
+        )
+        let completedOrder = JDFinanceTradeOrderRecord(
+            stableOrderKey: "jd-order-completed-buy",
+            code: "022364",
+            productName: "永赢科技智选混合发起A",
+            action: .buy,
+            amount: 2_000,
+            shares: nil,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .before15,
+            submittedAt: "2026-07-13 10:00:00",
+            status: nil,
+            statusText: "订单完成"
+        )
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 2_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [completedOrder],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: [localRecord], now: now)
+        )
+
+        XCTAssertEqual(completedOrder.effectiveStatus, .succeeded)
+        XCTAssertEqual(preview.automaticConfirmations.map(\.recordIDs), [["order-completed-buy"]])
+        XCTAssertTrue(preview.overwritableReconciliationNotices.isEmpty)
+        XCTAssertTrue(preview.unrecordedOrders.isEmpty)
+        XCTAssertTrue(preview.informationalOrders.isEmpty)
+    }
+
+    func testJDFinanceFinalTradeOrderClosesPendingLocalExternalWait() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        var localRecord = jdWaitingRecord(
+            id: "pending-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: nil,
+            now: now
+        )
+        localRecord.status = .pending
+        localRecord.confirmedShares = nil
+        localRecord.price = nil
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 1_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [
+                    jdOrder(
+                        key: "pending-buy-order",
+                        code: "013284",
+                        action: .buy,
+                        amount: 1_000,
+                        shares: nil,
+                        status: .succeeded
+                    )
+                ],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: [localRecord], now: now)
+        )
+
+        XCTAssertEqual(preview.automaticConfirmations.map(\.recordIDs), [["pending-buy"]])
+        XCTAssertTrue(preview.unrecordedOrders.isEmpty)
+    }
+
+    func testJDFinanceFailedAndPaidOrdersNeverBecomeFinalReconciliation() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let localRecord = jdWaitingRecord(
+            id: "waiting-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 1_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1013284",
+                    code: "013284",
+                    name: "上银价值增长3个月持有期混合A",
+                    totalAmount: 1_000
+                )
+            ],
+            tradeOrders: [
+                jdOrder(key: "failed", code: "013284", action: .buy, amount: 900, shares: 90, status: .failed),
+                jdOrder(key: "paid", code: "013284", action: .buy, amount: 900, shares: 90, status: .pending)
+            ],
+            tradeOrderFetchState: .complete
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: jdPortfolio(
+                funds: [conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 100, cost: 10)],
+                records: [localRecord],
+                now: now
+            )
+        )
+
+        XCTAssertTrue(preview.automaticConfirmations.isEmpty)
+        XCTAssertTrue(preview.overwritableReconciliationNotices.isEmpty)
+        XCTAssertEqual(preview.informationalOrders.count, 2)
+    }
+
+    func testJDFinanceFinalSellCanReconcileAfterProductLeavesHoldingsList() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let sellRecord = jdWaitingRecord(
+            id: "full-sell",
+            kind: .sell,
+            code: "008998",
+            amount: 1_000,
+            shares: 1_000,
+            now: now
+        )
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 0,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [],
+            tradeOrders: [
+                jdOrder(
+                    key: "full-sell-order",
+                    code: "008998",
+                    action: .sell,
+                    amount: 990,
+                    shares: 1_000,
+                    status: .succeeded
+                )
+            ],
+            tradeOrderFetchState: .complete
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: jdPortfolio(
+                funds: [conversionFund(code: "008998", name: "同泰竞争优势混合C", shares: 1_000, cost: 1)],
+                records: [sellRecord],
+                now: now
+            )
+        )
+
+        let notice = try XCTUnwrap(preview.overwritableReconciliationNotices.first)
+        XCTAssertEqual(notice.id, "full-sell")
+        XCTAssertEqual(notice.jdAmount, 990)
+    }
+
+    func testJDFinanceSuccessfulUnmatchedOrderIsExposedForManualImport() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 1_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [],
+            tradeOrders: [
+                jdOrder(
+                    key: "unrecorded-buy",
+                    code: "013284",
+                    action: .buy,
+                    amount: 1_000,
+                    shares: 100,
+                    status: .succeeded
+                )
+            ],
+            tradeOrderFetchState: .complete
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: PortfolioSnapshot(
+                updateTime: .now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [],
+                migration: nil,
+                jdFinanceSyncState: JDFinanceSyncState(baselineEstablishedAt: .distantPast)
+            )
+        )
+
+        XCTAssertEqual(preview.unrecordedOrders.map(\.id), ["unrecorded-buy"])
+        XCTAssertTrue(preview.unrecordedOrders[0].isImportable)
+    }
+
+    func testJDFinanceFirstSyncTreatsHistoricalSuccessAsCurrentHoldingBaseline() {
+        let order = jdOrder(
+            key: "historical-buy",
+            code: "013284",
+            action: .buy,
+            amount: 1_000,
+            shares: 100,
+            status: .succeeded
+        )
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 1_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [order],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: .empty
+        )
+
+        XCTAssertTrue(preview.unrecordedOrders.isEmpty)
+        XCTAssertEqual(preview.baselineRepresentedCount, 1)
+        XCTAssertEqual(preview.baselineOrderKeys, ["historical-buy"])
+    }
+
+    func testJDFinancePendingOrderIsShownOnlyInsideItsPendingNotice() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let globalOrder = JDFinanceTradeOrderRecord(
+            code: "022184",
+            codeResolution: .nameMatched,
+            productName: "转入-富国全球科技互联网股票(QDII)C",
+            action: .buy,
+            amount: 1_000,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .after15,
+            submittedAt: "2026-07-13 15:30:00",
+            status: .pending,
+            statusCode: "PAY_SUCC",
+            statusText: "支付成功"
+        )
+        var nestedOrder = globalOrder
+        nestedOrder.code = nil
+        nestedOrder.codeResolution = .unresolved
+        let product = JDFinanceHoldingProduct(
+            skuID: "1022184",
+            code: "022184",
+            name: "富国全球科技互联网股票(QDII)C",
+            totalAmount: 1_000,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易中",
+                action: .buy,
+                tradeCount: 1,
+                totalAmount: 1_000
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 1_000,
+                shares: nil,
+                tradeDate: "2026-07-13",
+                tradeTimeType: .after15,
+                statusText: "支付成功",
+                matchedTradeRecords: [nestedOrder]
+            )
+        )
+        var local = jdPortfolio(
+            funds: [conversionFund(code: "022184", name: product.name, shares: 100, cost: 10)],
+            records: [],
+            now: now
+        )
+        local.funds[0].status = .pending
+        local.funds[0].currentAmount = 0
+        local.funds[0].pendingAmount = 1_000
+        local.jdFinanceSyncState = JDFinanceSyncState(
+            baselineEstablishedAt: try chinaDate("2026-07-13 00:00")
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 1_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [product],
+                tradeOrders: [globalOrder],
+                tradeOrderFetchState: .incomplete(["部分接口失败"])
+            ),
+            localSnapshot: local
+        )
+
+        XCTAssertEqual(preview.pendingNotices.count, 1)
+        XCTAssertEqual(
+            preview.pendingNotices.first?.message,
+            "本次同步已完成；京东订单当前为「支付成功」，尚未完成基金份额确认。"
+        )
+        XCTAssertTrue(preview.informationalOrders.isEmpty)
+    }
+
+    func testJDFinanceWholePositionRecordDoesNotMasqueradeAsPendingOrder() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let baselineRecord = FundTradeRecord(
+            id: "whole-position",
+            kind: .newFund,
+            status: .confirmed,
+            code: "022364",
+            name: "永赢科技智选混合发起A",
+            mode: .amount,
+            amount: 20_534.59,
+            shares: nil,
+            confirmedShares: 10_000,
+            price: 2.053459,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-13",
+            createdAt: now,
+            confirmedAt: now,
+            failureReason: nil
+        )
+        let product = JDFinanceHoldingProduct(
+            skuID: "1022364",
+            code: "022364",
+            name: "永赢科技智选混合发起A",
+            totalAmount: 20_534.59,
+            transactionTip: JDFinanceTransactionTip(
+                text: "订单完成",
+                action: .buy,
+                tradeCount: 1,
+                totalAmount: 2_000
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 2_000,
+                shares: nil,
+                tradeDate: "2026-07-13",
+                tradeTimeType: .before15,
+                statusText: "订单完成"
+            )
+        )
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 20_534.59,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [product]
+            ),
+            localSnapshot: jdPortfolio(
+                funds: [conversionFund(code: "022364", name: product.name, shares: 10_000, cost: 2)],
+                records: [baselineRecord],
+                now: now
+            )
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertNil(notice.syncState)
+        XCTAssertFalse(notice.message.contains("本地已确认"))
+    }
+
+    @MainActor
+    func testJDFinanceResolverFillsOrderCodeFromCanonicalTransferName() async {
+        let resolver = JDFinanceFundCodeResolver(lookup: { _ in nil })
+        let local = conversionFund(
+            code: "022364",
+            name: "永赢科技智选混合发起A",
+            shares: 100,
+            cost: 1
+        )
+        let snapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 100,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [],
+            tradeOrders: [
+                JDFinanceTradeOrderRecord(
+                    productName: "转入-永赢科技智选混合发起A",
+                    action: .buy,
+                    amount: 100,
+                    tradeDate: "2026-07-14",
+                    tradeTimeType: .before15,
+                    status: .succeeded
+                )
+            ]
+        )
+
+        let resolved = await resolver.resolve(
+            snapshot: snapshot,
+            localSnapshot: jdPortfolio(funds: [local], records: [], now: .now)
+        )
+
+        XCTAssertEqual(resolved.tradeOrders.first?.code, "022364")
+        XCTAssertEqual(resolved.tradeOrders.first?.codeResolution, .nameMatched)
+    }
+
+    @MainActor
+    func testJDFinanceIncrementalStartKeepsTrackedPendingLookback() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let lastComplete = try chinaDate("2026-07-14 09:00")
+        var snapshot = PortfolioSnapshot.empty
+        snapshot.jdFinanceSyncState = JDFinanceSyncState(
+            baselineEstablishedAt: lastComplete,
+            lastCompleteTradeOrderSyncAt: lastComplete,
+            trackedPendingOrderKeys: ["pending"],
+            trackedPendingStartDate: "2026-07-10"
+        )
+        let store = PortfolioStore(repository: RecordingPortfolioRepository(initialSnapshot: snapshot))
+        store.load()
+
+        XCTAssertEqual(store.jdFinanceTradeOrderStartDate(now: now), "2026-07-10")
+    }
+
+    func testPortfolioCalculatorPreservesJDFinanceSyncStateAcrossRefresh() throws {
+        let establishedAt = try chinaDate("2026-07-14 09:00")
+        var snapshot = PortfolioSnapshot.empty
+        snapshot.jdFinanceSyncState = JDFinanceSyncState(
+            accountKey: "account",
+            baselineEstablishedAt: establishedAt,
+            representedOrderKeys: ["one"]
+        )
+
+        let refreshed = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: [:], now: establishedAt)
+
+        XCTAssertEqual(refreshed.jdFinanceSyncState, snapshot.jdFinanceSyncState)
+    }
+
+    @MainActor
+    func testJDFinanceFullClearanceUsesAllLocalSharesAndKeepsAuditRecords() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let fund = conversionFund(code: "008998", name: "同泰竞争优势混合C", shares: 1_000, cost: 1)
+        let initial = jdPortfolio(funds: [fund], records: [], now: now)
+        let store = PortfolioStore(repository: RecordingPortfolioRepository(initialSnapshot: initial), now: { now })
+        store.load()
+        let order = jdOrder(
+            key: "full-clear-order",
+            code: "008998",
+            action: .sell,
+            amount: 990,
+            shares: nil,
+            status: .succeeded
+        )
+        let candidate = JDFinanceMissingLocalHolding(
+            code: "008998",
+            name: fund.name,
+            localAmount: fund.currentAmount,
+            finalOutflowOrder: order
+        )
+
+        try store.applyJDFinanceFullClearance(candidate, syncedAt: now)
+
+        let clearedFund = try XCTUnwrap(store.snapshot.funds.first)
+        XCTAssertEqual(clearedFund.status, .watch)
+        XCTAssertEqual(clearedFund.currentAmount, 0)
+        let records = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertTrue(records.contains { $0.isReconciliationBaseline == true })
+        let sell = try XCTUnwrap(records.last { $0.kind == .sell })
+        XCTAssertEqual(sell.confirmedShares, 1_000)
+        XCTAssertEqual(sell.syncKey, "full-clear-order")
+    }
+
+    func testJDFinanceAccountIdentityIsHashedAndStable() {
+        let first = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_key=secret; pt_pin=test-user")
+        let second = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=test-user; pt_key=changed")
+
+        XCTAssertEqual(first, second)
+        XCTAssertTrue(first?.hasPrefix("jd-account-") == true)
+        XCTAssertFalse(first?.contains("test-user") == true)
+    }
+
+    func testJDFinanceAmbiguousLegacyOrdersNeverReuseOneOrderForMultipleLocalRecords() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let records = ["legacy-a", "legacy-b"].map {
+            jdWaitingRecord(
+                id: $0,
+                kind: .buy,
+                code: "013284",
+                amount: 1_000,
+                shares: 100,
+                now: now
+            )
+        }
+        let ambiguousOrder = JDFinanceTradeOrderRecord(
+            code: "013284",
+            productName: "上银价值增长3个月持有期混合A",
+            action: .buy,
+            amount: 1_000,
+            shares: 100,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .before15,
+            submittedAt: "2026-07-13 10:00:00",
+            status: .succeeded,
+            statusText: "确认成功"
+        )
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 2_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [ambiguousOrder, ambiguousOrder],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: records, now: now)
+        )
+
+        XCTAssertTrue(preview.automaticConfirmations.isEmpty)
+        XCTAssertEqual(preview.reconciliationNotices.count, 2)
+        XCTAssertTrue(preview.reconciliationNotices.allSatisfy {
+            if case .conflict(let message) = $0.state {
+                return message.contains("多笔京东流水")
+            }
+            return false
+        })
+    }
+
+    func testJDFinanceTwoStableOrdersConsumeOneExistingLocalRecordOnlyOnce() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        var localRecord = jdWaitingRecord(
+            id: "already-recorded",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        localRecord.syncKey = "stable-a"
+        localRecord.externalStatus = .externalConfirmed
+        localRecord.waitsForExternalConfirmation = false
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 2_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [
+                    jdOrder(key: "stable-a", code: "013284", action: .buy, amount: 1_000, shares: 100, status: .succeeded),
+                    jdOrder(key: "stable-b", code: "013284", action: .buy, amount: 1_000, shares: 100, status: .succeeded)
+                ],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: [localRecord], now: now)
+        )
+
+        XCTAssertEqual(preview.unrecordedOrders.map(\.id), ["stable-b"])
+    }
+
+    func testJDFinanceIncompleteFlowDoesNotTreatMissingOrderAsDefinitive() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let localRecord = jdWaitingRecord(
+            id: "waiting-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 1_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: [],
+                tradeOrderFetchState: .incomplete(["部分接口失败"])
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: [localRecord], now: now)
+        )
+
+        let notice = try XCTUnwrap(preview.reconciliationNotices.first)
+        if case .conflict(let message) = notice.state {
+            XCTAssertTrue(message.contains("拉取不完整"))
+        } else {
+            XCTFail("Expected incomplete-flow conflict notice")
+        }
+        XCTAssertEqual(preview.warnings, ["部分接口失败"])
+    }
+
+    func testJDFinanceDuplicateRemoteFundCodesAreAggregatedWithoutCrash() {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 300,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(skuID: "a", code: "013284", name: "测试基金A", totalAmount: 100, holdIncome: 1),
+                JDFinanceHoldingProduct(skuID: "b", code: "013284", name: "测试基金A", totalAmount: 200, holdIncome: 2)
+            ],
+            tradeOrderFetchState: .complete
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 300,
+            holdingIncome: 3,
+            holdingIncomeRate: 1,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "013284",
+                    name: "测试基金A",
+                    dateText: "07-14 10:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingIncome: 3,
+                    holdingRate: 1,
+                    currentAmount: 300,
+                    status: .holding,
+                    isUpdated: true
+                )
+            ],
+            migration: nil
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertEqual(preview.remoteSnapshot.products.count, 1)
+        XCTAssertEqual(preview.remoteSnapshot.products[0].totalAmount, 300)
+    }
+
+    func testJDFinanceDuplicateRemoteCodeWithConflictingNamesIsReadOnly() {
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 300,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [
+                    JDFinanceHoldingProduct(skuID: "sku-a", code: "013284", name: "测试基金A", totalAmount: 100),
+                    JDFinanceHoldingProduct(skuID: "sku-b", code: "013284", name: "完全不同基金B", totalAmount: 200)
+                ],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: .empty
+        )
+
+        XCTAssertTrue(preview.newHoldings.isEmpty)
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertEqual(preview.unresolvedHoldings.count, 2)
+        XCTAssertTrue(preview.warnings.contains { $0.contains("名称不一致") })
+    }
+
+    func testJDFinanceMissingAccountTotalPreservesValueWithWarning() {
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: nil,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: .empty
+        )
+
+        XCTAssertTrue(preview.warnings.contains { $0.contains("保留本地旧值") })
+    }
+
+    @MainActor
+    func testJDFinanceMetadataApplyAcceptsZeroTotalAndConfirmsWithoutChangingTradeValues() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let record = jdWaitingRecord(
+            id: "equal-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        var initial = jdPortfolio(
+            funds: [conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 100, cost: 10)],
+            records: [record],
+            now: now
+        )
+        initial.pendingTrades = [
+            FundPendingTrade(
+                id: "pending-equal-buy",
+                recordID: record.id,
+                action: .buy,
+                code: record.code,
+                mode: .amount,
+                amount: record.amount,
+                shares: nil,
+                tradeDate: record.tradeDate,
+                tradeTimeType: record.tradeTimeType,
+                createdAt: now,
+                syncSource: .jdFinance,
+                syncKey: record.syncKey,
+                externalStatus: .waitingExternalConfirmation,
+                externalStatusText: "确认中",
+                waitsForExternalConfirmation: true
+            )
+        ]
+        let repository = RecordingPortfolioRepository(initialSnapshot: initial)
+        let store = PortfolioStore(repository: repository, now: { now })
+        store.load()
+
+        try store.applyJDFinanceSyncMetadata(
+            accountTotal: 0,
+            confirmations: [
+                JDFinanceAutomaticConfirmation(
+                    id: record.id,
+                    recordIDs: [record.id],
+                    syncKey: "jd-order-confirmed",
+                    statusText: "确认成功"
+                )
+            ],
+            syncedAt: now
+        )
+
+        XCTAssertEqual(repository.savedSnapshots.count, 1)
+        XCTAssertEqual(store.snapshot.totalAmount, 0)
+        XCTAssertEqual(store.snapshot.syncedAccountTotal?.amount, 0)
+        let confirmed = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(confirmed.amount, 1_000)
+        XCTAssertEqual(confirmed.confirmedShares, 100)
+        XCTAssertEqual(confirmed.syncKey, "jd-order-confirmed")
+        XCTAssertEqual(confirmed.externalStatus, .externalConfirmed)
+        XCTAssertEqual(confirmed.waitsForExternalConfirmation, false)
+        XCTAssertEqual(store.snapshot.pendingTrades?.first?.externalStatus, .externalConfirmed)
+        XCTAssertEqual(store.snapshot.pendingTrades?.first?.waitsForExternalConfirmation, false)
+    }
+
+    @MainActor
+    func testJDFinanceAtomicMutationRollsBackAndCommitsOnlyOnce() async throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        let initial = jdPortfolio(funds: [], records: [], now: now)
+        let repository = RecordingPortfolioRepository(initialSnapshot: initial)
+        let store = PortfolioStore(repository: repository, now: { now })
+        store.load()
+
+        do {
+            try await store.performJDFinanceAtomicMutation { stagingStore in
+                try stagingStore.applyJDFinanceSyncMetadata(
+                    accountTotal: 123,
+                    confirmations: [],
+                    syncedAt: now
+                )
+                throw PortfolioStoreError.invalidCode
+            }
+            XCTFail("Expected staged mutation to fail")
+        } catch {
+            XCTAssertEqual(error as? PortfolioStoreError, .invalidCode)
+        }
+
+        XCTAssertEqual(repository.savedSnapshots.count, 0)
+        XCTAssertEqual(store.snapshot, initial)
+
+        try await store.performJDFinanceAtomicMutation { stagingStore in
+            try stagingStore.applyJDFinanceSyncMetadata(
+                accountTotal: 456,
+                confirmations: [],
+                syncedAt: now
+            )
+        }
+
+        XCTAssertEqual(repository.savedSnapshots.count, 1)
+        XCTAssertEqual(store.snapshot.totalAmount, 456)
+    }
+
+    @MainActor
+    func testJDFinanceTradeOrderStartDateTracesOldestWaitingLocalRecord() throws {
+        let now = try chinaDate("2026-07-14 10:00")
+        var record = jdWaitingRecord(
+            id: "old-buy",
+            kind: .buy,
+            code: "013284",
+            amount: 1_000,
+            shares: 100,
+            now: now
+        )
+        record.tradeDate = "2026-01-03"
+        let snapshot = jdPortfolio(funds: [], records: [record], now: now)
+        let repository = RecordingPortfolioRepository(initialSnapshot: snapshot)
+        let store = PortfolioStore(repository: repository, now: { now })
+
+        store.load()
+
+        XCTAssertEqual(store.jdFinanceTradeOrderStartDate(now: now), "2026-01-03")
     }
 
     @MainActor
@@ -11014,6 +12097,25 @@ final class FundPulseCoreTests: XCTestCase {
         """
     }
 
+    private static func jdFinanceEmptyHoldingsResponse(total: Double) -> String {
+        """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "success": true,
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "amt": \(total), "text": "\(total)" }
+              },
+              "fundData": { "fundList": [] }
+            }
+          }
+        }
+        """
+    }
+
     private static let jdFinanceHoldingsResponse = """
     {
       "success": true,
@@ -11268,6 +12370,87 @@ final class FundPulseCoreTests: XCTestCase {
                     )
                 ]
                 : []
+        )
+    }
+
+    private func jdWaitingRecord(
+        id: String,
+        kind: FundTradeKind,
+        code: String,
+        amount: Double?,
+        shares: Double?,
+        now: Date
+    ) -> FundTradeRecord {
+        let price: Double? = if let amount, let shares, shares > 0 {
+            amount / shares
+        } else {
+            nil
+        }
+        return FundTradeRecord(
+            id: id,
+            kind: kind,
+            status: .confirmed,
+            code: code,
+            name: code == "008998" ? "同泰竞争优势混合C" : "上银价值增长3个月持有期混合A",
+            mode: kind == .sell || kind == .conversionOut ? .share : .amount,
+            amount: amount,
+            shares: kind == .sell || kind == .conversionOut ? shares : nil,
+            confirmedShares: shares,
+            price: price,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-13",
+            createdAt: now,
+            confirmedAt: now,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            syncKey: "legacy-\(id)",
+            externalStatus: .waitingExternalConfirmation,
+            externalStatusText: "确认中",
+            waitsForExternalConfirmation: true
+        )
+    }
+
+    private func jdOrder(
+        key: String,
+        code: String,
+        action: JDFinancePendingTradeAction,
+        amount: Double?,
+        shares: Double?,
+        status: JDFinanceTradeOrderStatus
+    ) -> JDFinanceTradeOrderRecord {
+        JDFinanceTradeOrderRecord(
+            stableOrderKey: key,
+            code: code,
+            productName: code == "008998" ? "同泰竞争优势混合C" : "上银价值增长3个月持有期混合A",
+            action: action,
+            amount: amount,
+            shares: shares,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .before15,
+            submittedAt: "2026-07-13 10:00:00",
+            status: status,
+            statusText: status == .succeeded ? "确认成功" : status.rawValue
+        )
+    }
+
+    private func jdPortfolio(
+        funds: [FundPosition],
+        records: [FundTradeRecord],
+        now: Date
+    ) -> PortfolioSnapshot {
+        PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: funds.compactMap(\.currentAmount).reduce(0, +),
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: funds,
+            migration: nil,
+            tradeRecords: records,
+            jdFinanceSyncState: JDFinanceSyncState(baselineEstablishedAt: now)
         )
     }
 

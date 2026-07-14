@@ -14,6 +14,7 @@ private enum JDFinanceSyncApplyScope: Hashable {
     case changedHoldings
     case pendingHoldings
     case reconciliations
+    case unrecordedOrders
 }
 
 private struct JDFinanceManualPendingInput: Equatable {
@@ -48,12 +49,10 @@ struct JDFinanceHoldingsSyncView: View {
     @State private var needsLogin = false
     @State private var isRequestingLogin = false
     @State private var loginToastMessage: String?
-    @State private var selectedApplyScopes: Set<JDFinanceSyncApplyScope> = [
-        .newHoldings,
-        .changedHoldings,
-        .pendingHoldings,
-        .reconciliations
-    ]
+    @State private var isShowingBaselineResetConfirmation = false
+    @State private var isShowingClearanceConfirmation = false
+    @State private var clearanceCandidate: JDFinanceMissingLocalHolding?
+    @State private var selectedApplyScopes: Set<JDFinanceSyncApplyScope> = []
     @State private var manualPendingInputs: [String: JDFinanceManualPendingInput] = [:]
 
     @MainActor
@@ -106,6 +105,32 @@ struct JDFinanceHoldingsSyncView: View {
         .task {
             await checkExistingSessionOnAppear()
         }
+        .confirmationDialog(
+            "重置京东同步基线？",
+            isPresented: $isShowingBaselineResetConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("重置基线", role: .destructive) {
+                syncStore.resetSyncBaseline(in: portfolioStore)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("下次同步会把当前京东持仓重新作为初始基线；不会删除本地持仓或交易记录。")
+        }
+        .confirmationDialog(
+            "确认清仓对账？",
+            isPresented: $isShowingClearanceConfirmation,
+            titleVisibility: .visible
+        ) {
+            if let clearanceCandidate {
+                Button("清空 \(clearanceCandidate.name) 的本地持仓", role: .destructive) {
+                    applyFullClearance(clearanceCandidate)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("仅在京东已有最终卖出或转换出流水时可执行。若京东未返回份额，将按本地当前全部剩余份额清仓，并保留完整对账记录。")
+        }
     }
 
     private var headerSubtitle: String {
@@ -139,6 +164,14 @@ struct JDFinanceHoldingsSyncView: View {
             .disabled(syncStore.isSyncing || syncStore.isApplying)
 
             jdFinanceLinkButton
+
+            compactToolButton(
+                systemImage: "arrow.counterclockwise",
+                help: "重置同步基线",
+                role: .destructive,
+                action: { isShowingBaselineResetConfirmation = true }
+            )
+            .disabled(syncStore.isSyncing || syncStore.isApplying || portfolioStore.snapshot.jdFinanceSyncState == nil)
 
             compactToolButton(
                 systemImage: "trash",
@@ -291,6 +324,10 @@ struct JDFinanceHoldingsSyncView: View {
         VStack(alignment: .leading, spacing: 10) {
             previewOverview(preview)
 
+            if let errorMessage = syncStore.errorMessage {
+                inlineSyncError(errorMessage)
+            }
+
             if preview.isEmpty {
                 emptyPreviewPanel
             } else {
@@ -300,7 +337,7 @@ struct JDFinanceHoldingsSyncView: View {
 
                         if !preview.newHoldings.isEmpty {
                             previewSection(
-                                title: "新增",
+                                title: "持仓差异 · 新增",
                                 count: preview.newHoldings.count,
                                 tone: PanelDesign.accent
                             ) {
@@ -312,7 +349,7 @@ struct JDFinanceHoldingsSyncView: View {
 
                         if !preview.changedHoldings.isEmpty {
                             previewSection(
-                                title: "金额/收益不一致",
+                                title: "持仓差异 · 金额/收益",
                                 count: preview.changedHoldings.count,
                                 tone: .orange
                             ) {
@@ -322,9 +359,21 @@ struct JDFinanceHoldingsSyncView: View {
                             }
                         }
 
+                        if !preview.unrecordedOrders.isEmpty {
+                            previewSection(
+                                title: "京东未入账流水",
+                                count: preview.unrecordedOrders.count,
+                                tone: .purple
+                            ) {
+                                ForEach(preview.unrecordedOrders) { order in
+                                    unrecordedOrderCard(order)
+                                }
+                            }
+                        }
+
                         if !preview.reconciliationNotices.isEmpty {
                             previewSection(
-                                title: "京东最终待覆盖",
+                                title: "待覆盖",
                                 count: preview.reconciliationNotices.count,
                                 tone: PanelDesign.accent
                             ) {
@@ -360,13 +409,23 @@ struct JDFinanceHoldingsSyncView: View {
 
                         if !preview.pendingNotices.isEmpty {
                             previewSection(
-                                title: "待确认/交易中",
+                                title: "京东订单 · 待确认",
                                 count: preview.pendingNotices.count,
                                 tone: PanelDesign.warningAccent
                             ) {
                                 ForEach(preview.pendingNotices) { notice in
                                     pendingNoticeCard(notice)
                                 }
+                            }
+                        }
+
+                        if !preview.warnings.isEmpty || !preview.informationalOrders.isEmpty {
+                            previewSection(
+                                title: "冲突/提示",
+                                count: preview.warnings.count + preview.informationalOrders.count,
+                                tone: PanelDesign.warningAccent
+                            ) {
+                                warningAndInformationCards(preview)
                             }
                         }
                     }
@@ -400,16 +459,31 @@ struct JDFinanceHoldingsSyncView: View {
                     overviewMetric("持有收益", signedMoneyOrDash(preview.remoteSnapshot.holdIncome), tone: toneColor(preview.remoteSnapshot.holdIncome))
                     overviewMetric("昨日收益", signedMoneyOrDash(preview.remoteSnapshot.yesterdayIncome), tone: toneColor(preview.remoteSnapshot.yesterdayIncome))
                     overviewMetric("产品", "\(preview.remoteSnapshot.products.count)", tone: .secondary)
+                    tradeOrderCompletenessLabel(preview.remoteSnapshot.tradeOrderFetchState)
                 }
             }
 
             HStack(spacing: 7) {
+                countPill("自动确认", preview.autoConfirmedCount, tone: .green)
                 countPill("新增", preview.newHoldings.count, tone: PanelDesign.accent)
                 countPill("差异", preview.changedHoldings.count, tone: .orange)
+                countPill("未入账", preview.unrecordedOrders.count, tone: .purple)
+            }
+            HStack(spacing: 7) {
                 countPill("覆盖", preview.reconciliationNotices.count, tone: PanelDesign.accent)
                 countPill("清仓", preview.missingLocalHoldings.count, tone: .green)
-                countPill("待识别", preview.unresolvedHoldings.count, tone: PanelDesign.warningAccent)
-                countPill("待确认", preview.pendingNotices.count, tone: PanelDesign.warningAccent)
+                countPill("冲突", preview.unresolvedHoldings.count, tone: PanelDesign.warningAccent)
+                countPill("提示", preview.pendingNotices.count + preview.warnings.count, tone: PanelDesign.warningAccent)
+            }
+
+            if preview.baselineRepresentedCount > 0 {
+                Label(
+                    "首次建立同步基线：当前持仓已包含 \(preview.baselineRepresentedCount) 笔历史成功流水，未重复导入。",
+                    systemImage: "checkmark.shield"
+                )
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider().opacity(0.48)
@@ -471,9 +545,15 @@ struct JDFinanceHoldingsSyncView: View {
                         count: preview.overwritableReconciliationNotices.count,
                         tone: PanelDesign.accent
                     )
+                    syncScopeToggle(
+                        scope: .unrecordedOrders,
+                        title: "未入账",
+                        count: preview.importableUnrecordedOrders.count,
+                        tone: .purple
+                    )
                 }
-            } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty || !preview.unresolvedHoldings.isEmpty {
-                Label("清仓、待识别和交易中记录仅作为提示，不会自动写入本地。", systemImage: "info.circle")
+            } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty || !preview.unresolvedHoldings.isEmpty || !preview.warnings.isEmpty {
+                Label("未选中的清仓、冲突和处理中记录仅作为提示，不会写入本地。", systemImage: "info.circle")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -497,6 +577,25 @@ struct JDFinanceHoldingsSyncView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
+    }
+
+    private func tradeOrderCompletenessLabel(_ state: JDFinanceTradeOrderFetchState) -> some View {
+        let title: String
+        let color: Color
+        switch state {
+        case .complete:
+            title = "流水完整"
+            color = .green
+        case .incomplete:
+            title = "流水不完整"
+            color = PanelDesign.warningAccent
+        case .notRequested:
+            title = "流水未拉取"
+            color = .secondary
+        }
+        return Label(title, systemImage: state.isComplete ? "checkmark.circle" : "exclamationmark.circle")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(color)
     }
 
     private func countPill(_ title: String, _ count: Int, tone: Color) -> some View {
@@ -526,6 +625,7 @@ struct JDFinanceHoldingsSyncView: View {
         let quietItems = [
             ("无新增", preview.newHoldings.isEmpty),
             ("无金额差异", preview.changedHoldings.isEmpty),
+            ("无未入账流水", preview.unrecordedOrders.isEmpty),
             ("无待覆盖", preview.reconciliationNotices.isEmpty),
             ("无清仓提示", preview.missingLocalHoldings.isEmpty),
             ("无识别问题", preview.unresolvedHoldings.isEmpty)
@@ -553,7 +653,8 @@ struct JDFinanceHoldingsSyncView: View {
         !preview.newHoldings.isEmpty ||
             !preview.changedHoldings.isEmpty ||
             !preview.importablePendingNotices.isEmpty ||
-            !preview.overwritableReconciliationNotices.isEmpty
+            !preview.overwritableReconciliationNotices.isEmpty ||
+            !preview.importableUnrecordedOrders.isEmpty
     }
 
     private func syncScopeToggle(
@@ -608,13 +709,38 @@ struct JDFinanceHoldingsSyncView: View {
                 .foregroundStyle(.green)
             Text("已同步，暂无差异")
                 .font(.system(size: 14, weight: .semibold))
-            Text("京东持仓和本地记录当前一致。")
+            Text(syncStore.preview?.autoConfirmedCount ?? 0 > 0
+                ? "已自动确认 \(syncStore.preview?.autoConfirmedCount ?? 0) 笔一致流水。"
+                : "京东持仓、交易流水和本地记录当前一致。")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private func inlineSyncError(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(PanelDesign.warningAccent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("本次操作失败，预览已保留")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(message)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.warningBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(PanelDesign.warningBorder, lineWidth: 0.8)
+        )
     }
 
     private var errorPanel: some View {
@@ -721,8 +847,30 @@ struct JDFinanceHoldingsSyncView: View {
 
     private func missingHoldingCard(_ holding: JDFinanceMissingLocalHolding) -> some View {
         comparisonCardHeader(code: holding.code, name: holding.name, badge: "本地有", tone: .green) {
-            metricPair("京东金额", "--", tone: .secondary)
-            metricPair("本地金额", moneyOrDash(holding.localAmount), tone: .primary)
+            HStack(spacing: 8) {
+                metricPair("京东金额", "--", tone: .secondary)
+                metricPair("本地金额", moneyOrDash(holding.localAmount), tone: .primary)
+            }
+            if let order = holding.finalOutflowOrder {
+                tradeRecordsList(title: "京东最终卖出/转换出证据", records: [order])
+                HStack {
+                    Text("确认后按本地全部剩余份额清仓")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("清仓对账", role: .destructive) {
+                        clearanceCandidate = holding
+                        isShowingClearanceConfirmation = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(syncStore.isSyncing || syncStore.isApplying)
+                }
+            } else {
+                Text("未找到京东最终卖出或转换出流水，仅提示可能清仓，不会自动删除。")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -737,6 +885,75 @@ struct JDFinanceHoldingsSyncView: View {
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func unrecordedOrderCard(_ order: JDFinanceUnrecordedOrder) -> some View {
+        let badge: String = if order.isImportable {
+            "可导入"
+        } else if order.blockingReason != nil {
+            "匹配冲突"
+        } else if let firstMissingField = order.missingFields.first {
+            "缺少\(firstMissingField)"
+        } else {
+            "不可导入"
+        }
+        return comparisonCardHeader(
+            code: order.code.isEmpty ? "代码缺失" : order.code,
+            name: order.name,
+            badge: badge,
+            tone: order.isImportable ? .purple : PanelDesign.warningAccent
+        ) {
+            tradeRecordsList(title: "京东最终流水", records: [order.record])
+            if !order.missingFields.isEmpty {
+                Text("缺少字段：\(order.missingFields.joined(separator: "、"))")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(PanelDesign.warningAccent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Text(order.message)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack {
+                Spacer()
+                if order.isImportable {
+                    Button("导入此笔") {
+                        applyUnrecordedOrder(order)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(syncStore.isSyncing || syncStore.isApplying)
+                }
+                Button("标记为当前持仓已包含") {
+                    syncStore.markUnrecordedOrderAsIncluded(order, in: portfolioStore)
+                    onMainPanelRefreshNeeded()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(syncStore.isSyncing || syncStore.isApplying)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func warningAndInformationCards(_ preview: JDFinanceHoldingsSyncPreview) -> some View {
+        ForEach(Array(preview.warnings.enumerated()), id: \.offset) { _, warning in
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(PanelDesign.warningAccent)
+                Text(warning)
+                    .font(.system(size: 10, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(8)
+            .background(PanelDesign.warningBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+
+        ForEach(Array(preview.informationalOrders.enumerated()), id: \.offset) { index, order in
+            tradeRecordsList(title: "不参与写入的流水 \(index + 1)", records: [order])
         }
     }
 
@@ -892,7 +1109,7 @@ struct JDFinanceHoldingsSyncView: View {
         }
         if notice.isImportable { return "可同步" }
         if notice.requiresManualCompletion { return "需补全" }
-        return "交易中"
+        return "京东待确认"
     }
 
     private func pendingNoticeAmountLabel(for notice: JDFinanceHoldingPendingNotice) -> String {
@@ -1253,7 +1470,8 @@ struct JDFinanceHoldingsSyncView: View {
         let canUpdateChanged = selectedApplyScopes.contains(.changedHoldings) && !preview.changedHoldings.isEmpty
         let canImportPending = selectedApplyScopes.contains(.pendingHoldings) && !preview.importablePendingNotices.isEmpty
         let canReconcile = selectedApplyScopes.contains(.reconciliations) && !preview.overwritableReconciliationNotices.isEmpty
-        return canImportNew || canUpdateChanged || canImportPending || canReconcile
+        let canImportUnrecorded = selectedApplyScopes.contains(.unrecordedOrders) && !preview.importableUnrecordedOrders.isEmpty
+        return canImportNew || canUpdateChanged || canImportPending || canReconcile || canImportUnrecorded
     }
 
     private func applySelectedData() {
@@ -1263,8 +1481,24 @@ struct JDFinanceHoldingsSyncView: View {
                 importNew: selectedApplyScopes.contains(.newHoldings),
                 updateChanged: selectedApplyScopes.contains(.changedHoldings),
                 importPending: selectedApplyScopes.contains(.pendingHoldings),
-                reconcileConfirmed: selectedApplyScopes.contains(.reconciliations)
+                reconcileConfirmed: selectedApplyScopes.contains(.reconciliations),
+                importUnrecorded: selectedApplyScopes.contains(.unrecordedOrders)
             )
+            onMainPanelRefreshNeeded()
+        }
+    }
+
+    private func applyFullClearance(_ holding: JDFinanceMissingLocalHolding) {
+        Task {
+            await syncStore.applyFullClearance(holding, to: portfolioStore)
+            clearanceCandidate = nil
+            onMainPanelRefreshNeeded()
+        }
+    }
+
+    private func applyUnrecordedOrder(_ order: JDFinanceUnrecordedOrder) {
+        Task {
+            await syncStore.applyUnrecordedOrder(order, to: portfolioStore)
             onMainPanelRefreshNeeded()
         }
     }

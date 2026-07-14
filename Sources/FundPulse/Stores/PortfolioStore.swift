@@ -298,25 +298,23 @@ final class PortfolioStore {
             guard amount > 0 else { throw PortfolioStoreError.invalidPosition }
             guard principal > 0 else { throw PortfolioStoreError.invalidCost }
 
-            let quote = try? await quoteService.fetchQuote(code: code)
-            let netValue = quoteNetValue(quote)
-            let lot = try netValue.map {
-                try amountSyncLot(
-                    code: code,
-                    amount: amount,
-                    principal: principal,
-                    netValue: $0,
-                    fund: fund
-                )
+            let quote = try await quoteService.fetchQuote(code: code)
+            guard let netValue = quoteNetValue(quote) else {
+                throw PortfolioStoreError.missingNetValue
             }
+            let lot = try amountSyncLot(
+                code: code,
+                amount: amount,
+                principal: principal,
+                netValue: netValue,
+                fund: fund
+            )
             let holdingRate = principal > 0 ? holdingIncome / principal * 100 : nil
 
-            if let quote {
-                fund.name = quote.name.isEmpty ? fund.name : quote.name
-                fund.dateText = dateText(for: quote, fallback: fund.dateText)
-                fund.todayRate = quote.growthRate
-                fund.isUpdated = quoteIsUpdated(quote)
-            }
+            fund.name = quote.name.isEmpty ? fund.name : quote.name
+            fund.dateText = dateText(for: quote, fallback: fund.dateText)
+            fund.todayRate = quote.growthRate
+            fund.isUpdated = quoteIsUpdated(quote)
             fund.status = .holding
             fund.isIncomeActive = true
             fund.positionMode = .amount
@@ -326,21 +324,43 @@ final class PortfolioStore {
             fund.confirmedHoldingIncome = holdingIncome
             fund.confirmedHoldingRate = holdingRate
             fund.migratedPrincipal = principal
-            fund.lots = lot.map { [$0] } ?? []
-
-            if let lot {
-                fund.migratedShares = lot.shares
-                fund.migratedCost = lot.cost
-                fund.pendingAmount = nil
-                fund.pendingProfit = nil
-            } else {
-                fund.migratedShares = 0
-                fund.migratedCost = nil
-                fund.pendingAmount = amount
-                fund.pendingProfit = holdingIncome == 0 ? nil : holdingIncome
-            }
+            fund.lots = [lot]
+            fund.migratedShares = lot.shares
+            fund.migratedCost = lot.cost
+            fund.pendingAmount = nil
+            fund.pendingProfit = nil
 
             snapshot.funds[index] = fund
+
+            let baselineDate = update.syncedAt ?? nowProvider()
+            let tradeDate = DateOnlyFormatter.string(from: baselineDate)
+            var records = snapshot.tradeRecords ?? []
+            records.append(FundTradeRecord(
+                id: UUID().uuidString,
+                kind: .newFund,
+                status: .confirmed,
+                code: code,
+                name: fund.name,
+                mode: .amount,
+                amount: amount,
+                shares: nil,
+                confirmedShares: lot.shares,
+                price: netValue,
+                profit: holdingIncome,
+                tradeDate: tradeDate,
+                tradeTimeType: .before15,
+                acceptedDate: tradeDate,
+                createdAt: baselineDate,
+                confirmedAt: baselineDate,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                syncKey: JDFinanceSyncFingerprint.positionBaseline(code: code, syncedAt: baselineDate),
+                externalStatus: .externalConfirmed,
+                externalStatusText: "京东持仓对账基线",
+                waitsForExternalConfirmation: false,
+                isReconciliationBaseline: true
+            ))
+            snapshot.tradeRecords = records
         }
 
         try save(snapshot)
@@ -454,16 +474,280 @@ final class PortfolioStore {
         return recordsNeedReconciliation || pendingTradesNeedReconciliation || pendingConversionsNeedReconciliation
     }
 
+    func jdFinanceTradeOrderStartDate(now: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let defaultStart = calendar.date(byAdding: .day, value: -90, to: now) ?? now
+        let stateStart = snapshot.jdFinanceSyncState.map { state in
+            let anchor = state.lastCompleteTradeOrderSyncAt ?? state.baselineEstablishedAt
+            return calendar.date(byAdding: .day, value: -2, to: anchor) ?? anchor
+        }
+        var candidateDates = [stateStart ?? defaultStart]
+
+        if let trackedPendingStartDate = snapshot.jdFinanceSyncState?.trackedPendingStartDate,
+           let date = DateOnlyFormatter.parse(trackedPendingStartDate)
+        {
+            candidateDates.append(date)
+        }
+
+        candidateDates.append(contentsOf: (snapshot.tradeRecords ?? []).compactMap { record in
+            guard record.syncSource == .jdFinance,
+                  (record.waitsForExternalConfirmation ?? false)
+                    || record.externalStatus == .waitingExternalConfirmation
+            else {
+                return nil
+            }
+            return DateOnlyFormatter.parse(record.tradeDate)
+        })
+        candidateDates.append(contentsOf: (snapshot.pendingTrades ?? []).compactMap { pendingTrade in
+            guard pendingTrade.syncSource == .jdFinance,
+                  (pendingTrade.waitsForExternalConfirmation ?? false)
+                    || pendingTrade.externalStatus == .waitingExternalConfirmation
+            else {
+                return nil
+            }
+            return DateOnlyFormatter.parse(pendingTrade.tradeDate)
+        })
+        candidateDates.append(contentsOf: (snapshot.pendingConversions ?? []).compactMap { pendingConversion in
+            guard pendingConversion.syncSource == .jdFinance,
+                  (pendingConversion.waitsForExternalConfirmation ?? false)
+                    || pendingConversion.externalStatus == .waitingExternalConfirmation
+            else {
+                return nil
+            }
+            return DateOnlyFormatter.parse(pendingConversion.tradeDate)
+        })
+
+        return DateOnlyFormatter.string(from: candidateDates.min() ?? defaultStart)
+    }
+
     func applyJDFinanceAccountTotal(_ amount: Double?, syncedAt: Date) throws {
-        guard let amount, amount > 0 else { return }
-        let roundedAmount = roundedMoney(amount)
-        snapshot.syncedAccountTotal = PortfolioSyncedAccountTotal(
-            source: .jdFinance,
-            amount: roundedAmount,
+        try applyJDFinanceSyncMetadata(
+            accountTotal: amount,
+            confirmations: [],
             syncedAt: syncedAt
         )
-        snapshot.totalAmount = roundedAmount
+    }
+
+    func applyJDFinanceSyncMetadata(
+        accountTotal: Double?,
+        confirmations: [JDFinanceAutomaticConfirmation],
+        syncedAt: Date,
+        syncState: JDFinanceSyncState? = nil
+    ) throws {
+        guard accountTotal.map({ $0 >= 0 }) == true || !confirmations.isEmpty || syncState != nil else {
+            return
+        }
+
+        var updatedSnapshot = snapshot
+        if let accountTotal, accountTotal >= 0 {
+            let roundedAmount = roundedMoney(accountTotal)
+            updatedSnapshot.syncedAccountTotal = PortfolioSyncedAccountTotal(
+                source: .jdFinance,
+                amount: roundedAmount,
+                syncedAt: syncedAt
+            )
+            updatedSnapshot.totalAmount = roundedAmount
+        }
+
+        for confirmation in confirmations {
+            let recordIDs = Set(confirmation.recordIDs)
+            var matchedRecordIDs = Set<String>()
+            if var records = updatedSnapshot.tradeRecords {
+                for index in records.indices where recordIDs.contains(records[index].id) {
+                    records[index].syncSource = .jdFinance
+                    records[index].syncKey = confirmation.syncKey ?? records[index].syncKey
+                    records[index].externalStatus = .externalConfirmed
+                    records[index].externalStatusText = confirmation.statusText ?? records[index].externalStatusText
+                    records[index].waitsForExternalConfirmation = false
+                    matchedRecordIDs.insert(records[index].id)
+                }
+                updatedSnapshot.tradeRecords = records
+            }
+            guard matchedRecordIDs == recordIDs else {
+                throw PortfolioStoreError.tradeRecordNotFound
+            }
+
+            if var pendingTrades = updatedSnapshot.pendingTrades {
+                for index in pendingTrades.indices
+                where pendingTrades[index].recordID.map(recordIDs.contains) == true
+                    || recordIDs.contains(pendingTrades[index].id)
+                {
+                    pendingTrades[index].syncSource = .jdFinance
+                    pendingTrades[index].syncKey = confirmation.syncKey ?? pendingTrades[index].syncKey
+                    pendingTrades[index].externalStatus = .externalConfirmed
+                    pendingTrades[index].externalStatusText = confirmation.statusText ?? pendingTrades[index].externalStatusText
+                    pendingTrades[index].waitsForExternalConfirmation = false
+                }
+                updatedSnapshot.pendingTrades = pendingTrades
+            }
+            if var pendingConversions = updatedSnapshot.pendingConversions {
+                for index in pendingConversions.indices
+                where confirmation.id == pendingConversions[index].id
+                    || pendingConversions[index].outRecordID.map(recordIDs.contains) == true
+                    || pendingConversions[index].inRecordID.map(recordIDs.contains) == true
+                {
+                    pendingConversions[index].syncSource = .jdFinance
+                    pendingConversions[index].syncKey = confirmation.syncKey ?? pendingConversions[index].syncKey
+                    pendingConversions[index].externalStatus = .externalConfirmed
+                    pendingConversions[index].externalStatusText = confirmation.statusText ?? pendingConversions[index].externalStatusText
+                    pendingConversions[index].waitsForExternalConfirmation = false
+                }
+                updatedSnapshot.pendingConversions = pendingConversions
+            }
+        }
+
+        if let syncState {
+            updatedSnapshot.jdFinanceSyncState = syncState
+        }
+
+        try save(updatedSnapshot)
+        snapshot = updatedSnapshot
+        loadState = .loaded
+    }
+
+    func markJDFinanceOrderRepresented(_ orderKey: String, dismissed: Bool) throws {
+        let normalizedKey = orderKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedKey.isEmpty,
+              var state = snapshot.jdFinanceSyncState
+        else {
+            throw PortfolioStoreError.invalidJDFinanceSyncState
+        }
+
+        if dismissed {
+            if !state.dismissedOrderKeys.contains(normalizedKey) {
+                state.dismissedOrderKeys.append(normalizedKey)
+            }
+        } else if !state.representedOrderKeys.contains(normalizedKey) {
+            state.representedOrderKeys.append(normalizedKey)
+        }
+        state.representedOrderKeys.sort()
+        state.dismissedOrderKeys.sort()
+        snapshot.jdFinanceSyncState = state
         try save(snapshot)
+    }
+
+    func resetJDFinanceSyncState() throws {
+        guard snapshot.jdFinanceSyncState != nil else { return }
+        snapshot.jdFinanceSyncState = nil
+        try save(snapshot)
+    }
+
+    func applyJDFinanceFullClearance(
+        _ holding: JDFinanceMissingLocalHolding,
+        syncedAt: Date
+    ) throws {
+        guard let order = holding.finalOutflowOrder,
+              holding.canClear,
+              let fundIndex = snapshot.funds.firstIndex(where: { $0.code == holding.code })
+        else {
+            throw PortfolioStoreError.invalidPosition
+        }
+
+        let fund = snapshot.funds[fundIndex]
+        let lots = effectiveLots(for: fund)
+        let totalShares = roundedStoredShares(lots.reduce(0) { $0 + $1.shares })
+        let totalPrincipal = roundedMoney(lots.reduce(0) { $0 + lotPrincipal($1) })
+        guard totalShares > 0, totalPrincipal > 0 else {
+            throw PortfolioStoreError.invalidPosition
+        }
+
+        let holdingIncome = fund.holdingIncome ?? fund.confirmedHoldingIncome ?? 0
+        let currentAmount = roundedMoney(fund.currentAmount ?? (totalPrincipal + holdingIncome))
+        let baselineAmount = currentAmount > 0 ? currentAmount : totalPrincipal
+        let baselineProfit = roundedMoney(baselineAmount - totalPrincipal)
+        let tradeDate = DateOnlyFormatter.string(from: syncedAt)
+        let orderKey = order.stableOrderKey
+            ?? JDFinanceSyncFingerprint.tradeOrderRecord(order, fallbackCode: holding.code)
+        var records = snapshot.tradeRecords ?? []
+        records.append(FundTradeRecord(
+            id: UUID().uuidString,
+            kind: .newFund,
+            status: .confirmed,
+            code: holding.code,
+            name: fund.name,
+            mode: .amount,
+            amount: baselineAmount,
+            shares: nil,
+            confirmedShares: totalShares,
+            price: baselineAmount / totalShares,
+            profit: baselineProfit,
+            tradeDate: tradeDate,
+            tradeTimeType: .before15,
+            acceptedDate: tradeDate,
+            createdAt: syncedAt,
+            confirmedAt: syncedAt,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            syncKey: JDFinanceSyncFingerprint.positionBaseline(code: holding.code, syncedAt: syncedAt),
+            externalStatus: .externalConfirmed,
+            externalStatusText: "清仓前持仓对账基线",
+            waitsForExternalConfirmation: false,
+            isReconciliationBaseline: true
+        ))
+        records.append(FundTradeRecord(
+            id: UUID().uuidString,
+            kind: .sell,
+            status: .confirmed,
+            code: holding.code,
+            name: fund.name,
+            mode: .share,
+            amount: order.amount,
+            shares: totalShares,
+            confirmedShares: totalShares,
+            price: order.amount.map { $0 / totalShares },
+            tradeDate: order.tradeDate ?? tradeDate,
+            tradeTimeType: order.tradeTimeType ?? .before15,
+            acceptedDate: order.tradeDate ?? tradeDate,
+            createdAt: syncedAt.addingTimeInterval(0.001),
+            confirmedAt: syncedAt,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            syncKey: orderKey,
+            externalStatus: .externalConfirmed,
+            externalStatusText: order.statusText ?? "京东清仓流水已确认",
+            waitsForExternalConfirmation: false
+        ))
+        snapshot.tradeRecords = records
+        try rebuildFundPositionFromTradeRecords(code: holding.code)
+        if let updatedIndex = snapshot.funds.firstIndex(where: { $0.code == holding.code }) {
+            snapshot.funds[updatedIndex].status = .watch
+            snapshot.funds[updatedIndex].isIncomeActive = false
+            snapshot.funds[updatedIndex].currentAmount = 0
+            snapshot.funds[updatedIndex].holdingIncome = 0
+            snapshot.funds[updatedIndex].holdingRate = nil
+            snapshot.funds[updatedIndex].confirmedHoldingIncome = 0
+            snapshot.funds[updatedIndex].confirmedHoldingRate = nil
+            snapshot.funds[updatedIndex].pendingAmount = nil
+            snapshot.funds[updatedIndex].pendingProfit = nil
+        }
+        try save(snapshot)
+    }
+
+    func performJDFinanceAtomicMutation(
+        _ mutation: @MainActor (PortfolioStore) async throws -> Void
+    ) async throws {
+        let baseSnapshot = snapshot
+        let stagingRepository = StagedPortfolioRepository(
+            dataDirectory: dataDirectory,
+            snapshot: baseSnapshot
+        )
+        let stagingStore = PortfolioStore(
+            repository: stagingRepository,
+            quoteService: quoteService,
+            now: nowProvider
+        )
+        stagingStore.load()
+
+        try await mutation(stagingStore)
+
+        guard snapshot == baseSnapshot else {
+            throw PortfolioStoreError.concurrentModification
+        }
+        let stagedSnapshot = stagingStore.snapshot
+        try save(stagedSnapshot)
+        snapshot = stagedSnapshot
+        loadState = .loaded
     }
 
     func applyJDFinanceReconciliation(_ notice: JDFinanceReconciliationNotice) async throws {
@@ -1957,14 +2241,15 @@ final class PortfolioStore {
         for record in records {
             switch record.kind {
             case .newFund:
+                lots = []
+                didRebuildPosition = true
+                fund.positionMode = record.mode
+                fund.positionDate = record.tradeDate
+                fund.positionTimeType = record.tradeTimeType
+                fund.incomeStartDate = record.acceptedDate
+                fund.dateText = Self.confirmedDateText(record.acceptedDate)
                 if let lot = lot(from: record) {
                     lots = [lot]
-                    didRebuildPosition = true
-                    fund.positionMode = record.mode
-                    fund.positionDate = record.tradeDate
-                    fund.positionTimeType = record.tradeTimeType
-                    fund.incomeStartDate = record.acceptedDate
-                    fund.dateText = Self.confirmedDateText(record.acceptedDate)
                 }
             case .buy, .conversionIn:
                 guard let lot = lot(from: record) else { continue }
@@ -3273,6 +3558,9 @@ enum PortfolioStoreError: LocalizedError, Equatable {
     case buyTradeRequiresAmount
     case sellTradeRequiresShare
     case invalidConversionTarget
+    case concurrentModification
+    case jdFinanceAccountMismatch
+    case invalidJDFinanceSyncState
 
     var errorDescription: String? {
         switch self {
@@ -3298,6 +3586,12 @@ enum PortfolioStoreError: LocalizedError, Equatable {
             "减仓只能按份额录入"
         case .invalidConversionTarget:
             "转换目标基金不能与当前基金相同"
+        case .concurrentModification:
+            "持仓已在后台更新，请重新同步后再试"
+        case .jdFinanceAccountMismatch:
+            "当前京东账号与已建立同步基线的账号不一致，请先重置同步基线"
+        case .invalidJDFinanceSyncState:
+            "京东同步基线尚未建立，请先重新同步"
         }
     }
 }

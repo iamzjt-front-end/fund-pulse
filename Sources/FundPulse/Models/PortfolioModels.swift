@@ -14,6 +14,7 @@ struct PortfolioSnapshot: Codable, Equatable {
     var pendingConversions: [FundPendingConversion]? = nil
     var tradeRecords: [FundTradeRecord]? = nil
     var syncedAccountTotal: PortfolioSyncedAccountTotal? = nil
+    var jdFinanceSyncState: JDFinanceSyncState? = nil
 
     static let empty = PortfolioSnapshot(
         updateTime: .now,
@@ -69,6 +70,17 @@ struct PortfolioSnapshot: Codable, Equatable {
         ],
         migration: nil
     )
+}
+
+struct JDFinanceSyncState: Codable, Equatable {
+    var schemaVersion: Int = 1
+    var accountKey: String?
+    var baselineEstablishedAt: Date
+    var lastCompleteTradeOrderSyncAt: Date? = nil
+    var representedOrderKeys: [String] = []
+    var dismissedOrderKeys: [String] = []
+    var trackedPendingOrderKeys: [String] = []
+    var trackedPendingStartDate: String? = nil
 }
 
 struct PortfolioSyncedAccountTotal: Codable, Equatable {
@@ -218,6 +230,7 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var externalStatus: FundTradeExternalStatus? = nil
     var externalStatusText: String? = nil
     var waitsForExternalConfirmation: Bool? = nil
+    var isReconciliationBaseline: Bool? = nil
 }
 
 enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
@@ -394,6 +407,7 @@ struct FundAmountPositionSyncUpdate: Equatable {
     var code: String
     var amount: Double
     var holdingIncome: Double?
+    var syncedAt: Date? = nil
 }
 
 struct MigrationInfo: Codable, Equatable {

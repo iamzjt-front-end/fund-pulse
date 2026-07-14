@@ -7,6 +7,28 @@ struct JDFinanceHoldingsSnapshot: Equatable {
     var holdIncome: Double?
     var totalIncome: Double?
     var products: [JDFinanceHoldingProduct]
+    var tradeOrders: [JDFinanceTradeOrderRecord] = []
+    var tradeOrderFetchState: JDFinanceTradeOrderFetchState = .notRequested
+}
+
+enum JDFinanceTradeOrderFetchState: Equatable {
+    case notRequested
+    case complete
+    case incomplete([String])
+
+    var isComplete: Bool {
+        if case .complete = self {
+            return true
+        }
+        return false
+    }
+
+    var warnings: [String] {
+        if case .incomplete(let warnings) = self {
+            return warnings
+        }
+        return []
+    }
 }
 
 struct JDFinanceHoldingProduct: Identifiable, Equatable {
@@ -43,6 +65,7 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
 enum JDFinanceFundCodeResolution: String, Equatable {
     case explicit
     case nameMatched
+    case tradeOrderMatched
     case unresolved
 
     var isResolved: Bool {
@@ -106,7 +129,9 @@ struct JDFinancePendingTransactionDetail: Equatable {
 }
 
 struct JDFinanceTradeOrderRecord: Equatable {
+    var stableOrderKey: String? = nil
     var code: String?
+    var codeResolution: JDFinanceFundCodeResolution = .unresolved
     var productName: String?
     var conversionTargetCode: String? = nil
     var conversionTargetName: String? = nil
@@ -115,7 +140,90 @@ struct JDFinanceTradeOrderRecord: Equatable {
     var shares: Double?
     var tradeDate: String?
     var tradeTimeType: PositionTimeType?
+    var submittedAt: String? = nil
+    var status: JDFinanceTradeOrderStatus? = nil
+    var statusCode: String? = nil
     var statusText: String?
+
+    var effectiveStatus: JDFinanceTradeOrderStatus {
+        status ?? JDFinanceTradeOrderStatus.classify(statusCode: statusCode, statusText: statusText)
+    }
+
+    var isCodeResolved: Bool {
+        codeResolution.isResolved
+            && !(code?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
+}
+
+enum JDFinanceTradeOrderStatus: String, Equatable {
+    case pending
+    case succeeded
+    case cancelled
+    case failed
+    case unknown
+
+    static func classify(_ statusText: String?) -> JDFinanceTradeOrderStatus {
+        classify(statusCode: nil, statusText: statusText)
+    }
+
+    static func classify(statusCode: String?, statusText: String?) -> JDFinanceTradeOrderStatus {
+        let normalizedCode = statusCode?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased() ?? ""
+        let normalizedText = statusText?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased() ?? ""
+        guard !normalizedCode.isEmpty || !normalizedText.isEmpty else { return .unknown }
+
+        let exactCancelledCodes = ["REFUND_SUCC", "CANCELED", "CANCELLED", "REVOKED"]
+        if exactCancelledCodes.contains(normalizedCode) {
+            return .cancelled
+        }
+
+        let exactFailedCodes = ["FAIL", "FAILED", "ERROR", "REJECT", "REJECTED"]
+        if exactFailedCodes.contains(normalizedCode) {
+            return .failed
+        }
+
+        let exactPendingCodes = ["PAY_SUCC", "PAY_SUCCESS", "PROCESS", "PROCESSING", "REDEEM", "PENDING"]
+        if exactPendingCodes.contains(normalizedCode) {
+            return .pending
+        }
+
+        let exactSucceededCodes = ["COMPLETE", "COMPLETED", "CONFIRMED", "REDEEM_SUCC", "TRADE_SUCCESS"]
+        if exactSucceededCodes.contains(normalizedCode) {
+            return .succeeded
+        }
+
+        let cancelledTokens = ["取消", "撤单", "撤销", "退款", "CANCEL", "REFUND", "REVOKE"]
+        if cancelledTokens.contains(where: normalizedText.contains) {
+            return .cancelled
+        }
+
+        let failedTokens = ["失败", "FAIL", "ERROR", "REJECT"]
+        if failedTokens.contains(where: normalizedText.contains) {
+            return .failed
+        }
+
+        let pendingTokens = [
+            "支付成功", "处理中", "确认中", "待确认", "受理", "申请", "转出中",
+            "PENDING", "PROCESS", "PROCESSING", "ACCEPTED", "PAID",
+            "PAY_SUCCESS", "PAYMENT_SUCCESS", "PAY_SUCCESSFUL"
+        ]
+        if pendingTokens.contains(where: normalizedText.contains) {
+            return .pending
+        }
+
+        let succeededTokens = [
+            "确认成功", "交易成功", "订单完成", "赎回成功", "转出完成", "转换成功", "已确认",
+            "CONFIRMED", "COMPLETED", "TRADE_SUCCESS", "SUCCESS"
+        ]
+        if succeededTokens.contains(where: normalizedText.contains) {
+            return .succeeded
+        }
+
+        return .unknown
+    }
 }
 
 enum JDFinancePendingImportKind: Equatable {
@@ -172,6 +280,14 @@ struct JDFinanceMissingLocalHolding: Identifiable, Equatable {
     var code: String
     var name: String
     var localAmount: Double?
+    var finalOutflowOrder: JDFinanceTradeOrderRecord? = nil
+
+    var canClear: Bool {
+        guard let finalOutflowOrder,
+              finalOutflowOrder.effectiveStatus == .succeeded
+        else { return false }
+        return finalOutflowOrder.action == .sell || finalOutflowOrder.action == .conversion
+    }
 }
 
 struct JDFinanceUnresolvedHolding: Identifiable, Equatable {
@@ -239,6 +355,121 @@ struct JDFinanceReconciliationNotice: Identifiable, Equatable {
             return true
         }
         return false
+    }
+}
+
+struct JDFinanceAutomaticConfirmation: Identifiable, Equatable {
+    var id: String
+    var recordIDs: [String]
+    var syncKey: String?
+    var statusText: String?
+}
+
+struct JDFinanceUnrecordedOrder: Identifiable, Equatable {
+    var id: String
+    var record: JDFinanceTradeOrderRecord
+    var message: String
+    var blockingReason: String? = nil
+
+    var code: String { record.code ?? "" }
+    var name: String { record.productName ?? "未命名基金" }
+    var missingFields: [String] {
+        var fields: [String] = []
+        if code.isEmpty { fields.append("基金代码") }
+        if record.action == nil || record.action == .unknown { fields.append("交易方向") }
+        if record.tradeDate == nil { fields.append("交易日期") }
+        if record.tradeTimeType == nil { fields.append("交易时段") }
+        switch record.action {
+        case .buy:
+            if (record.amount ?? 0) <= 0 { fields.append("交易金额") }
+        case .sell:
+            if (record.shares ?? 0) <= 0 { fields.append("交易份额") }
+        case .conversion:
+            if (record.shares ?? 0) <= 0 { fields.append("转出份额") }
+            if (record.conversionTargetCode ?? "").isEmpty { fields.append("目标基金代码") }
+        case .unknown, nil:
+            break
+        }
+        return fields
+    }
+
+    var isImportable: Bool {
+        guard blockingReason == nil,
+              missingFields.isEmpty,
+              record.effectiveStatus == .succeeded,
+              record.tradeDate != nil
+        else {
+            return false
+        }
+
+        switch record.action {
+        case .buy:
+            return (record.amount ?? 0) > 0
+        case .sell:
+            return (record.shares ?? 0) > 0
+        case .conversion:
+            return (record.shares ?? 0) > 0
+                && !(record.conversionTargetCode ?? "").isEmpty
+        case .unknown, nil:
+            return false
+        }
+    }
+
+    func tradeDraft() -> FundTradeDraft? {
+        guard let action = record.action?.fundTradeAction,
+              let tradeDate = record.tradeDate,
+              let tradeTimeType = record.tradeTimeType,
+              !code.isEmpty
+        else {
+            return nil
+        }
+
+        switch action {
+        case .buy:
+            guard let amount = record.amount, amount > 0 else { return nil }
+            return FundTradeDraft(
+                action: .buy,
+                code: code,
+                mode: .amount,
+                amount: amount,
+                shares: nil,
+                tradeDate: tradeDate,
+                tradeTimeType: tradeTimeType
+            )
+        case .sell:
+            guard let shares = record.shares, shares > 0 else { return nil }
+            return FundTradeDraft(
+                action: .sell,
+                code: code,
+                mode: .share,
+                amount: nil,
+                shares: shares,
+                tradeDate: tradeDate,
+                tradeTimeType: tradeTimeType
+            )
+        }
+    }
+
+    func conversionDraft() -> FundConversionDraft? {
+        guard record.action == .conversion,
+              let toCode = record.conversionTargetCode,
+              !code.isEmpty,
+              !toCode.isEmpty,
+              let shares = record.shares,
+              shares > 0,
+              let tradeDate = record.tradeDate,
+              let tradeTimeType = record.tradeTimeType
+        else {
+            return nil
+        }
+        return FundConversionDraft(
+            fromCode: code,
+            toCode: toCode,
+            toName: record.conversionTargetName,
+            shares: shares,
+            tradeDate: tradeDate,
+            tradeTimeType: tradeTimeType
+        )
     }
 }
 
@@ -391,7 +622,7 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
         let conversionRecords = matchedTradeRecords.filter { $0.action == .conversion }
         if !conversionRecords.isEmpty {
             return conversionRecords.compactMap { record in
-                guard let shares = record.shares ?? record.amount,
+                guard let shares = record.shares,
                       shares > 0
                 else {
                     return nil
@@ -487,13 +718,24 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
     var unresolvedHoldings: [JDFinanceUnresolvedHolding] = []
     var pendingNotices: [JDFinanceHoldingPendingNotice]
     var reconciliationNotices: [JDFinanceReconciliationNotice] = []
+    var automaticConfirmations: [JDFinanceAutomaticConfirmation] = []
+    var unrecordedOrders: [JDFinanceUnrecordedOrder] = []
+    var informationalOrders: [JDFinanceTradeOrderRecord] = []
+    var warnings: [String] = []
+    var autoConfirmedCount: Int = 0
+    var baselineRepresentedCount: Int = 0
+    var baselineOrderKeys: [String] = []
 
     var hasImportableChanges: Bool {
         !newHoldings.isEmpty
     }
 
     var hasActionableChanges: Bool {
-        !newHoldings.isEmpty || !changedHoldings.isEmpty || !importablePendingNotices.isEmpty || !overwritableReconciliationNotices.isEmpty
+        !newHoldings.isEmpty
+            || !changedHoldings.isEmpty
+            || !importablePendingNotices.isEmpty
+            || !overwritableReconciliationNotices.isEmpty
+            || !importableUnrecordedOrders.isEmpty
     }
 
     var importablePendingNotices: [JDFinanceHoldingPendingNotice] {
@@ -504,6 +746,10 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
         reconciliationNotices.filter(\.isOverwritable)
     }
 
+    var importableUnrecordedOrders: [JDFinanceUnrecordedOrder] {
+        unrecordedOrders.filter(\.isImportable)
+    }
+
     var isEmpty: Bool {
         newHoldings.isEmpty
             && changedHoldings.isEmpty
@@ -511,6 +757,9 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
             && unresolvedHoldings.isEmpty
             && pendingNotices.isEmpty
             && reconciliationNotices.isEmpty
+            && unrecordedOrders.isEmpty
+            && informationalOrders.isEmpty
+            && warnings.isEmpty
     }
 }
 

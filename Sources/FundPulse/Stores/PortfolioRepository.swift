@@ -36,3 +36,24 @@ struct JSONPortfolioRepository: PortfolioRepository {
         try data.write(to: dataFileURL, options: .atomic)
     }
 }
+
+final class StagedPortfolioRepository: PortfolioRepository {
+    let dataDirectory: URL
+    var dataFileURL: URL {
+        dataDirectory.appending(path: "portfolio.json")
+    }
+    private var snapshot: PortfolioSnapshot?
+
+    init(dataDirectory: URL, snapshot: PortfolioSnapshot) {
+        self.dataDirectory = dataDirectory
+        self.snapshot = snapshot
+    }
+
+    func load() throws -> PortfolioSnapshot? {
+        snapshot
+    }
+
+    func save(_ snapshot: PortfolioSnapshot) throws {
+        self.snapshot = snapshot
+    }
+}

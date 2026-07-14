@@ -127,7 +127,8 @@ enum PortfolioCalculator {
             pendingTrades: snapshot.pendingTrades,
             pendingConversions: snapshot.pendingConversions,
             tradeRecords: snapshot.tradeRecords,
-            syncedAccountTotal: snapshot.syncedAccountTotal
+            syncedAccountTotal: snapshot.syncedAccountTotal,
+            jdFinanceSyncState: snapshot.jdFinanceSyncState
         )
     }
 

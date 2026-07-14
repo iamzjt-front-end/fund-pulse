@@ -15,6 +15,8 @@ final class JDFinanceHoldingsSyncStore {
     private let service: JDFinanceHoldingsService
     private let codeResolver: JDFinanceFundCodeResolver
     private let nowProvider: () -> Date
+    private var syncGeneration = 0
+    private var syncTask: Task<Void, Never>?
 
     init(
         service: JDFinanceHoldingsService = JDFinanceHoldingsService(),
@@ -27,39 +29,103 @@ final class JDFinanceHoldingsSyncStore {
     }
 
     func synchronize(portfolioStore: PortfolioStore, cookieHeader: String?) async {
+        syncGeneration &+= 1
+        let generation = syncGeneration
+        syncTask?.cancel()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await runSynchronization(
+                portfolioStore: portfolioStore,
+                cookieHeader: cookieHeader,
+                generation: generation
+            )
+        }
+        syncTask = task
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    private func runSynchronization(
+        portfolioStore: PortfolioStore,
+        cookieHeader: String?,
+        generation: Int
+    ) async {
         isSyncing = true
         errorMessage = nil
         lastError = nil
         statusMessage = "正在同步京东持仓..."
-        defer { isSyncing = false }
+        defer {
+            if generation == syncGeneration {
+                isSyncing = false
+                syncTask = nil
+            }
+        }
 
         do {
+            let syncedAt = nowProvider()
             let remoteSnapshot = try await service.fetchSnapshot(
                 cookieHeader: cookieHeader,
-                needsTradeOrderRecords: portfolioStore.needsJDFinanceTradeOrderReconciliation
+                needsTradeOrderRecords: portfolioStore.needsJDFinanceTradeOrderReconciliation,
+                tradeOrderStartDate: portfolioStore.jdFinanceTradeOrderStartDate(now: syncedAt)
             )
+            try Task.checkCancellation()
             let resolvedRemoteSnapshot = await codeResolver.resolve(
                 snapshot: remoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
-            let syncedAt = nowProvider()
-            try portfolioStore.applyJDFinanceAccountTotal(resolvedRemoteSnapshot.totalAssets, syncedAt: syncedAt)
-            preview = JDFinanceHoldingsSyncPlanner.preview(
+            try Task.checkCancellation()
+            guard generation == syncGeneration else { return }
+
+            let plannedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: resolvedRemoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
-            if let preview {
-                Self.writeDebugPreview(preview, now: syncedAt)
+            let currentAccountKey = JDFinanceSyncFingerprint.accountKey(cookieHeader: cookieHeader)
+            if let establishedAccountKey = portfolioStore.snapshot.jdFinanceSyncState?.accountKey,
+               let currentAccountKey,
+               establishedAccountKey != currentAccountKey
+            {
+                throw PortfolioStoreError.jdFinanceAccountMismatch
             }
+            let syncState = Self.nextSyncState(
+                current: portfolioStore.snapshot.jdFinanceSyncState,
+                remoteSnapshot: resolvedRemoteSnapshot,
+                plannedPreview: plannedPreview,
+                accountKey: currentAccountKey,
+                syncedAt: syncedAt
+            )
+            try portfolioStore.applyJDFinanceSyncMetadata(
+                accountTotal: resolvedRemoteSnapshot.totalAssets,
+                confirmations: plannedPreview.automaticConfirmations,
+                syncedAt: syncedAt,
+                syncState: syncState
+            )
+            var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
+                remoteSnapshot: resolvedRemoteSnapshot,
+                localSnapshot: portfolioStore.snapshot
+            )
+            updatedPreview.autoConfirmedCount = plannedPreview.automaticConfirmations.count
+            updatedPreview.baselineRepresentedCount = plannedPreview.baselineRepresentedCount
+            preview = updatedPreview
+            Self.writeDebugPreview(updatedPreview, now: syncedAt)
             lastSyncedAt = syncedAt
-            statusMessage = preview?.isEmpty == true ? "已同步，暂无差异" : "已生成同步预览"
+            if updatedPreview.autoConfirmedCount > 0, updatedPreview.isEmpty {
+                statusMessage = "已同步，自动确认 \(updatedPreview.autoConfirmedCount) 笔"
+            } else {
+                statusMessage = updatedPreview.isEmpty ? "已同步，暂无差异" : "已生成同步预览"
+            }
+        } catch is CancellationError {
+            return
         } catch let error as JDFinanceHoldingsError {
-            preview = nil
+            guard generation == syncGeneration else { return }
             lastError = error
             errorMessage = error.localizedDescription
             statusMessage = error.localizedDescription
         } catch {
-            preview = nil
+            guard generation == syncGeneration else { return }
             lastError = nil
             errorMessage = error.localizedDescription
             statusMessage = error.localizedDescription
@@ -72,7 +138,8 @@ final class JDFinanceHoldingsSyncStore {
             importNew: true,
             updateChanged: false,
             importPending: false,
-            reconcileConfirmed: false
+            reconcileConfirmed: false,
+            importUnrecorded: false
         )
     }
 
@@ -81,23 +148,30 @@ final class JDFinanceHoldingsSyncStore {
         importNew: Bool,
         updateChanged: Bool,
         importPending: Bool,
-        reconcileConfirmed: Bool = false
+        reconcileConfirmed: Bool = false,
+        importUnrecorded: Bool = false
     ) async {
         guard let preview else { return }
 
         let candidates = importNew ? preview.newHoldings : []
         let pendingCandidates = importPending ? preview.importablePendingNotices : []
         let reconciliationCandidates = reconcileConfirmed ? preview.overwritableReconciliationNotices : []
+        let unrecordedCandidates = importUnrecorded ? preview.importableUnrecordedOrders : []
         let updates = updateChanged
             ? preview.changedHoldings.map {
                 FundAmountPositionSyncUpdate(
                     code: $0.code,
                     amount: $0.jdAmount,
-                    holdingIncome: $0.jdHoldingIncome
+                    holdingIncome: $0.jdHoldingIncome,
+                    syncedAt: self.nowProvider()
                 )
             }
             : []
-        let selectedCount = candidates.count + updates.count + pendingCandidates.count + reconciliationCandidates.count
+        let selectedCount = candidates.count
+            + updates.count
+            + pendingCandidates.count
+            + reconciliationCandidates.count
+            + unrecordedCandidates.count
         guard selectedCount > 0 else {
             statusMessage = "请选择要同步的数据"
             return
@@ -111,20 +185,31 @@ final class JDFinanceHoldingsSyncStore {
 
         let positionDate = DateOnlyFormatter.string(from: nowProvider())
         do {
-            for candidate in candidates {
-                try await portfolioStore.upsertFund(candidate.draft(positionDate: positionDate))
+            try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
+                for candidate in candidates {
+                    try await stagingStore.upsertFund(candidate.draft(positionDate: positionDate))
+                }
+                for candidate in pendingCandidates {
+                    try await self.applyPendingNoticeDraft(candidate, to: stagingStore, manualCompletion: nil)
+                }
+                for candidate in reconciliationCandidates {
+                    try await stagingStore.applyJDFinanceReconciliation(candidate)
+                }
+                try await stagingStore.applyAmountPositionSyncUpdates(updates)
+                for candidate in unrecordedCandidates {
+                    try await self.importUnrecordedOrder(candidate, to: stagingStore)
+                    try stagingStore.markJDFinanceOrderRepresented(
+                        Self.orderKey(candidate.record),
+                        dismissed: false
+                    )
+                }
             }
-            for candidate in pendingCandidates {
-                try await applyPendingNoticeDraft(candidate, to: portfolioStore, manualCompletion: nil)
-            }
-            for candidate in reconciliationCandidates {
-                try await portfolioStore.applyJDFinanceReconciliation(candidate)
-            }
-            try await portfolioStore.applyAmountPositionSyncUpdates(updates)
-            self.preview = JDFinanceHoldingsSyncPlanner.preview(
+            var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: preview.remoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
+            updatedPreview.autoConfirmedCount = preview.autoConfirmedCount
+            self.preview = updatedPreview
             statusMessage = "已同步 \(selectedCount) 项数据"
         } catch {
             lastError = nil
@@ -165,11 +250,118 @@ final class JDFinanceHoldingsSyncStore {
     }
 
     func markSessionCleared() {
+        syncGeneration &+= 1
+        syncTask?.cancel()
+        syncTask = nil
+        isSyncing = false
         preview = nil
         errorMessage = nil
         lastError = nil
         statusMessage = "已清除京东登录会话"
         lastSyncedAt = nil
+    }
+
+    func markUnrecordedOrderAsIncluded(
+        _ order: JDFinanceUnrecordedOrder,
+        in portfolioStore: PortfolioStore
+    ) {
+        guard let preview else { return }
+        do {
+            try portfolioStore.markJDFinanceOrderRepresented(
+                Self.orderKey(order.record),
+                dismissed: true
+            )
+            var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
+                remoteSnapshot: preview.remoteSnapshot,
+                localSnapshot: portfolioStore.snapshot
+            )
+            updatedPreview.autoConfirmedCount = preview.autoConfirmedCount
+            updatedPreview.baselineRepresentedCount = preview.baselineRepresentedCount
+            self.preview = updatedPreview
+            statusMessage = "已标记为当前持仓已包含"
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "标记失败"
+        }
+    }
+
+    func resetSyncBaseline(in portfolioStore: PortfolioStore) {
+        do {
+            try portfolioStore.resetJDFinanceSyncState()
+            preview = nil
+            lastSyncedAt = nil
+            errorMessage = nil
+            statusMessage = "已重置同步基线，请重新同步"
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "重置基线失败"
+        }
+    }
+
+    func applyFullClearance(
+        _ holding: JDFinanceMissingLocalHolding,
+        to portfolioStore: PortfolioStore
+    ) async {
+        guard let preview, holding.canClear, let order = holding.finalOutflowOrder else { return }
+        isApplying = true
+        errorMessage = nil
+        statusMessage = "正在应用清仓对账..."
+        defer { isApplying = false }
+
+        do {
+            let syncedAt = nowProvider()
+            try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
+                try stagingStore.applyJDFinanceFullClearance(holding, syncedAt: syncedAt)
+                try stagingStore.markJDFinanceOrderRepresented(
+                    Self.orderKey(order),
+                    dismissed: false
+                )
+            }
+            var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
+                remoteSnapshot: preview.remoteSnapshot,
+                localSnapshot: portfolioStore.snapshot
+            )
+            updatedPreview.autoConfirmedCount = preview.autoConfirmedCount
+            updatedPreview.baselineRepresentedCount = preview.baselineRepresentedCount
+            self.preview = updatedPreview
+            statusMessage = "已完成 \(holding.name) 清仓对账"
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "清仓对账失败"
+        }
+    }
+
+    func applyUnrecordedOrder(
+        _ order: JDFinanceUnrecordedOrder,
+        to portfolioStore: PortfolioStore
+    ) async {
+        guard let preview, order.isImportable else { return }
+        isApplying = true
+        errorMessage = nil
+        statusMessage = "正在导入京东流水..."
+        defer { isApplying = false }
+
+        do {
+            try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
+                try await self.importUnrecordedOrder(order, to: stagingStore)
+                try stagingStore.markJDFinanceOrderRepresented(
+                    Self.orderKey(order.record),
+                    dismissed: false
+                )
+            }
+            var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
+                remoteSnapshot: preview.remoteSnapshot,
+                localSnapshot: portfolioStore.snapshot
+            )
+            updatedPreview.autoConfirmedCount = preview.autoConfirmedCount
+            updatedPreview.baselineRepresentedCount = preview.baselineRepresentedCount
+            self.preview = updatedPreview
+            statusMessage = "已导入 1 笔京东流水"
+        } catch {
+            errorMessage = error.localizedDescription
+            statusMessage = "流水导入失败"
+        }
     }
 
     private func applyPendingNoticeDraft(
@@ -250,6 +442,37 @@ final class JDFinanceHoldingsSyncStore {
         )
     }
 
+    private func importUnrecordedOrder(
+        _ order: JDFinanceUnrecordedOrder,
+        to portfolioStore: PortfolioStore
+    ) async throws {
+        let syncKey = order.record.stableOrderKey
+            ?? JDFinanceSyncFingerprint.tradeOrderRecord(order.record)
+        let metadata = FundTradeSyncMetadata(
+            source: .jdFinance,
+            syncKey: syncKey,
+            externalStatus: .externalConfirmed,
+            externalStatusText: order.record.statusText,
+            waitsForExternalConfirmation: false
+        )
+
+        if let conversionDraft = order.conversionDraft() {
+            try await portfolioStore.importConversionIfNeeded(
+                conversionDraft,
+                syncMetadata: metadata
+            )
+            return
+        }
+        if let tradeDraft = order.tradeDraft() {
+            try await portfolioStore.importTradeIfNeeded(
+                tradeDraft,
+                syncMetadata: metadata
+            )
+            return
+        }
+        throw JDFinanceHoldingsError.invalidResponse
+    }
+
     private static func writeDebugPreview(_ preview: JDFinanceHoldingsSyncPreview, now: Date) {
         let notices = preview.pendingNotices.map { notice in
             [
@@ -283,7 +506,7 @@ final class JDFinanceHoldingsSyncStore {
         }
         let unresolvedHoldings = preview.unresolvedHoldings.map { holding in
             [
-                "skuID": holding.skuID,
+                "hasSKUReference": holding.skuID.isEmpty ? "false" : "true",
                 "name": holding.name,
                 "amount": MoneyFormatter.plainMoney(holding.amount),
                 "holdingIncome": holding.holdingIncome.map(MoneyFormatter.plainMoney) ?? "--",
@@ -308,6 +531,13 @@ final class JDFinanceHoldingsSyncStore {
             "remoteProductTotal": MoneyFormatter.plainMoney(remoteProductTotal),
             "remoteProductCount": remoteProducts.count,
             "remoteProducts": remoteProducts,
+            "tradeOrderCount": preview.remoteSnapshot.tradeOrders.count,
+            "tradeOrderFetchState": debugTradeOrderFetchState(preview.remoteSnapshot.tradeOrderFetchState),
+            "automaticConfirmationCount": preview.autoConfirmedCount,
+            "baselineRepresentedCount": preview.baselineRepresentedCount,
+            "unrecordedOrderCount": preview.unrecordedOrders.count,
+            "informationalOrderCount": preview.informationalOrders.count,
+            "warningCount": preview.warnings.count,
             "pendingNoticeCount": notices.count,
             "pendingNotices": notices,
             "reconciliationCount": reconciliations.count,
@@ -327,6 +557,87 @@ final class JDFinanceHoldingsSyncStore {
         } catch {
             // Debug output must never affect the sync flow.
         }
+    }
+
+    private static func nextSyncState(
+        current: JDFinanceSyncState?,
+        remoteSnapshot: JDFinanceHoldingsSnapshot,
+        plannedPreview: JDFinanceHoldingsSyncPreview,
+        accountKey: String?,
+        syncedAt: Date
+    ) -> JDFinanceSyncState {
+        var representedKeys = Set(current?.representedOrderKeys ?? [])
+        representedKeys.formUnion(plannedPreview.baselineOrderKeys)
+        representedKeys.formUnion(plannedPreview.automaticConfirmations.compactMap(\.syncKey))
+
+        var trackedPendingKeys = Set(current?.trackedPendingOrderKeys ?? [])
+        let terminalKeys = Set(remoteSnapshot.tradeOrders.compactMap { order -> String? in
+            switch order.effectiveStatus {
+            case .succeeded, .cancelled, .failed:
+                return orderKey(order)
+            case .pending, .unknown:
+                return nil
+            }
+        })
+        trackedPendingKeys.subtract(terminalKeys)
+
+        let baselineDate = DateOnlyFormatter.string(
+            from: current?.baselineEstablishedAt ?? syncedAt
+        )
+        let pendingProductCodes = Set(
+            plannedPreview.remoteSnapshot.products
+                .filter { $0.transactionTip != nil }
+                .map(\.code)
+        )
+        let pendingProductNames = Set(
+            plannedPreview.remoteSnapshot.products
+                .filter { $0.transactionTip != nil }
+                .map { canonicalName($0.name) }
+        )
+        let pendingOrders = remoteSnapshot.tradeOrders.filter { order in
+            guard order.effectiveStatus == .pending else { return false }
+            let key = orderKey(order)
+            return trackedPendingKeys.contains(key)
+                || order.tradeDate.map { $0 >= baselineDate } == true
+                || order.code.map(pendingProductCodes.contains) == true
+                || order.productName.map { pendingProductNames.contains(canonicalName($0)) } == true
+        }
+        trackedPendingKeys.formUnion(pendingOrders.map(orderKey))
+        let currentPendingStart = pendingOrders.compactMap(\.tradeDate).min()
+        let trackedPendingStartDate: String?
+        if trackedPendingKeys.isEmpty {
+            trackedPendingStartDate = nil
+        } else {
+            trackedPendingStartDate = [current?.trackedPendingStartDate, currentPendingStart]
+                .compactMap { $0 }
+                .min()
+        }
+
+        return JDFinanceSyncState(
+            accountKey: current?.accountKey ?? accountKey,
+            baselineEstablishedAt: current?.baselineEstablishedAt ?? syncedAt,
+            lastCompleteTradeOrderSyncAt: remoteSnapshot.tradeOrderFetchState.isComplete
+                ? syncedAt
+                : current?.lastCompleteTradeOrderSyncAt,
+            representedOrderKeys: representedKeys.sorted(),
+            dismissedOrderKeys: (current?.dismissedOrderKeys ?? []).sorted(),
+            trackedPendingOrderKeys: trackedPendingKeys.sorted(),
+            trackedPendingStartDate: trackedPendingStartDate
+        )
+    }
+
+    private static func orderKey(_ order: JDFinanceTradeOrderRecord) -> String {
+        order.stableOrderKey ?? JDFinanceSyncFingerprint.tradeOrderRecord(order)
+    }
+
+    private static func canonicalName(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "转换-", with: "")
+            .replacingOccurrences(of: "转入-", with: "")
+            .replacingOccurrences(of: "转出-", with: "")
+            .replacingOccurrences(of: " ", with: "")
+            .lowercased()
     }
 
     private static func debugRecordSummary(_ record: JDFinanceTradeOrderRecord) -> String {
@@ -352,6 +663,17 @@ final class JDFinanceHoldingsSyncStore {
             return "jdConfirmedNeedsOverwrite"
         case .conflict(let message):
             return "conflict: \(message)"
+        }
+    }
+
+    private static func debugTradeOrderFetchState(_ state: JDFinanceTradeOrderFetchState) -> String {
+        switch state {
+        case .notRequested:
+            "notRequested"
+        case .complete:
+            "complete"
+        case .incomplete:
+            "incomplete"
         }
     }
 

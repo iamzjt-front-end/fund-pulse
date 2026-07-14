@@ -1,15 +1,33 @@
 import Foundation
 
 enum JDFinanceHoldingsSyncPlanner {
+    private struct ConsolidatedProducts {
+        var products: [JDFinanceHoldingProduct]
+        var warnings: [String]
+    }
+
+    private struct ReconciliationResult {
+        var notices: [JDFinanceReconciliationNotice]
+        var automaticConfirmations: [JDFinanceAutomaticConfirmation]
+        var consumedOrderIndices: Set<Int>
+        var orders: [JDFinanceTradeOrderRecord]
+    }
+
     static func preview(
         remoteSnapshot: JDFinanceHoldingsSnapshot,
         localSnapshot: PortfolioSnapshot
     ) -> JDFinanceHoldingsSyncPreview {
-        let localFundsByCode = Dictionary(uniqueKeysWithValues: localSnapshot.funds.map { ($0.code, $0) })
+        let localFundsByCode = localSnapshot.funds.reduce(into: [String: FundPosition]()) { result, fund in
+            if result[fund.code] == nil {
+                result[fund.code] = fund
+            }
+        }
         let localFundsByName = localFundsByNormalizedName(localSnapshot.funds)
-        let remoteProducts = remoteSnapshot.products.map {
+        let initiallyResolvedProducts = remoteSnapshot.products.map {
             resolvedProduct($0, localFundsByCode: localFundsByCode, localFundsByName: localFundsByName)
         }
+        let consolidation = consolidatedProducts(initiallyResolvedProducts)
+        let remoteProducts = consolidation.products
         let resolvedProducts = remoteProducts.filter(\.isCodeResolved)
         let unresolvedProducts = remoteProducts.filter { !$0.isCodeResolved }
         let resolvedRemoteSnapshot = JDFinanceHoldingsSnapshot(
@@ -18,7 +36,9 @@ enum JDFinanceHoldingsSyncPlanner {
             todayIncome: remoteSnapshot.todayIncome,
             holdIncome: remoteSnapshot.holdIncome,
             totalIncome: remoteSnapshot.totalIncome,
-            products: remoteProducts
+            products: remoteProducts,
+            tradeOrders: remoteSnapshot.tradeOrders,
+            tradeOrderFetchState: remoteSnapshot.tradeOrderFetchState
         )
         let remoteCodes = Set(resolvedProducts.map(\.code))
         let localPendingTradeCodes = Set(localSnapshot.pendingTrades?.map(\.code) ?? [])
@@ -70,7 +90,11 @@ enum JDFinanceHoldingsSyncPlanner {
             return JDFinanceMissingLocalHolding(
                 code: fund.code,
                 name: fund.name,
-                localAmount: localAmount
+                localAmount: localAmount,
+                finalOutflowOrder: successfulOutflowEvidence(
+                    for: fund,
+                    orders: remoteSnapshot.tradeOrders
+                )
             )
         }
 
@@ -92,7 +116,7 @@ enum JDFinanceHoldingsSyncPlanner {
                 || localPendingTradeCodes.contains(product.code)
                 || localPendingConversionCodes.contains(product.code)
             let localPendingMessage: String? = if hasLocalPending {
-                "本地已有待确认记录，确认后再参与金额对比"
+                localPendingConfirmationMessage(for: product)
             } else {
                 nil
             }
@@ -135,10 +159,35 @@ enum JDFinanceHoldingsSyncPlanner {
                 syncState: syncState
             )
         }
-        let reconciliationNotices = reconciliationNotices(
+        let reconciliation = reconciliationResult(
             remoteProducts: resolvedProducts,
+            remoteSnapshot: resolvedRemoteSnapshot,
             localTradeRecords: localTradeRecords
         )
+        let baselineOrderKeys: [String] = localSnapshot.jdFinanceSyncState == nil
+            ? Array(Set(reconciliation.orders.compactMap { order -> String? in
+                guard order.effectiveStatus == .succeeded else { return nil }
+                return orderIdentityKey(order)
+            })).sorted()
+            : []
+        let unrecordedOrders = localSnapshot.jdFinanceSyncState == nil
+            ? []
+            : unrecordedOrders(
+                orders: reconciliation.orders,
+                consumedOrderIndices: reconciliation.consumedOrderIndices,
+                localTradeRecords: localTradeRecords,
+                syncState: localSnapshot.jdFinanceSyncState
+            )
+        let informationalOrders = informationalOrders(
+            reconciliation.orders,
+            products: resolvedProducts,
+            localTradeRecords: localTradeRecords,
+            syncState: localSnapshot.jdFinanceSyncState
+        )
+        var warnings = consolidation.warnings + remoteSnapshot.tradeOrderFetchState.warnings
+        if remoteSnapshot.totalAssets == nil {
+            warnings.append("京东响应未返回账户总资产，本次保留本地旧值")
+        }
 
         return JDFinanceHoldingsSyncPreview(
             remoteSnapshot: resolvedRemoteSnapshot,
@@ -147,8 +196,84 @@ enum JDFinanceHoldingsSyncPlanner {
             missingLocalHoldings: missingLocalHoldings,
             unresolvedHoldings: unresolvedHoldings,
             pendingNotices: pendingNotices,
-            reconciliationNotices: reconciliationNotices
+            reconciliationNotices: reconciliation.notices,
+            automaticConfirmations: reconciliation.automaticConfirmations,
+            unrecordedOrders: unrecordedOrders,
+            informationalOrders: informationalOrders,
+            warnings: Array(Set(warnings)).sorted(),
+            baselineRepresentedCount: baselineOrderKeys.count,
+            baselineOrderKeys: baselineOrderKeys
         )
+    }
+
+    private static func localPendingConfirmationMessage(
+        for product: JDFinanceHoldingProduct
+    ) -> String {
+        let pendingStatuses = Set(
+            (product.pendingDetail?.matchedTradeRecords ?? [])
+                .filter { $0.effectiveStatus == .pending }
+                .compactMap { $0.statusText?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+        if pendingStatuses.count == 1, let status = pendingStatuses.first {
+            return "本次同步已完成；京东订单当前为「\(status)」，尚未完成基金份额确认。"
+        }
+
+        if let status = product.pendingDetail?.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !status.isEmpty,
+           JDFinanceTradeOrderStatus.classify(status) == .pending {
+            return "本次同步已完成；京东订单当前为「\(status)」，尚未完成基金份额确认。"
+        }
+
+        return "本次同步已完成；京东仍标记为交易处理中，尚未完成基金份额确认。"
+    }
+
+    private static func consolidatedProducts(_ products: [JDFinanceHoldingProduct]) -> ConsolidatedProducts {
+        var unresolved = products.filter { !$0.isCodeResolved }
+        var resolvedGroups: [String: [JDFinanceHoldingProduct]] = [:]
+        var codeOrder: [String] = []
+
+        for product in products where product.isCodeResolved {
+            if resolvedGroups[product.code] == nil {
+                codeOrder.append(product.code)
+            }
+            resolvedGroups[product.code, default: []].append(product)
+        }
+
+        var consolidated: [JDFinanceHoldingProduct] = []
+        var warnings: [String] = []
+        for code in codeOrder {
+            guard let group = resolvedGroups[code], let first = group.first else { continue }
+            guard group.dropFirst().allSatisfy({ namesLikelyMatch(first.name, $0.name) }) else {
+                warnings.append("京东返回基金代码 \(code) 的多条持仓名称不一致，已禁止自动写入")
+                unresolved.append(contentsOf: group.map { product in
+                    var unresolvedProduct = product
+                    unresolvedProduct.code = ""
+                    unresolvedProduct.codeResolution = .unresolved
+                    return unresolvedProduct
+                })
+                continue
+            }
+
+            guard group.count > 1 else {
+                consolidated.append(first)
+                continue
+            }
+
+            var merged = first
+            merged.totalAmount = group.reduce(0) { $0 + $1.totalAmount }
+            merged.yesterdayIncome = summedOptional(group.map(\.yesterdayIncome))
+            merged.todayIncome = summedOptional(group.map(\.todayIncome))
+            merged.holdIncome = summedOptional(group.map(\.holdIncome))
+            consolidated.append(merged)
+        }
+
+        return ConsolidatedProducts(products: consolidated + unresolved, warnings: warnings)
+    }
+
+    private static func summedOptional(_ values: [Double?]) -> Double? {
+        let resolved = values.compactMap { $0 }
+        return resolved.isEmpty ? nil : resolved.reduce(0, +)
     }
 
     private static func resolvedProduct(
@@ -156,12 +281,14 @@ enum JDFinanceHoldingsSyncPlanner {
         localFundsByCode: [String: FundPosition],
         localFundsByName: [String: FundPosition]
     ) -> JDFinanceHoldingProduct {
+        guard !product.isCodeResolved else {
+            return product
+        }
+
         if let orderCode = commonMatchedTradeOrderCode(for: product) {
             var resolved = product
             resolved.code = orderCode
-            if !product.isCodeResolved {
-                resolved.codeResolution = .nameMatched
-            }
+            resolved.codeResolution = .tradeOrderMatched
             return resolved
         }
 
@@ -295,35 +422,45 @@ enum JDFinanceHoldingsSyncPlanner {
 
         switch action {
         case .buy:
-            guard let record = records.first(where: { record in
+            let candidates = records.filter { record in
                 record.status == .confirmed
-                    && (record.kind == .newFund || record.kind == .buy)
+                    && (record.kind == .buy
+                        || (record.kind == .newFund && record.syncSource == .jdFinance))
                     && record.code == product.code
                     && timingMatches(record: record, tradeDate: tradeDate, tradeTimeType: tradeTimeType)
-            }) else {
-                return nil
             }
+            guard let record = uniqueConfirmedCandidate(
+                candidates,
+                product: product,
+                action: action
+            ) else { return nil }
             return LocalConfirmedCandidate(record: record)
         case .sell:
-            guard let record = records.first(where: { record in
+            let candidates = records.filter { record in
                 record.status == .confirmed
                     && record.kind == .sell
                     && record.code == product.code
                     && timingMatches(record: record, tradeDate: tradeDate, tradeTimeType: tradeTimeType)
-            }) else {
-                return nil
             }
+            guard let record = uniqueConfirmedCandidate(
+                candidates,
+                product: product,
+                action: action
+            ) else { return nil }
             return LocalConfirmedCandidate(record: record)
         case .conversion:
-            guard let record = records.first(where: { record in
+            let candidates = records.filter { record in
                 record.status == .confirmed
                     && record.kind == .conversionOut
                     && record.code == product.code
                     && timingMatches(record: record, tradeDate: tradeDate, tradeTimeType: tradeTimeType)
                     && conversionTargetMatches(product: product, record: record)
-            }) else {
-                return nil
             }
+            guard let record = uniqueConfirmedCandidate(
+                candidates,
+                product: product,
+                action: action
+            ) else { return nil }
             let linkedRecord = record.conversionID.flatMap { conversionID in
                 records.first { $0.conversionID == conversionID && $0.kind == .conversionIn }
             }
@@ -331,6 +468,33 @@ enum JDFinanceHoldingsSyncPlanner {
         case .unknown:
             return nil
         }
+    }
+
+    private static func uniqueConfirmedCandidate(
+        _ candidates: [FundTradeRecord],
+        product: JDFinanceHoldingProduct,
+        action: JDFinancePendingTradeAction
+    ) -> FundTradeRecord? {
+        let qualified = candidates.filter { record in
+            if waitsForJDFinalConfirmation(record) {
+                return true
+            }
+            switch action {
+            case .buy:
+                guard let jdAmount = product.pendingDetail?.amount ?? product.transactionTip?.totalAmount,
+                      let localAmount = record.amount
+                else { return false }
+                return !moneyDifference(jdAmount, localAmount)
+            case .sell, .conversion:
+                guard let jdShares = product.pendingDetail?.shares,
+                      let localShares = record.confirmedShares ?? record.shares
+                else { return false }
+                return roundedShares(jdShares) == roundedShares(localShares)
+            case .unknown:
+                return false
+            }
+        }
+        return qualified.count == 1 ? qualified[0] : nil
     }
 
     private static func timingMatches(
@@ -383,19 +547,78 @@ enum JDFinanceHoldingsSyncPlanner {
         )
     }
 
-    private static func reconciliationNotices(
+    private enum OrderMatch {
+        case matched(Int)
+        case missing
+        case ambiguous
+    }
+
+    private static func reconciliationResult(
         remoteProducts: [JDFinanceHoldingProduct],
+        remoteSnapshot: JDFinanceHoldingsSnapshot,
         localTradeRecords: [FundTradeRecord]
-    ) -> [JDFinanceReconciliationNotice] {
-        let productsByCode = Dictionary(uniqueKeysWithValues: remoteProducts.map { ($0.code, $0) })
+    ) -> ReconciliationResult {
+        let productsByCode = remoteProducts.reduce(into: [String: JDFinanceHoldingProduct]()) { result, product in
+            result[product.code] = result[product.code] ?? product
+        }
+        let orders = allTradeOrders(remoteSnapshot: remoteSnapshot, remoteProducts: remoteProducts)
+        let succeededOrderIndices = orders.indices.filter { orders[$0].effectiveStatus == .succeeded }
         var notices: [JDFinanceReconciliationNotice] = []
+        var automaticConfirmations: [JDFinanceAutomaticConfirmation] = []
+        var consumedOrderIndices = Set<Int>()
         var handledConversionIDs = Set<String>()
 
-        for record in localTradeRecords where record.status == .confirmed && waitsForJDFinalConfirmation(record) {
+        for record in localTradeRecords
+        where record.status != .failed && waitsForJDFinalConfirmation(record)
+        {
+            if productsByCode[record.code]?.transactionTip != nil {
+                continue
+            }
+
             switch record.kind {
             case .newFund, .buy, .sell:
-                if let notice = tradeReconciliationNotice(record: record, product: productsByCode[record.code]) {
-                    notices.append(notice)
+                switch matchingTradeOrderIndex(
+                    for: record,
+                    in: orders,
+                    candidateIndices: succeededOrderIndices,
+                    consumedOrderIndices: consumedOrderIndices
+                ) {
+                case .missing:
+                    notices.append(conflictNotice(record: record, message: missingFinalOrderMessage(remoteSnapshot)))
+                case .ambiguous:
+                    notices.append(conflictNotice(record: record, message: "存在多笔京东流水同时匹配本地记录，已禁止自动覆盖"))
+                case .matched(let index):
+                    consumedOrderIndices.insert(index)
+                    let order = orders[index]
+                    let values = reconciliationValues(record: record, order: order)
+                    let difference = recordDifference(record: record, values: values)
+                    if difference.hasDifference {
+                        let action: FundTradeAction = record.kind == .sell ? .sell : .buy
+                        notices.append(JDFinanceReconciliationNotice(
+                            id: record.id,
+                            code: record.code,
+                            name: record.name,
+                            linkedCode: record.linkedCode,
+                            linkedName: record.linkedName,
+                            tradeDate: record.tradeDate,
+                            tradeTimeType: record.tradeTimeType,
+                            kind: .trade(recordID: record.id, action: action),
+                            state: .jdConfirmedNeedsOverwrite(difference: difference),
+                            localAmount: record.amount,
+                            jdAmount: values.amount,
+                            localShares: record.confirmedShares ?? record.shares,
+                            jdShares: values.shares,
+                            values: values,
+                            matchedTradeRecords: [order]
+                        ))
+                    } else {
+                        automaticConfirmations.append(JDFinanceAutomaticConfirmation(
+                            id: record.id,
+                            recordIDs: [record.id],
+                            syncKey: values.syncKey,
+                            statusText: values.statusText
+                        ))
+                    }
                 }
             case .conversionOut:
                 guard let conversionID = record.conversionID,
@@ -404,21 +627,81 @@ enum JDFinanceHoldingsSyncPlanner {
                     continue
                 }
                 handledConversionIDs.insert(conversionID)
-                let linkedRecord = localTradeRecords.first {
+                let linkedRecords = localTradeRecords.filter {
                     $0.conversionID == conversionID && $0.kind == .conversionIn
                 }
-                if let notice = conversionReconciliationNotice(
-                    outRecord: record,
-                    inRecord: linkedRecord,
-                    product: productsByCode[record.code]
+                guard linkedRecords.count == 1, let linkedRecord = linkedRecords.first else {
+                    notices.append(conversionConflictNotice(
+                        outRecord: record,
+                        inRecord: nil,
+                        message: "本地转换记录不完整或存在重复，已禁止自动确认和覆盖"
+                    ))
+                    continue
+                }
+                switch matchingConversionOrderIndex(
+                    for: record,
+                    in: orders,
+                    candidateIndices: succeededOrderIndices,
+                    consumedOrderIndices: consumedOrderIndices
                 ) {
-                    notices.append(notice)
+                case .missing:
+                    notices.append(conversionConflictNotice(
+                        outRecord: record,
+                        inRecord: linkedRecord,
+                        message: missingFinalOrderMessage(remoteSnapshot)
+                    ))
+                case .ambiguous:
+                    notices.append(conversionConflictNotice(
+                        outRecord: record,
+                        inRecord: linkedRecord,
+                        message: "存在多笔京东转换流水同时匹配本地记录，已禁止自动覆盖"
+                    ))
+                case .matched(let index):
+                    consumedOrderIndices.insert(index)
+                    let order = orders[index]
+                    let values = reconciliationValues(outRecord: record, inRecord: linkedRecord, order: order)
+                    let difference = recordDifference(record: record, values: values)
+                    if difference.hasDifference {
+                        notices.append(JDFinanceReconciliationNotice(
+                            id: conversionID,
+                            code: record.code,
+                            name: record.name,
+                            linkedCode: record.linkedCode,
+                            linkedName: record.linkedName,
+                            tradeDate: record.tradeDate,
+                            tradeTimeType: record.tradeTimeType,
+                            kind: .conversion(
+                                conversionID: conversionID,
+                                outRecordID: record.id,
+                                inRecordID: linkedRecord.id
+                            ),
+                            state: .jdConfirmedNeedsOverwrite(difference: difference),
+                            localAmount: record.amount,
+                            jdAmount: values.amount,
+                            localShares: record.confirmedShares ?? record.shares,
+                            jdShares: values.shares,
+                            values: values,
+                            matchedTradeRecords: [order]
+                        ))
+                    } else {
+                        automaticConfirmations.append(JDFinanceAutomaticConfirmation(
+                            id: conversionID,
+                            recordIDs: [record.id, linkedRecord.id],
+                            syncKey: values.syncKey,
+                            statusText: values.statusText
+                        ))
+                    }
                 }
             case .conversionIn:
                 continue
             }
         }
-        return notices
+        return ReconciliationResult(
+            notices: notices,
+            automaticConfirmations: automaticConfirmations,
+            consumedOrderIndices: consumedOrderIndices,
+            orders: orders
+        )
     }
 
     private static func waitsForJDFinalConfirmation(_ record: FundTradeRecord) -> Bool {
@@ -427,139 +710,123 @@ enum JDFinanceHoldingsSyncPlanner {
                 || record.externalStatus == .waitingExternalConfirmation)
     }
 
-    private static func tradeReconciliationNotice(
-        record: FundTradeRecord,
-        product: JDFinanceHoldingProduct?
-    ) -> JDFinanceReconciliationNotice? {
-        guard product?.transactionTip == nil else {
-            return nil
+    private static func allTradeOrders(
+        remoteSnapshot: JDFinanceHoldingsSnapshot,
+        remoteProducts: [JDFinanceHoldingProduct]
+    ) -> [JDFinanceTradeOrderRecord] {
+        var records = remoteSnapshot.tradeOrders
+        var knownKeys = Set(records.map { orderIdentityKey($0) })
+        for product in remoteProducts {
+            for record in (product.pendingDetail?.matchedTradeRecords ?? [])
+                + (product.pendingDetail?.candidateTradeRecords ?? [])
+            {
+                let key = record.stableOrderKey
+                    ?? JDFinanceSyncFingerprint.tradeOrderRecord(
+                        record,
+                        fallbackCode: product.code
+                    )
+                if knownKeys.insert(key).inserted {
+                    records.append(record)
+                }
+            }
         }
-        let finalRecords = product.map(finalTradeOrderRecords) ?? []
-        guard !finalRecords.isEmpty else {
-            return conflictNotice(
-                record: record,
-                message: "缺少京东最终流水，不能安全覆盖流水"
-            )
-        }
-        guard let order = finalRecords.first(where: { tradeOrder($0, matches: record) }) else {
-            return conflictNotice(
-                record: record,
-                message: "京东已确认，但未匹配到本地流水，不能自动覆盖"
-            )
-        }
-
-        let values = reconciliationValues(record: record, order: order)
-        let difference = recordDifference(record: record, values: values)
-        guard difference.hasDifference else {
-            return nil
-        }
-        let action: FundTradeAction = record.kind == .sell ? .sell : .buy
-        return JDFinanceReconciliationNotice(
-            id: record.id,
-            code: record.code,
-            name: record.name,
-            linkedCode: record.linkedCode,
-            linkedName: record.linkedName,
-            tradeDate: record.tradeDate,
-            tradeTimeType: record.tradeTimeType,
-            kind: .trade(recordID: record.id, action: action),
-            state: .jdConfirmedNeedsOverwrite(difference: difference),
-            localAmount: record.amount,
-            jdAmount: values.amount,
-            localShares: record.confirmedShares ?? record.shares,
-            jdShares: values.shares,
-            values: values,
-            matchedTradeRecords: [order]
-        )
+        return records
     }
 
-    private static func conversionReconciliationNotice(
-        outRecord: FundTradeRecord,
-        inRecord: FundTradeRecord?,
-        product: JDFinanceHoldingProduct?
-    ) -> JDFinanceReconciliationNotice? {
-        guard product?.transactionTip == nil else {
-            return nil
+    private static func matchingTradeOrderIndex(
+        for record: FundTradeRecord,
+        in orders: [JDFinanceTradeOrderRecord],
+        candidateIndices: [Int],
+        consumedOrderIndices: Set<Int>
+    ) -> OrderMatch {
+        let availableIndices = candidateIndices.filter { !consumedOrderIndices.contains($0) }
+        if let stableMatch = stableOrderMatch(
+            syncKey: record.syncKey,
+            fallbackCode: record.code,
+            candidateIndices: availableIndices,
+            orders: orders
+        ) {
+            return stableMatch
         }
-        guard let conversionID = outRecord.conversionID else {
-            return nil
+        let candidates = availableIndices.filter {
+            tradeOrder(orders[$0], matches: record)
         }
-        let finalRecords = product.map(finalTradeOrderRecords) ?? []
-        guard !finalRecords.isEmpty else {
-            return conversionConflictNotice(
-                outRecord: outRecord,
-                inRecord: inRecord,
-                message: "缺少京东最终流水，不能安全覆盖流水"
-            )
-        }
-        guard let order = finalRecords.first(where: { conversionOrder($0, matches: outRecord) }) else {
-            return conversionConflictNotice(
-                outRecord: outRecord,
-                inRecord: inRecord,
-                message: "京东已确认，但未匹配到本地转换流水，不能自动覆盖"
-            )
-        }
-
-        let values = reconciliationValues(outRecord: outRecord, inRecord: inRecord, order: order)
-        let difference = recordDifference(record: outRecord, values: values)
-        guard difference.hasDifference else {
-            return nil
-        }
-        return JDFinanceReconciliationNotice(
-            id: conversionID,
-            code: outRecord.code,
-            name: outRecord.name,
-            linkedCode: outRecord.linkedCode,
-            linkedName: outRecord.linkedName,
-            tradeDate: outRecord.tradeDate,
-            tradeTimeType: outRecord.tradeTimeType,
-            kind: .conversion(
-                conversionID: conversionID,
-                outRecordID: outRecord.id,
-                inRecordID: inRecord?.id
-            ),
-            state: .jdConfirmedNeedsOverwrite(difference: difference),
-            localAmount: outRecord.amount,
-            jdAmount: values.amount,
-            localShares: outRecord.confirmedShares ?? outRecord.shares,
-            jdShares: values.shares,
-            values: values,
-            matchedTradeRecords: [order]
-        )
+        return selectOrderIndex(for: record, candidates: candidates, orders: orders)
     }
 
-    private static func finalTradeOrderRecords(for product: JDFinanceHoldingProduct) -> [JDFinanceTradeOrderRecord] {
-        var records: [JDFinanceTradeOrderRecord] = []
-        for record in product.pendingDetail?.matchedTradeRecords ?? [] {
-            appendUniqueTradeRecord(record, to: &records)
+    private static func matchingConversionOrderIndex(
+        for record: FundTradeRecord,
+        in orders: [JDFinanceTradeOrderRecord],
+        candidateIndices: [Int],
+        consumedOrderIndices: Set<Int>
+    ) -> OrderMatch {
+        let availableIndices = candidateIndices.filter { !consumedOrderIndices.contains($0) }
+        if let stableMatch = stableOrderMatch(
+            syncKey: record.syncKey,
+            fallbackCode: record.code,
+            candidateIndices: availableIndices,
+            orders: orders
+        ) {
+            return stableMatch
         }
-        for record in product.pendingDetail?.candidateTradeRecords ?? [] {
-            appendUniqueTradeRecord(record, to: &records)
+        let candidates = availableIndices.filter {
+            conversionOrder(orders[$0], matches: record)
         }
-        return records.filter(isFinalTradeOrderRecord)
+        return selectOrderIndex(for: record, candidates: candidates, orders: orders)
     }
 
-    private static func appendUniqueTradeRecord(
-        _ record: JDFinanceTradeOrderRecord,
-        to records: inout [JDFinanceTradeOrderRecord]
-    ) {
-        let key = JDFinanceSyncFingerprint.tradeOrderRecord(record)
-        guard !records.contains(where: { JDFinanceSyncFingerprint.tradeOrderRecord($0) == key }) else {
-            return
+    private static func stableOrderMatch(
+        syncKey: String?,
+        fallbackCode: String,
+        candidateIndices: [Int],
+        orders: [JDFinanceTradeOrderRecord]
+    ) -> OrderMatch? {
+        guard let syncKey, !syncKey.isEmpty else { return nil }
+        let matches = candidateIndices.filter {
+            orders[$0].stableOrderKey == syncKey
+                || JDFinanceSyncFingerprint.tradeOrderRecord(
+                    orders[$0],
+                    fallbackCode: fallbackCode
+                ) == syncKey
         }
-        records.append(record)
+        if matches.count == 1 {
+            return .matched(matches[0])
+        }
+        return matches.isEmpty ? nil : .ambiguous
     }
 
-    private static func isFinalTradeOrderRecord(_ record: JDFinanceTradeOrderRecord) -> Bool {
-        guard let statusText = record.statusText?.uppercased() else {
-            return true
+    private static func selectOrderIndex(
+        for record: FundTradeRecord,
+        candidates: [Int],
+        orders: [JDFinanceTradeOrderRecord]
+    ) -> OrderMatch {
+        guard !candidates.isEmpty else { return .missing }
+
+        let exactValueMatches = candidates.filter { orderValuesMatch(orders[$0], record: record) }
+        if exactValueMatches.count == 1 {
+            return .matched(exactValueMatches[0])
         }
-        let pendingTokens = ["处理中", "确认中", "待确认", "受理", "申请", "PENDING", "PROCESS"]
-        return !pendingTokens.contains { statusText.contains($0) }
+        if exactValueMatches.count > 1 {
+            return .ambiguous
+        }
+        return candidates.count == 1 ? .matched(candidates[0]) : .ambiguous
+    }
+
+    private static func orderValuesMatch(_ order: JDFinanceTradeOrderRecord, record: FundTradeRecord) -> Bool {
+        var compared = false
+        if let orderAmount = order.amount, let localAmount = record.amount {
+            compared = true
+            guard !moneyDifference(orderAmount, localAmount) else { return false }
+        }
+        if let orderShares = order.shares, let localShares = record.confirmedShares ?? record.shares {
+            compared = true
+            guard roundedShares(orderShares) == roundedShares(localShares) else { return false }
+        }
+        return compared
     }
 
     private static func tradeOrder(_ order: JDFinanceTradeOrderRecord, matches record: FundTradeRecord) -> Bool {
-        guard order.code == nil || order.code == record.code,
+        guard orderIdentityMatches(order, record: record),
               order.tradeDate == record.tradeDate,
               order.tradeTimeType == record.tradeTimeType
         else {
@@ -567,17 +834,17 @@ enum JDFinanceHoldingsSyncPlanner {
         }
         switch record.kind {
         case .newFund, .buy:
-            return order.action == nil || order.action == .buy || order.action == .unknown
+            return order.action == .buy
         case .sell:
-            return order.action == nil || order.action == .sell || order.action == .unknown
+            return order.action == .sell
         case .conversionOut, .conversionIn:
             return false
         }
     }
 
     private static func conversionOrder(_ order: JDFinanceTradeOrderRecord, matches record: FundTradeRecord) -> Bool {
-        guard order.action == nil || order.action == .conversion,
-              order.code == nil || order.code == record.code,
+        guard order.action == .conversion,
+              orderIdentityMatches(order, record: record),
               order.tradeDate == record.tradeDate,
               order.tradeTimeType == record.tradeTimeType
         else {
@@ -587,6 +854,159 @@ enum JDFinanceHoldingsSyncPlanner {
             return record.linkedCode == targetCode
         }
         return true
+    }
+
+    private static func orderIdentityMatches(_ order: JDFinanceTradeOrderRecord, record: FundTradeRecord) -> Bool {
+        if let code = normalizedCode(order.code) {
+            return code == record.code
+        }
+        guard let productName = order.productName else { return false }
+        return namesLikelyMatch(productName, record.name)
+    }
+
+    private static func missingFinalOrderMessage(_ snapshot: JDFinanceHoldingsSnapshot) -> String {
+        snapshot.tradeOrderFetchState.isComplete || snapshot.tradeOrderFetchState == .notRequested
+            ? "缺少京东最终流水，不能安全覆盖流水"
+            : "京东交易流水拉取不完整，暂不能判断是否缺少最终流水"
+    }
+
+    private static func unrecordedOrders(
+        orders: [JDFinanceTradeOrderRecord],
+        consumedOrderIndices: Set<Int>,
+        localTradeRecords: [FundTradeRecord],
+        syncState: JDFinanceSyncState?
+    ) -> [JDFinanceUnrecordedOrder] {
+        var consumedLocalRecordIndices = Set<Int>()
+        var result: [JDFinanceUnrecordedOrder] = []
+        let representedKeys = Set(syncState?.representedOrderKeys ?? [])
+        let dismissedKeys = Set(syncState?.dismissedOrderKeys ?? [])
+
+        for index in orders.indices {
+            let order = orders[index]
+            let orderKey = orderIdentityKey(order)
+            guard order.effectiveStatus == .succeeded,
+                  !consumedOrderIndices.contains(index),
+                  !representedKeys.contains(orderKey),
+                  !dismissedKeys.contains(orderKey)
+            else {
+                continue
+            }
+            let localMatches = localTradeRecords.indices.filter {
+                !consumedLocalRecordIndices.contains($0)
+                    && localOrderEquivalent(order, record: localTradeRecords[$0])
+            }
+            if localMatches.count == 1, let matchedLocalIndex = localMatches.first {
+                consumedLocalRecordIndices.insert(matchedLocalIndex)
+                continue
+            }
+            let identity = order.stableOrderKey
+                ?? "\(JDFinanceSyncFingerprint.tradeOrderRecord(order))-\(index)"
+            result.append(JDFinanceUnrecordedOrder(
+                id: identity,
+                record: order,
+                message: localMatches.count > 1
+                    ? "存在多条本地交易同时匹配，已禁止自动导入"
+                    : "京东存在成功流水，但本地没有对应交易；确认后可导入",
+                blockingReason: localMatches.count > 1 ? "本地匹配不唯一" : nil
+            ))
+        }
+        return result
+    }
+
+    private static func orderIdentityKey(_ order: JDFinanceTradeOrderRecord) -> String {
+        order.stableOrderKey ?? JDFinanceSyncFingerprint.tradeOrderRecord(order)
+    }
+
+    private static func successfulOutflowEvidence(
+        for fund: FundPosition,
+        orders: [JDFinanceTradeOrderRecord]
+    ) -> JDFinanceTradeOrderRecord? {
+        orders
+            .filter { order in
+                guard order.effectiveStatus == .succeeded,
+                      order.action == .sell || order.action == .conversion
+                else { return false }
+                if let code = normalizedCode(order.code) {
+                    return code == fund.code
+                }
+                return order.productName.map { namesLikelyMatch($0, fund.name) } == true
+            }
+            .max { lhs, rhs in
+                let lhsValue = lhs.submittedAt ?? lhs.tradeDate ?? ""
+                let rhsValue = rhs.submittedAt ?? rhs.tradeDate ?? ""
+                return lhsValue < rhsValue
+            }
+    }
+
+    private static func informationalOrders(
+        _ orders: [JDFinanceTradeOrderRecord],
+        products: [JDFinanceHoldingProduct],
+        localTradeRecords: [FundTradeRecord],
+        syncState: JDFinanceSyncState?
+    ) -> [JDFinanceTradeOrderRecord] {
+        let representedByPendingNoticeKeys = Set(products.flatMap { product in
+            product.pendingDetail?.matchedTradeRecords.map { record in
+                record.stableOrderKey
+                    ?? JDFinanceSyncFingerprint.tradeOrderRecord(
+                        record,
+                        fallbackCode: product.code
+                    )
+            } ?? []
+        })
+        let nonSucceeded = orders.filter { order in
+            order.effectiveStatus != .succeeded
+                && !representedByPendingNoticeKeys.contains(orderIdentityKey(order))
+        }
+        let isRelevantToWaitingRecord: (JDFinanceTradeOrderRecord) -> Bool = { order in
+            localTradeRecords.contains { record in
+                guard waitsForJDFinalConfirmation(record) else { return false }
+                switch record.kind {
+                case .newFund, .buy, .sell:
+                    return tradeOrder(order, matches: record)
+                case .conversionOut:
+                    return conversionOrder(order, matches: record)
+                case .conversionIn:
+                    return false
+                }
+            }
+        }
+        guard let syncState else {
+            let pendingProductCodes = Set(products.filter { $0.transactionTip != nil }.map(\.code))
+            return nonSucceeded.filter { order in
+                isRelevantToWaitingRecord(order)
+                    || (order.effectiveStatus == .pending
+                        && order.code.map(pendingProductCodes.contains) == true)
+            }
+        }
+
+        let baselineDate = DateOnlyFormatter.string(from: syncState.baselineEstablishedAt)
+        let trackedKeys = Set(syncState.trackedPendingOrderKeys)
+        return nonSucceeded.filter { order in
+            isRelevantToWaitingRecord(order)
+                || trackedKeys.contains(orderIdentityKey(order))
+                || order.tradeDate.map { $0 >= baselineDate } == true
+        }
+    }
+
+    private static func localOrderEquivalent(
+        _ order: JDFinanceTradeOrderRecord,
+        record: FundTradeRecord
+    ) -> Bool {
+        if let stableOrderKey = order.stableOrderKey,
+           record.syncKey == stableOrderKey
+        {
+            return true
+        }
+        let identityMatches: Bool
+        switch record.kind {
+        case .newFund, .buy, .sell:
+            identityMatches = tradeOrder(order, matches: record)
+        case .conversionOut:
+            identityMatches = conversionOrder(order, matches: record)
+        case .conversionIn:
+            identityMatches = false
+        }
+        return identityMatches && orderValuesMatch(order, record: record)
     }
 
     private static func reconciliationValues(
@@ -615,8 +1035,8 @@ enum JDFinanceHoldingsSyncPlanner {
         inRecord: FundTradeRecord?,
         order: JDFinanceTradeOrderRecord
     ) -> JDFinanceReconciliationValues {
-        let finalOutShares = order.shares ?? order.amount ?? outRecord.confirmedShares ?? outRecord.shares
-        let finalOutAmount = order.shares == nil ? outRecord.amount : (order.amount ?? outRecord.amount)
+        let finalOutShares = order.shares ?? outRecord.confirmedShares ?? outRecord.shares
+        let finalOutAmount = order.amount ?? outRecord.amount
         let finalOutPrice = price(amount: finalOutAmount, shares: finalOutShares, fallback: outRecord.price)
         return JDFinanceReconciliationValues(
             amount: finalOutAmount,
