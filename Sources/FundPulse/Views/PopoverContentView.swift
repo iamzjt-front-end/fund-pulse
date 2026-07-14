@@ -552,7 +552,7 @@ struct PopoverContentView: View {
         case .available(let info):
             return "\(info.releaseName.isEmpty ? "fund-pulse" : info.releaseName) · 点击后先下载，下载完成后再安装。"
         case .downloading:
-            return "\(Int(updateStore.downloadProgress * 100))% · 下载完成后会显示“现在更新”。"
+            return "下载完成后会显示“现在更新”。"
         case .downloaded(let info, _):
             return "v\(info.version) 已准备好。现在更新会退出并重新打开 fund-pulse。"
         case .installing:
