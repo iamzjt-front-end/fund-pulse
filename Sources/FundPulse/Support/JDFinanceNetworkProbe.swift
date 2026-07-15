@@ -1,6 +1,23 @@
 import Foundation
 import Observation
 
+enum JDFinanceDebugArtifacts {
+    static let fileNames = [
+        "jd-sync-preview-debug.json",
+        "jd-network-probe.log"
+    ]
+
+    static func removePersistedFiles(
+        in directory: URL = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "fund-pulse", directoryHint: .isDirectory)
+    ) {
+        for fileName in fileNames {
+            try? FileManager.default.removeItem(at: directory.appending(path: fileName))
+        }
+    }
+}
+
 enum JDFinanceNetworkProbeSource: String, Equatable {
     case urlSession = "URLSession"
     case webView = "WebView"

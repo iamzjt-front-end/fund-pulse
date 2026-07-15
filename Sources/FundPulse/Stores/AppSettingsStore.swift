@@ -4,8 +4,15 @@ import Observation
 @Observable
 @MainActor
 final class AppSettingsStore {
+    enum LoadOrigin: Equatable {
+        case createdNew
+        case loadedExisting
+        case recoveredInvalid
+    }
+
     private(set) var settings: AppSettings = AppSettings()
     private(set) var dataDirectory: URL
+    private(set) var loadOrigin: LoadOrigin = .createdNew
 
     init(dataDirectory: URL = AppDataPaths.sharedDataDirectory) {
         self.dataDirectory = dataDirectory
@@ -16,10 +23,12 @@ final class AppSettingsStore {
         do {
             let url = settingsFileURL
             guard FileManager.default.fileExists(atPath: url.path) else {
+                loadOrigin = .createdNew
                 settings = AppSettings()
                 try save()
                 return
             }
+            loadOrigin = .loadedExisting
             let data = try Data(contentsOf: url)
             var decodedSettings = try JSONDecoder().decode(AppSettings.self, from: data)
             if decodedSettings.settingsSchemaVersion != AppSettings.currentSchemaVersion {
@@ -30,8 +39,14 @@ final class AppSettingsStore {
                 settings = decodedSettings
             }
         } catch {
+            loadOrigin = .recoveredInvalid
             settings = AppSettings()
         }
+    }
+
+    func completeOnboarding(version: Int = AppSettings.currentOnboardingVersion) throws {
+        settings.completedOnboardingVersion = version
+        try save()
     }
 
     func setMenuBarDisplayMode(_ mode: MenuBarDisplayMode) {

@@ -307,7 +307,7 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看持有收益排行")
+                .help("打开持有收益（按金额）")
 
                 Button(action: onOpenHoldingRateRanking) {
                     metricCard(
@@ -319,7 +319,7 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("查看持有收益率排行")
+                .help("打开持有收益（按收益率）")
             }
 
             if let pendingHeaderImpact {
@@ -888,7 +888,11 @@ struct PopoverContentView: View {
     @ViewBuilder
     private var fundRows: some View {
         if filteredFunds.isEmpty {
-            ContentUnavailableView("暂无基金数据", systemImage: "tray")
+            ContentUnavailableView(
+                "暂无基金数据",
+                systemImage: "tray",
+                description: Text("点击上方 + 添加第一只基金，或在设置中重新查看使用引导。")
+            )
                 .frame(height: 300)
         } else {
             ForEach(filteredFunds) { fund in
@@ -918,6 +922,8 @@ struct PopoverContentView: View {
                 .frame(height: 300)
         } else {
             VStack(spacing: 0) {
+                PendingActivityNotice()
+                Divider()
                 ForEach(pendingActivities) { activity in
                     PendingTradeActivityRow(
                         activity: activity,
@@ -2339,9 +2345,56 @@ struct PendingTradeActivity: Identifiable {
     var createdAt: Date
     var displayAmount: PendingActivityAmount?
     var fund: FundPosition?
+    var failureReason: String? = nil
+    var waitsForExternalConfirmation: Bool = false
 
     var isConversion: Bool {
         kind == .conversionOut || kind == .conversionIn || conversionID != nil
+    }
+}
+
+struct PendingActivityPresentation: Equatable {
+    static let noticeText = "系统会持续检查正式净值和外部状态，条件满足后自动确认；QDII 等基金次日仍待确认通常正常。"
+
+    var orderText: String
+    var waitingText: String
+
+    init(activity: PendingTradeActivity) {
+        let code = FundCodeFormatter.display(activity.code)
+        let tradeDate = Self.shortDateText(activity.tradeDate)
+        let acceptedDate = Self.validShortDateText(activity.acceptedDate)
+        orderText = "\(code) · \(tradeDate) \(activity.tradeTimeType.title)\(activity.isConversion ? "发起" : "下单")"
+
+        if activity.waitsForExternalConfirmation {
+            waitingText = "等待京东最终确认 · 同步后更新"
+        } else if let failureReason = Self.clean(activity.failureReason) {
+            waitingText = "暂无法确认 · \(failureReason)"
+        } else if activity.isConversion {
+            if let acceptedDate {
+                waitingText = "等待双方 \(acceptedDate) 正式净值 · 齐备后自动确认"
+            } else {
+                waitingText = "等待双方正式净值 · 齐备后自动确认"
+            }
+        } else if let acceptedDate {
+            waitingText = "等待 \(acceptedDate) 正式净值 · 发布后自动确认"
+        } else {
+            waitingText = "等待正式净值 · 发布后自动确认"
+        }
+    }
+
+    private static func validShortDateText(_ value: String) -> String? {
+        guard DateOnlyFormatter.parse(value) != nil else { return nil }
+        return shortDateText(value)
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func shortDateText(_ value: String) -> String {
+        guard value.count >= 10 else { return value }
+        return String(value.dropFirst(5).prefix(5))
     }
 }
 
@@ -2377,6 +2430,12 @@ enum PendingTradeActivityBuilder {
                 timeType: pendingTrade.tradeTimeType
             )
             let kind = record?.kind ?? tradeKind(for: pendingTrade.action)
+            let waitsForExternalConfirmation = waitsForExternalConfirmation(
+                syncSource: record?.syncSource ?? pendingTrade.syncSource,
+                externalStatus: record?.externalStatus ?? pendingTrade.externalStatus,
+                explicitFlag: (record?.waitsForExternalConfirmation ?? false)
+                    || (pendingTrade.waitsForExternalConfirmation ?? false)
+            )
             return PendingTradeActivity(
                 id: "pending-trade-\(pendingTrade.id)",
                 recordID: record?.id ?? pendingTrade.recordID,
@@ -2401,7 +2460,9 @@ enum PendingTradeActivityBuilder {
                     fund: fund,
                     snapshot: snapshot
                 ),
-                fund: fund
+                fund: fund,
+                failureReason: record?.failureReason,
+                waitsForExternalConfirmation: waitsForExternalConfirmation
             )
         }
 
@@ -2435,7 +2496,13 @@ enum PendingTradeActivityBuilder {
                     fund: fundsByCode[record.code],
                     snapshot: snapshot
                 ),
-                fund: fundsByCode[record.code]
+                fund: fundsByCode[record.code],
+                failureReason: record.failureReason,
+                waitsForExternalConfirmation: waitsForExternalConfirmation(
+                    syncSource: record.syncSource,
+                    externalStatus: record.externalStatus,
+                    explicitFlag: record.waitsForExternalConfirmation ?? false
+                )
             )
         })
 
@@ -2496,6 +2563,15 @@ enum PendingTradeActivityBuilder {
         case .sell:
             .sell
         }
+    }
+
+    private static func waitsForExternalConfirmation(
+        syncSource: FundTradeSyncSource?,
+        externalStatus: FundTradeExternalStatus?,
+        explicitFlag: Bool
+    ) -> Bool {
+        syncSource == .jdFinance
+            && (explicitFlag || externalStatus == .waitingExternalConfirmation)
     }
 
     private static func pendingDisplayAmount(
@@ -3550,9 +3626,20 @@ enum IncomeRankingKind: Equatable {
     }
 }
 
-enum IncomeRankingMetric: Equatable {
+enum IncomeRankingMetric: String, CaseIterable, Identifiable {
     case amount
     case rate
+
+    var id: String { rawValue }
+
+    var holdingPickerTitle: String {
+        switch self {
+        case .amount:
+            "按金额"
+        case .rate:
+            "按收益率"
+        }
+    }
 }
 
 private struct TodayIncomeRankPalette {
@@ -3574,22 +3661,26 @@ struct TodayIncomeRankingPanelView: View {
     let kind: IncomeRankingKind
     let metric: IncomeRankingMetric
     let onClose: () -> Void
+    var isEmbedded = false
+    var metricSelection: Binding<IncomeRankingMetric>? = nil
 
     @State private var rankingMode: TodayIncomeRankingMode = .gain
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(
-                systemImage: "list.number",
-                title: kind.title(for: metric),
-                subtitle: rankingHeaderSubtitle,
-                subtitleWeight: .semibold,
-                tint: toneColor(for: totalValue),
-                accessoryText: updatedHeaderTagText,
-                accessoryColor: .orange,
-                onClose: onClose
-            )
+            if !isEmbedded {
+                PanelHeader(
+                    systemImage: "list.number",
+                    title: kind.title(for: metric),
+                    subtitle: rankingHeaderSubtitle,
+                    subtitleWeight: .semibold,
+                    tint: toneColor(for: totalValue),
+                    accessoryText: updatedHeaderTagText,
+                    accessoryColor: .orange,
+                    onClose: onClose
+                )
+            }
 
             ScrollView {
                 if rankableFunds.isEmpty {
@@ -3598,7 +3689,11 @@ struct TodayIncomeRankingPanelView: View {
                 } else {
                     LazyVStack(spacing: 10) {
                         rankingSummary
-                        rankingModePicker
+                        if let metricSelection {
+                            rankingControls(metricSelection: metricSelection)
+                        } else {
+                            rankingModePicker
+                        }
                         if rankingItems.isEmpty {
                             ContentUnavailableView(emptyTitle(for: rankingMode), systemImage: rankingMode == .gain ? "arrow.up.right" : "arrow.down.right")
                                 .frame(height: 260)
@@ -3608,13 +3703,19 @@ struct TodayIncomeRankingPanelView: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, isEmbedded ? 0 : 14)
                     .padding(.bottom, 14)
                 }
             }
             .scrollIndicators(.hidden)
         }
         .background(PanelDesign.panelBackground)
+        .onAppear {
+            selectAvailableRankingModeIfNeeded()
+        }
+        .onChange(of: metric) { _, _ in
+            selectAvailableRankingModeIfNeeded()
+        }
     }
 
     private var rankableFunds: [FundPosition] {
@@ -3684,12 +3785,63 @@ struct TodayIncomeRankingPanelView: View {
         )
     }
 
+    private func rankingControls(metricSelection: Binding<IncomeRankingMetric>) -> some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(IncomeRankingMetric.allCases) { value in
+                    Button {
+                        metricSelection.wrappedValue = value
+                    } label: {
+                        if value == metricSelection.wrappedValue {
+                            Label(value.holdingPickerTitle, systemImage: "checkmark")
+                        } else {
+                            Text(value.holdingPickerTitle)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.up.arrow.down")
+                    Text(metric.holdingPickerTitle)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(PanelDesign.selectorBackground, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 0.6)
+                )
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .focusEffectDisabled()
+            .accessibilityLabel("排行指标")
+            .accessibilityValue(metric.holdingPickerTitle)
+            .help("切换按金额或按收益率排行")
+
+            rankingModePicker
+        }
+    }
+
     private var gainFunds: [FundPosition] {
         rankableFunds.filter { rankingValue(for: $0) > 0 }
     }
 
     private var lossFunds: [FundPosition] {
         rankableFunds.filter { rankingValue(for: $0) < 0 }
+    }
+
+    private func selectAvailableRankingModeIfNeeded() {
+        if rankingMode == .gain, gainFunds.isEmpty, !lossFunds.isEmpty {
+            rankingMode = .loss
+        } else if rankingMode == .loss, lossFunds.isEmpty, !gainFunds.isEmpty {
+            rankingMode = .gain
+        }
     }
 
     private var gainSummaryValue: Double {
@@ -3793,14 +3945,14 @@ struct TodayIncomeRankingPanelView: View {
             )
             summaryDivider
             rankingSummaryMetric(
-                kind.gainSummaryTitle,
+                groupSummaryTitle(isGain: true),
                 summaryValueText(gainSummaryValue),
                 tone: gainSummaryValue,
                 footnote: "\(gainFunds.count)只"
             )
             summaryDivider
             rankingSummaryMetric(
-                kind.lossSummaryTitle,
+                groupSummaryTitle(isGain: false),
                 summaryValueText(lossSummaryValue),
                 tone: lossSummaryValue,
                 footnote: "\(lossFunds.count)只"
@@ -3820,6 +3972,13 @@ struct TodayIncomeRankingPanelView: View {
         case .rate:
             return funds.reduce(0) { $0 + rate(for: $1) } / Double(funds.count)
         }
+    }
+
+    private func groupSummaryTitle(isGain: Bool) -> String {
+        if kind == .holding, metric == .rate {
+            return isGain ? "盈利均值" : "亏损均值"
+        }
+        return isGain ? kind.gainSummaryTitle : kind.lossSummaryTitle
     }
 
     private func summaryValueText(_ value: Double) -> String {
@@ -4155,6 +4314,30 @@ struct TodayIncomeRankingPanelView: View {
     }
 }
 
+private struct PendingActivityNotice: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+
+            Text(PendingActivityPresentation.noticeText)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(colorScheme == .dark ? 0.10 : 0.055))
+    }
+}
+
 private struct PendingTradeActivityRow: View {
     let activity: PendingTradeActivity
     let isSelected: Bool
@@ -4249,7 +4432,7 @@ private struct PendingTradeActivityRow: View {
     }
 
     private var rowMinHeight: CGFloat {
-        activity.isConversion ? 104 : 74
+        activity.isConversion ? 116 : 88
     }
 
     private var verticalPadding: CGFloat {
@@ -4257,7 +4440,7 @@ private struct PendingTradeActivityRow: View {
     }
 
     private var selectionBarHeight: CGFloat {
-        activity.isConversion ? 64 : 46
+        activity.isConversion ? 82 : 60
     }
 
     @ViewBuilder
@@ -4289,17 +4472,31 @@ private struct PendingTradeActivityRow: View {
     @ViewBuilder
     private var metaContent: some View {
         if let route = conversionRoute {
-            Text(conversionMetaText(route))
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .allowsTightening(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(conversionMetaText(route))
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .allowsTightening(true)
+                waitingStatusText
+            }
         } else {
-            Text(plainTradeMetaText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .allowsTightening(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.orderText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .allowsTightening(true)
+                waitingStatusText
+            }
         }
+    }
+
+    private var waitingStatusText: some View {
+        Text(presentation.waitingText)
+            .foregroundStyle(.orange)
+            .lineLimit(1)
+            .minimumScaleFactor(0.76)
+            .allowsTightening(true)
     }
 
     private var accentColor: Color {
@@ -4358,14 +4555,8 @@ private struct PendingTradeActivityRow: View {
         return "\(numberText(shares, places: 2))份"
     }
 
-    private var plainTradeMetaText: String {
-        let tradeDate = shortDateText(activity.tradeDate)
-        let acceptedDate = shortDateText(activity.acceptedDate)
-        let prefix = "\(FundCodeFormatter.display(activity.code)) · \(tradeDate) \(activity.tradeTimeType.title)"
-        guard acceptedDate != tradeDate else {
-            return "\(prefix)确认"
-        }
-        return "\(prefix) · 确认 \(acceptedDate)"
+    private var presentation: PendingActivityPresentation {
+        PendingActivityPresentation(activity: activity)
     }
 
     private func conversionMetaText(_ route: (sourceName: String, sourceCode: String, targetName: String, targetCode: String)) -> String {
@@ -4429,11 +4620,6 @@ private struct PendingTradeActivityRow: View {
     private func clean(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private func shortDateText(_ value: String) -> String {
-        guard value.count >= 10 else { return value }
-        return String(value.dropFirst(5).prefix(5))
     }
 
     private func numberText(_ value: Double, places: Int) -> String {

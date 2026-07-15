@@ -548,7 +548,7 @@ enum JDFinanceHoldingsSyncPlanner {
     }
 
     private enum OrderMatch {
-        case matched(Int)
+        case matched([Int])
         case missing
         case ambiguous
     }
@@ -587,9 +587,21 @@ enum JDFinanceHoldingsSyncPlanner {
                     notices.append(conflictNotice(record: record, message: missingFinalOrderMessage(remoteSnapshot)))
                 case .ambiguous:
                     notices.append(conflictNotice(record: record, message: "存在多笔京东流水同时匹配本地记录，已禁止自动覆盖"))
-                case .matched(let index):
-                    consumedOrderIndices.insert(index)
-                    let order = orders[index]
+                case .matched(let indices):
+                    let matchedOrders = indices.map { orders[$0] }
+                    let order: JDFinanceTradeOrderRecord
+                    if matchedOrders.count == 1, let first = matchedOrders.first {
+                        order = first
+                    } else if let combined = JDFinanceTradeOrderBatcher.combinedRecord(matchedOrders) {
+                        order = combined
+                    } else {
+                        notices.append(conflictNotice(
+                            record: record,
+                            message: "多笔京东支付明细无法安全合并，已禁止自动覆盖"
+                        ))
+                        continue
+                    }
+                    consumedOrderIndices.formUnion(indices)
                     let values = reconciliationValues(record: record, order: order)
                     let difference = recordDifference(record: record, values: values)
                     if difference.hasDifference {
@@ -609,14 +621,15 @@ enum JDFinanceHoldingsSyncPlanner {
                             localShares: record.confirmedShares ?? record.shares,
                             jdShares: values.shares,
                             values: values,
-                            matchedTradeRecords: [order]
+                            matchedTradeRecords: matchedOrders
                         ))
                     } else {
                         automaticConfirmations.append(JDFinanceAutomaticConfirmation(
                             id: record.id,
                             recordIDs: [record.id],
                             syncKey: values.syncKey,
-                            statusText: values.statusText
+                            statusText: values.statusText,
+                            representedOrderKeys: Array(Set(matchedOrders.map(orderIdentityKey))).sorted()
                         ))
                     }
                 }
@@ -656,7 +669,15 @@ enum JDFinanceHoldingsSyncPlanner {
                         inRecord: linkedRecord,
                         message: "存在多笔京东转换流水同时匹配本地记录，已禁止自动覆盖"
                     ))
-                case .matched(let index):
+                case .matched(let indices):
+                    guard indices.count == 1, let index = indices.first else {
+                        notices.append(conversionConflictNotice(
+                            outRecord: record,
+                            inRecord: linkedRecord,
+                            message: "存在多笔京东转换流水同时匹配本地记录，已禁止自动覆盖"
+                        ))
+                        continue
+                    }
                     consumedOrderIndices.insert(index)
                     let order = orders[index]
                     let values = reconciliationValues(outRecord: record, inRecord: linkedRecord, order: order)
@@ -688,7 +709,8 @@ enum JDFinanceHoldingsSyncPlanner {
                             id: conversionID,
                             recordIDs: [record.id, linkedRecord.id],
                             syncKey: values.syncKey,
-                            statusText: values.statusText
+                            statusText: values.statusText,
+                            representedOrderKeys: [orderIdentityKey(order)]
                         ))
                     }
                 }
@@ -790,7 +812,7 @@ enum JDFinanceHoldingsSyncPlanner {
                 ) == syncKey
         }
         if matches.count == 1 {
-            return .matched(matches[0])
+            return .matched([matches[0]])
         }
         return matches.isEmpty ? nil : .ambiguous
     }
@@ -804,12 +826,20 @@ enum JDFinanceHoldingsSyncPlanner {
 
         let exactValueMatches = candidates.filter { orderValuesMatch(orders[$0], record: record) }
         if exactValueMatches.count == 1 {
-            return .matched(exactValueMatches[0])
+            return .matched([exactValueMatches[0]])
         }
         if exactValueMatches.count > 1 {
             return .ambiguous
         }
-        return candidates.count == 1 ? .matched(candidates[0]) : .ambiguous
+        if candidates.count == 1 {
+            return .matched(candidates)
+        }
+        if let combined = JDFinanceTradeOrderBatcher.combinedRecord(candidates.map { orders[$0] }),
+           orderValuesMatch(combined, record: record)
+        {
+            return .matched(candidates)
+        }
+        return .ambiguous
     }
 
     private static func orderValuesMatch(_ order: JDFinanceTradeOrderRecord, record: FundTradeRecord) -> Bool {

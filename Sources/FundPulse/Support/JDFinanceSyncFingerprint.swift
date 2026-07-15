@@ -54,21 +54,27 @@ enum JDFinanceSyncFingerprint {
         return "jd-order-" + sha256(rawOrderID)
     }
 
+    static func logicalTradeOrderGroup(sourceOrderKeys: [String]) -> String {
+        let keys = Array(Set(sourceOrderKeys.filter { !$0.isEmpty })).sorted()
+        return "jd-order-group-" + sha256(keys.joined(separator: "|"))
+    }
+
     static func accountKey(cookieHeader: String?) -> String? {
         guard let cookieHeader else { return nil }
-        let stableCookieNames = ["pt_pin", "pin", "pwdt_id"]
-        let pairs = cookieHeader.split(separator: ";")
-        for pair in pairs {
+        var valuesByName: [String: String] = [:]
+        for pair in cookieHeader.split(separator: ";") {
             let parts = pair.split(separator: "=", maxSplits: 1).map {
                 String($0).trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            guard parts.count == 2,
-                  stableCookieNames.contains(parts[0].lowercased()),
-                  !parts[1].isEmpty
-            else {
-                continue
+            guard parts.count == 2, !parts[1].isEmpty else { continue }
+            let name = parts[0].lowercased()
+            if valuesByName[name] == nil {
+                valuesByName[name] = parts[1]
             }
-            return "jd-account-" + sha256(parts[1])
+        }
+        for name in ["pt_pin", "pin", "pwdt_id"] {
+            guard let value = valuesByName[name] else { continue }
+            return "jd-account-" + sha256(value)
         }
         return nil
     }

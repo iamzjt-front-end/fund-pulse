@@ -502,6 +502,7 @@ test("release script never stages the entire worktree and uses a draft verificat
 
 test("local Apple Development packages disable secure timestamps without weakening verification", async () => {
   const source = await readFile(path.join(repositoryRoot, "script/package_swift.sh"), "utf8");
+  assert.match(source, /FUND_PULSE_BUILD_CONFIGURATION=release/);
   assert.match(source, /SIGN_TIMESTAMP_OPTION="--timestamp"/);
   assert.match(source, /SIGNING_KIND="apple-development"[\s\S]*SIGN_TIMESTAMP_OPTION="--timestamp=none"/);
   assert.match(source, /codesign --force --deep --options runtime "\$SIGN_TIMESTAMP_OPTION"/);

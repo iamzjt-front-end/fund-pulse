@@ -1,9 +1,25 @@
+enum OnboardingOrigin: Equatable {
+    case firstLaunch
+    case settings
+}
+
+enum PrivacyDisclaimerOrigin: Equatable {
+    case settings
+    case onboarding(OnboardingOrigin)
+}
+
 enum ChildPanelRoute: Equatable {
     case settings
+    case privacyDisclaimer(origin: PrivacyDisclaimerOrigin)
+    case onboarding(origin: OnboardingOrigin)
+    case sampleExperience(origin: OnboardingOrigin)
+    case portfolioPerformance
+    case jdFinancePerformanceSync
     case jdFinanceSync
     case portfolioBreakdown
-    case incomeRanking(IncomeRankingKind, IncomeRankingMetric)
+    case todayIncomeRanking(IncomeRankingMetric)
     case addFund
+    case onboardingAddFund(origin: OnboardingOrigin)
     case fundDetail(fundCode: String)
     case fundDailyIncome(fundCode: String)
     case tradeRecords(fundCode: String)
@@ -31,8 +47,19 @@ enum ChildPanelRoute: Equatable {
             fundCode
         case .editConversion(let sourceFundCode, _, _):
             sourceFundCode
-        case .settings, .jdFinanceSync, .portfolioBreakdown, .incomeRanking, .addFund:
+        case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
+             .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
+             .todayIncomeRanking, .addFund, .onboardingAddFund:
             nil
+        }
+    }
+
+    var ownsJDFinanceLoginPanel: Bool {
+        switch self {
+        case .jdFinanceSync, .jdFinancePerformanceSync:
+            true
+        default:
+            false
         }
     }
 }
@@ -95,7 +122,9 @@ enum ChildPanelRouteResolver {
             recordID
         case .editConversion(_, let recordID, _):
             recordID
-        case .settings, .jdFinanceSync, .portfolioBreakdown, .incomeRanking, .addFund,
+        case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
+             .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
+             .todayIncomeRanking, .addFund, .onboardingAddFund,
              .fundDetail, .fundDailyIncome, .tradeRecords, .buyFund, .sellFund,
              .convertFund, .editFund:
             nil
@@ -110,7 +139,9 @@ enum ChildPanelRouteResolver {
             fundCode
         case .editConversion(_, _, let returnFundCode):
             returnFundCode
-        case .settings, .jdFinanceSync, .portfolioBreakdown, .incomeRanking, .addFund,
+        case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
+             .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
+             .todayIncomeRanking, .addFund, .onboardingAddFund,
              .fundDetail, .fundDailyIncome, .tradeRecords, .buyFund, .sellFund,
              .convertFund, .editFund:
             nil

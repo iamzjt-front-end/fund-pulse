@@ -6,6 +6,7 @@ EXECUTABLE_NAME="FundPulse"
 APP_NAME="fund-pulse"
 BUNDLE_ID="com.iamzjt.frontend.fund-pulse.swift"
 MIN_SYSTEM_VERSION="14.0"
+BUILD_CONFIGURATION="${FUND_PULSE_BUILD_CONFIGURATION:-debug}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -20,10 +21,26 @@ APP_ICON="$ROOT_DIR/build/icon.icns"
 
 cd "$ROOT_DIR"
 
+case "$BUILD_CONFIGURATION" in
+  debug)
+    ;;
+  release)
+    ;;
+  *)
+    echo "error: FUND_PULSE_BUILD_CONFIGURATION must be debug or release" >&2
+    exit 2
+    ;;
+esac
+
 pkill -x "$EXECUTABLE_NAME" >/dev/null 2>&1 || true
 
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$EXECUTABLE_NAME"
+if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
+  swift build -c release
+  BUILD_BINARY="$(swift build -c release --show-bin-path)/$EXECUTABLE_NAME"
+else
+  swift build
+  BUILD_BINARY="$(swift build --show-bin-path)/$EXECUTABLE_NAME"
+fi
 
 rm -rf "$DIST_DIR/FundPulse.app"
 rm -rf "$APP_BUNDLE"

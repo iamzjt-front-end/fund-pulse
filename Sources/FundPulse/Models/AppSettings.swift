@@ -1,7 +1,8 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 12
+    static let currentSchemaVersion = 13
+    static let currentOnboardingVersion = 1
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560
     static let maxMainPanelHeight = 900
@@ -28,6 +29,7 @@ struct AppSettings: Codable, Equatable {
     var showsMarketIndexes: Bool = true
     var defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier
     var betaFeaturesEnabled: Bool = false
+    var completedOnboardingVersion: Int? = nil
 
     init(
         settingsSchemaVersion: Int? = Self.currentSchemaVersion,
@@ -45,7 +47,8 @@ struct AppSettings: Codable, Equatable {
         appearanceMode: AppAppearanceMode = .system,
         showsMarketIndexes: Bool = true,
         defaultMarketIndexID: MarketIndexID = Self.defaultMarketIndexIdentifier,
-        betaFeaturesEnabled: Bool = false
+        betaFeaturesEnabled: Bool = false,
+        completedOnboardingVersion: Int? = nil
     ) {
         self.settingsSchemaVersion = settingsSchemaVersion
         self.menuBarDisplayMode = menuBarDisplayMode
@@ -63,6 +66,7 @@ struct AppSettings: Codable, Equatable {
         self.showsMarketIndexes = showsMarketIndexes
         self.defaultMarketIndexID = defaultMarketIndexID
         self.betaFeaturesEnabled = betaFeaturesEnabled
+        self.completedOnboardingVersion = completedOnboardingVersion
     }
 
     enum CodingKeys: String, CodingKey {
@@ -82,11 +86,13 @@ struct AppSettings: Codable, Equatable {
         case showsMarketIndexes
         case defaultMarketIndexID
         case betaFeaturesEnabled
+        case completedOnboardingVersion
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        settingsSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .settingsSchemaVersion)
+        let decodedSchemaVersion = try container.decodeIfPresent(Int.self, forKey: .settingsSchemaVersion)
+        settingsSchemaVersion = decodedSchemaVersion
         menuBarDisplayMode = try container.decodeIfPresent(MenuBarDisplayMode.self, forKey: .menuBarDisplayMode) ?? .color
         menuBarContentMode = try container.decodeIfPresent(MenuBarContentMode.self, forKey: .menuBarContentMode) ?? .amount
         let decodedAutoRefreshInterval = try container.decodeIfPresent(
@@ -131,6 +137,18 @@ struct AppSettings: Codable, Equatable {
             .flatMap(MarketIndexID.init(rawValue:))
             ?? Self.defaultMarketIndexIdentifier
         betaFeaturesEnabled = try container.decodeIfPresent(Bool.self, forKey: .betaFeaturesEnabled) ?? false
+        if container.contains(.completedOnboardingVersion) {
+            completedOnboardingVersion = try container.decodeIfPresent(
+                Int.self,
+                forKey: .completedOnboardingVersion
+            )
+        } else if (decodedSchemaVersion ?? 0) < Self.currentSchemaVersion {
+            // Onboarding was introduced in schema 13. Existing installs must never
+            // be mistaken for a new install merely because the field is absent.
+            completedOnboardingVersion = Self.currentOnboardingVersion
+        } else {
+            completedOnboardingVersion = nil
+        }
     }
 
     static func clampedMainPanelHeight(_ height: Int) -> Int {

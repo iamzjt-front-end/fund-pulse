@@ -87,13 +87,22 @@ struct FundQuoteService {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return nil }
 
-        let searchKeys = Self.fundCodeSearchKeys(for: name)
+        let matchKeys = Self.fundCodeSearchKeys(for: name)
+        var searchKeys = matchKeys
+        for key in matchKeys {
+            guard let baseName = Self.qdiiBaseSearchName(for: key),
+                  !searchKeys.contains(baseName)
+            else {
+                continue
+            }
+            searchKeys.append(baseName)
+        }
         for key in searchKeys {
             guard let items = try? await searchFunds(key: key), !items.isEmpty else {
                 continue
             }
-            if let matchedFund = Self.matchedFundSearchItem(in: items, queryNames: searchKeys) {
-                return matchedFund.code?.nilIfBlank
+            if let matchedCode = Self.matchedFundCode(in: items, queryNames: matchKeys) {
+                return matchedCode
             }
         }
         return nil
@@ -457,6 +466,8 @@ struct FundQuoteService {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "（", with: "(")
+            .replacingOccurrences(of: "）", with: ")")
             .replacingOccurrences(of: "板", with: "")
             .lowercased()
     }
@@ -482,6 +493,16 @@ struct FundQuoteService {
         return keys
     }
 
+    private static func qdiiBaseSearchName(for value: String) -> String? {
+        let pattern = #"(?i)\s*[\(（]\s*QDII\s*[\)）]\s*[A-Z]\s*$"#
+        guard let range = value.range(of: pattern, options: .regularExpression) else {
+            return nil
+        }
+        let baseName = value[..<range.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return baseName.isEmpty ? nil : baseName
+    }
+
     private static func fundSearchNameWithoutTradePrefix(_ value: String) -> String {
         value
             .replacingOccurrences(of: "转换-", with: "")
@@ -489,15 +510,21 @@ struct FundQuoteService {
             .replacingOccurrences(of: "转出-", with: "")
     }
 
-    private static func matchedFundSearchItem(in items: [FundSearchItem], queryNames: [String]) -> FundSearchItem? {
+    private static func matchedFundCode(in items: [FundSearchItem], queryNames: [String]) -> String? {
         let canonicalQueries = Set(queryNames.map(canonicalFundSearchName))
-        return items.first { item in
-            guard item.isFund else { return false }
+        let codes = Set(items.compactMap { item -> String? in
+            guard item.isFund else { return nil }
             let itemNames = [item.name, item.shortName].compactMap { $0 }
-            return itemNames
+            guard itemNames
                 .map(canonicalFundSearchName)
-                .contains { canonicalQueries.contains($0) }
-        }
+                .contains(where: canonicalQueries.contains)
+            else {
+                return nil
+            }
+            let code = item.code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return code.count == 6 && code.allSatisfy(\.isNumber) ? code : nil
+        })
+        return codes.count == 1 ? codes.first : nil
     }
 
     private func parseJSONP(_ text: String) -> Data? {

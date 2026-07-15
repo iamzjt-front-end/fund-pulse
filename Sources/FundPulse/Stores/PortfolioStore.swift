@@ -11,6 +11,7 @@ final class PortfolioStore {
     private let quoteService: FundQuoteService
     private let nowProvider: () -> Date
     private let repository: any PortfolioRepository
+    let performanceStore: PortfolioPerformanceStore
     private var persistedSnapshot: PortfolioSnapshot?
     private var refreshTask: Task<Void, Never>?
     private var refreshRequestGeneration = 0
@@ -25,23 +26,27 @@ final class PortfolioStore {
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         quoteService: FundQuoteService = FundQuoteService(),
+        performanceStore: PortfolioPerformanceStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
         self.nowProvider = now
         self.repository = JSONPortfolioRepository(dataDirectory: dataDirectory)
+        self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: dataDirectory)
     }
 
     init(
         repository: any PortfolioRepository,
         quoteService: FundQuoteService = FundQuoteService(),
+        performanceStore: PortfolioPerformanceStore? = nil,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = repository.dataDirectory
         self.quoteService = quoteService
         self.nowProvider = now
         self.repository = repository
+        self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: repository.dataDirectory)
     }
 
     var dataFileURL: URL {
@@ -50,6 +55,7 @@ final class PortfolioStore {
 
     func load() {
         loadState = .loading
+        performanceStore.load()
 
         do {
             if let loadedSnapshot = try repository.load() {
@@ -69,21 +75,13 @@ final class PortfolioStore {
         }
     }
 
-    func writeSamplePortfolioIfNeeded() throws {
-        let url = dataDirectory.appending(path: "portfolio.json")
-        if FileManager.default.fileExists(atPath: url.path) {
-            return
-        }
-
-        try save(PortfolioSnapshot.sample)
-        load()
-    }
-
     func exportPortfolio(to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(snapshot)
+        var backup = snapshot
+        backup.portfolioPerformanceHistory = try performanceStore.snapshotForExport()
+        let data = try encoder.encode(backup)
         try data.write(to: url, options: .atomic)
     }
 
@@ -91,14 +89,31 @@ final class PortfolioStore {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let importedSnapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
-        try save(importedSnapshot)
-        snapshot = importedSnapshot
-        loadState = .loaded
+        var importedSnapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
+        let importedPerformance = importedSnapshot.portfolioPerformanceHistory ?? .empty
+        importedSnapshot.portfolioPerformanceHistory = nil
+
+        let previousSnapshot = snapshot
+        let previousPerformance = performanceStore.snapshot
+        let previousPerformanceWasUnreadable = performanceStore.hasUnreadablePersistedData
+        do {
+            try save(importedSnapshot)
+            try performanceStore.replace(importedPerformance)
+            snapshot = importedSnapshot
+            loadState = .loaded
+        } catch {
+            try? save(previousSnapshot)
+            if !previousPerformanceWasUnreadable {
+                try? performanceStore.replace(previousPerformance)
+            }
+            snapshot = previousSnapshot
+            throw error
+        }
     }
 
     func clearAllHoldings() throws {
-        snapshot = PortfolioSnapshot(
+        let previousSnapshot = snapshot
+        let clearedSnapshot = PortfolioSnapshot(
             updateTime: nowProvider(),
             totalAmount: 0,
             holdingIncome: 0,
@@ -109,7 +124,15 @@ final class PortfolioStore {
             funds: [],
             migration: nil
         )
-        try save(snapshot)
+        try save(clearedSnapshot)
+
+        guard performanceStore.clear() else {
+            try? save(previousSnapshot)
+            throw PortfolioStoreError.performanceHistoryWriteFailed(
+                performanceStore.lastError ?? "未知错误"
+            )
+        }
+        snapshot = clearedSnapshot
         loadState = .loaded
     }
 
@@ -176,6 +199,7 @@ final class PortfolioStore {
             )
             syncInitialTradeRecordsFromFunds()
             try save(snapshot)
+            recordPortfolioPerformanceIfPossible(quotes: quotes, now: now)
             loadState = .loaded
         } catch {
             loadState = .failed(error.localizedDescription)
@@ -728,6 +752,18 @@ final class PortfolioStore {
         _ mutation: @MainActor (PortfolioStore) async throws -> Void
     ) async throws {
         let baseSnapshot = snapshot
+        let stagingPerformanceDirectory = FileManager.default.temporaryDirectory
+            .appending(
+                path: "fund-pulse-jd-staging-performance-\(UUID().uuidString)",
+                directoryHint: .isDirectory
+            )
+        defer {
+            try? FileManager.default.removeItem(at: stagingPerformanceDirectory)
+        }
+        let stagingPerformanceStore = PortfolioPerformanceStore(
+            dataDirectory: stagingPerformanceDirectory
+        )
+        try stagingPerformanceStore.replace(performanceStore.snapshot)
         let stagingRepository = StagedPortfolioRepository(
             dataDirectory: dataDirectory,
             snapshot: baseSnapshot
@@ -735,6 +771,7 @@ final class PortfolioStore {
         let stagingStore = PortfolioStore(
             repository: stagingRepository,
             quoteService: quoteService,
+            performanceStore: stagingPerformanceStore,
             now: nowProvider
         )
         stagingStore.load()
@@ -3544,6 +3581,23 @@ final class PortfolioStore {
             throw error
         }
     }
+
+    private func recordPortfolioPerformanceIfPossible(
+        quotes: [String: FundQuote],
+        now: Date
+    ) {
+        guard let allQuotesConfirmed = PortfolioPerformanceRecorder.quoteConfirmationState(
+            portfolio: snapshot,
+            quotes: quotes,
+            now: now
+        ) else { return }
+
+        _ = performanceStore.record(
+            portfolio: snapshot,
+            now: now,
+            allQuotesConfirmed: allQuotesConfirmed
+        )
+    }
 }
 
 enum PortfolioStoreError: LocalizedError, Equatable {
@@ -3559,8 +3613,10 @@ enum PortfolioStoreError: LocalizedError, Equatable {
     case sellTradeRequiresShare
     case invalidConversionTarget
     case concurrentModification
+    case jdFinanceAccountUnidentified
     case jdFinanceAccountMismatch
     case invalidJDFinanceSyncState
+    case performanceHistoryWriteFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -3588,10 +3644,14 @@ enum PortfolioStoreError: LocalizedError, Equatable {
             "转换目标基金不能与当前基金相同"
         case .concurrentModification:
             "持仓已在后台更新，请重新同步后再试"
+        case .jdFinanceAccountUnidentified:
+            "无法确认当前京东账号，请重新登录后再同步"
         case .jdFinanceAccountMismatch:
-            "当前京东账号与已建立同步基线的账号不一致，请先重置同步基线"
+            "当前京东账号与已有京东同步数据来源不一致，请切回原账号或清除旧账号的同步数据"
         case .invalidJDFinanceSyncState:
             "京东同步基线尚未建立，请先重新同步"
+        case .performanceHistoryWriteFailed(let reason):
+            "组合收益历史写入失败：\(reason)"
         }
     }
 }

@@ -41,6 +41,40 @@ private final class NoFocusSwitch: NSSwitch {
     override var acceptsFirstResponder: Bool { false }
 }
 
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case display
+    case refreshAndReminders
+    case data
+    case about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .display:
+            "显示"
+        case .refreshAndReminders:
+            "提醒"
+        case .data:
+            "数据"
+        case .about:
+            "关于"
+        }
+    }
+}
+
+struct SettingsSectionSession: Equatable {
+    private(set) var selectedSection: SettingsSection
+
+    init(selectedSection: SettingsSection = .display) {
+        self.selectedSection = selectedSection
+    }
+
+    mutating func select(_ section: SettingsSection) {
+        selectedSection = section
+    }
+}
+
 struct SettingsView: View {
     let store: PortfolioStore
     let settingsStore: AppSettingsStore
@@ -50,9 +84,13 @@ struct SettingsView: View {
     let onRefresh: (() async -> Void)?
     let onCheckUpdate: (() async -> Void)?
     let onOpenJDFinanceSync: (() -> Void)?
+    let onOpenPrivacyDisclaimer: (() -> Void)?
+    let onOpenOnboarding: (() -> Void)?
+    let onSectionChanged: ((SettingsSection) -> Void)?
     let onClose: (() -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
+    @State private var selectedSection: SettingsSection
     @State private var selectedAutoRefreshInterval: AutoRefreshInterval
     @State private var selectedMarketClosedAutoRefreshInterval: AutoRefreshInterval
     @State private var operationReminderTimeText: String
@@ -67,6 +105,8 @@ struct SettingsView: View {
     @State private var displayedMenuBarDisplayMode: MenuBarDisplayMode
     @State private var isClearHoldingsConfirmationPresented = false
     @State private var clearHoldingsStatusMessage: String?
+    @State private var isClearingJDFinanceSession = false
+    @State private var jdFinanceSessionStatusMessage: String?
     @Namespace private var appearanceModeSelectionNamespace
     @Namespace private var menuBarContentModeSelectionNamespace
     @Namespace private var menuBarDisplayModeSelectionNamespace
@@ -80,7 +120,11 @@ struct SettingsView: View {
         onRefresh: (() async -> Void)?,
         onCheckUpdate: (() async -> Void)?,
         onOpenJDFinanceSync: (() -> Void)? = nil,
-        onClose: (() -> Void)?
+        onOpenPrivacyDisclaimer: (() -> Void)? = nil,
+        onOpenOnboarding: (() -> Void)? = nil,
+        initialSection: SettingsSection = .display,
+        onSectionChanged: ((SettingsSection) -> Void)? = nil,
+        onClose: (() -> Void)? = nil
     ) {
         self.store = store
         self.settingsStore = settingsStore
@@ -90,7 +134,11 @@ struct SettingsView: View {
         self.onRefresh = onRefresh
         self.onCheckUpdate = onCheckUpdate
         self.onOpenJDFinanceSync = onOpenJDFinanceSync
+        self.onOpenPrivacyDisclaimer = onOpenPrivacyDisclaimer
+        self.onOpenOnboarding = onOpenOnboarding
+        self.onSectionChanged = onSectionChanged
         self.onClose = onClose
+        _selectedSection = State(initialValue: initialSection)
         _selectedAutoRefreshInterval = State(initialValue: settingsStore.settings.autoRefreshInterval)
         _selectedMarketClosedAutoRefreshInterval = State(
             initialValue: settingsStore.settings.marketClosedAutoRefreshInterval
@@ -108,181 +156,28 @@ struct SettingsView: View {
             header
                 .layoutPriority(1)
 
+            settingsSectionPicker
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 7)
+
+            Divider()
+                .opacity(0.45)
+
             ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    PanelSection(title: "外观") {
-                        appearanceModePicker
-                    }
-
-                    PanelSection(title: "菜单栏") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            menuBarContentModeRow
-                            menuBarDisplayModeRow
-                        }
-                    }
-
-                    PanelSection(title: "Beta 功能") {
-                        betaFeaturesSection
-                    }
-
-                    PanelSection(title: "基金操作提醒") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(alignment: .center, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("开启每日操作提醒")
-                                        .font(.system(size: 12, weight: .semibold))
-                                    Text("在设定时间发送系统通知，提醒检查估值并决定是否加仓或减仓。")
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer(minLength: 8)
-                                FocuslessSwitch(isOn: operationReminderEnabledBinding)
-                                    .frame(width: 54, height: 30)
-                            }
-
-                            HStack {
-                                Text("提醒时间")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                operationReminderTimeInput
-                            }
-                            .padding(9)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .overlay(PanelDesign.border(cornerRadius: 9))
-                            .opacity(settingsStore.settings.operationReminderEnabled ? 1 : 0.58)
-                        }
-                    }
-
-                    PanelSection(title: "涨跌幅提醒") {
-                        dailyGrowthReminderSection
-                    }
-
-                    PanelSection(title: "通知测试") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack(alignment: .center, spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("测试系统通知")
-                                            .font(.system(size: 11, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                        Text("只验证当前通知权限，不代表某只基金提醒已命中。")
-                                            .font(.system(size: 10))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer(minLength: 8)
-                                    testReminderButton
-                                        .frame(width: 108)
-                                }
-
-                                if let testReminderStatusMessage {
-                                    Text(testReminderStatusMessage)
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(canOpenNotificationSettings ? .orange : .secondary)
-                                        .lineLimit(nil)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-
-                                if canOpenNotificationSettings {
-                                    Button {
-                                        openNotificationSettings()
-                                    } label: {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "gearshape")
-                                            Text("打开通知设置")
-                                        }
-                                        .font(.system(size: 10, weight: .semibold))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(PanelDesign.accent)
-                                    .focusable(false)
-                                }
-                            }
-                            .padding(9)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            .overlay(PanelDesign.border(cornerRadius: 9))
-                        }
-                    }
-
-                    PanelSection(title: "自动刷新") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            autoRefreshIntervalControl(
-                                title: "开市间隔",
-                                selectedInterval: selectedAutoRefreshInterval,
-                                binding: autoRefreshIntervalSliderBinding,
-                                intervals: AutoRefreshInterval.marketOpenIntervals,
-                                detail: "开市时每 \(selectedAutoRefreshInterval.title) 刷新基金数据。"
-                            )
-
-                            Divider()
-                                .overlay(.secondary.opacity(0.14))
-
-                            autoRefreshIntervalControl(
-                                title: "休市间隔",
-                                selectedInterval: selectedMarketClosedAutoRefreshInterval,
-                                binding: marketClosedAutoRefreshIntervalSliderBinding,
-                                intervals: AutoRefreshInterval.marketClosedIntervals,
-                                detail: "午休、盘前、盘后、周末和节假日每 \(selectedMarketClosedAutoRefreshInterval.title) 刷新。"
-                            )
-                        }
-                        .padding(9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
-                    PanelSection(title: "主弹窗") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(alignment: .center, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("显示大盘指数")
-                                        .font(.system(size: 11, weight: .semibold))
-                                    Text("在主弹窗底部展示一行指数行情，可展开查看更多。")
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(2)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                Spacer(minLength: 8)
-                                FocuslessSwitch(isOn: marketIndexesShownBinding)
-                                    .frame(width: 54, height: 30)
-                            }
-
-                            if settingsStore.settings.showsMarketIndexes {
-                                Divider()
-                                    .overlay(.secondary.opacity(0.14))
-
-                                HStack {
-                                    Text("默认显示的指数")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    defaultMarketIndexPicker
-                                }
-                            }
-                        }
-                        .padding(9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay(PanelDesign.border(cornerRadius: 9))
-                    }
-
-                    PanelSection(title: "数据管理") {
-                        clearHoldingsSection
-                    }
-                }
+                selectedSettingsContent
                 .padding(.horizontal, 14)
                 .padding(.top, 8)
                 .padding(.bottom, 14)
             }
+            .id(selectedSection)
             .scrollIndicators(.hidden)
-
-            bottomActions
         }
-        .frame(width: PopoverLayout.settingsWidth, height: PopoverLayout.height, alignment: .top)
+        .frame(
+            width: PopoverLayout.settingsWidth,
+            height: PopoverLayout.settingsSize.height,
+            alignment: .top
+        )
         .background(PanelDesign.panelBackground)
         .onAppear {
             selectedAutoRefreshInterval = settingsStore.settings.autoRefreshInterval
@@ -312,13 +207,16 @@ struct SettingsView: View {
                 syncOperationReminderTimeText()
             }
         }
+        .onChange(of: selectedSection) { _, section in
+            onSectionChanged?(section)
+        }
         .alert("清空所有持仓", isPresented: $isClearHoldingsConfirmationPresented) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
                 clearAllHoldings()
             }
         } message: {
-            Text("会删除全部基金、待确认操作和交易记录，并清空当前收益汇总。此操作无法撤销。")
+            Text("会删除全部基金、待确认操作、交易记录、组合收益历史和当前收益汇总。此操作无法撤销。")
         }
     }
 
@@ -332,18 +230,236 @@ struct SettingsView: View {
         )
     }
 
-    private var bottomActions: some View {
-        VStack(spacing: 0) {
-            Divider()
-                .opacity(0.45)
+    private var settingsSectionPicker: some View {
+        PanelSegmentedPicker(
+            values: SettingsSection.allCases,
+            selection: $selectedSection,
+            title: \SettingsSection.title
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("设置分类")
+    }
 
-            plainTextButton("退出", systemImage: "power", role: .destructive) {
-                NSApp.terminate(nil)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+    @ViewBuilder
+    private var selectedSettingsContent: some View {
+        switch selectedSection {
+        case .display:
+            displaySettingsContent
+        case .refreshAndReminders:
+            refreshAndReminderSettingsContent
+        case .data:
+            dataSettingsContent
+        case .about:
+            aboutSettingsContent
         }
-        .background(PanelDesign.panelBackground)
+    }
+
+    private var displaySettingsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "外观") {
+                appearanceModePicker
+            }
+
+            PanelSection(title: "菜单栏") {
+                VStack(alignment: .leading, spacing: 8) {
+                    menuBarContentModeRow
+                    menuBarDisplayModeRow
+                }
+            }
+
+            PanelSection(title: "主弹窗") {
+                mainPanelSettingsSection
+            }
+        }
+    }
+
+    private var refreshAndReminderSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "自动刷新") {
+                autoRefreshSettingsSection
+            }
+
+            PanelSection(title: "每日操作提醒") {
+                operationReminderSettingsSection
+            }
+
+            PanelSection(title: "涨跌幅提醒") {
+                dailyGrowthReminderSection
+            }
+
+            PanelSection(title: "通知测试") {
+                notificationTestSection
+            }
+        }
+    }
+
+    private var dataSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "实验功能") {
+                betaFeaturesSection
+            }
+
+            PanelSection(title: "京东会话") {
+                jdFinanceSessionSection
+            }
+
+            PanelSection(title: "本地数据") {
+                clearHoldingsSection
+            }
+        }
+    }
+
+    private var aboutSettingsContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "关于与隐私") {
+                aboutAndPrivacySection
+            }
+
+            PanelSection(title: "应用") {
+                plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+
+    private var operationReminderSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("开启每日操作提醒")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("在设定时间发送系统通知，提醒检查估值并决定是否加仓或减仓。")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                FocuslessSwitch(isOn: operationReminderEnabledBinding)
+                    .frame(width: 54, height: 30)
+            }
+
+            HStack {
+                Text("提醒时间")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                operationReminderTimeInput
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(PanelDesign.border(cornerRadius: 9))
+            .opacity(settingsStore.settings.operationReminderEnabled ? 1 : 0.58)
+        }
+    }
+
+    private var notificationTestSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("测试系统通知")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("只验证当前通知权限，不代表某只基金提醒已命中。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                testReminderButton
+                    .frame(width: 108)
+            }
+
+            if let testReminderStatusMessage {
+                Text(testReminderStatusMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(canOpenNotificationSettings ? .orange : .secondary)
+                    .lineLimit(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if canOpenNotificationSettings {
+                Button {
+                    openNotificationSettings()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "gearshape")
+                        Text("打开通知设置")
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(PanelDesign.accent)
+                .focusable(false)
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var autoRefreshSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            autoRefreshIntervalControl(
+                title: "开市间隔",
+                selectedInterval: selectedAutoRefreshInterval,
+                binding: autoRefreshIntervalSliderBinding,
+                intervals: AutoRefreshInterval.marketOpenIntervals,
+                detail: "开市时每 \(selectedAutoRefreshInterval.title) 刷新基金数据。"
+            )
+
+            Divider()
+                .overlay(.secondary.opacity(0.14))
+
+            autoRefreshIntervalControl(
+                title: "休市间隔",
+                selectedInterval: selectedMarketClosedAutoRefreshInterval,
+                binding: marketClosedAutoRefreshIntervalSliderBinding,
+                intervals: AutoRefreshInterval.marketClosedIntervals,
+                detail: "午休、盘前、盘后、周末和节假日每 \(selectedMarketClosedAutoRefreshInterval.title) 刷新。"
+            )
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var mainPanelSettingsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("显示大盘指数")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("在主弹窗底部展示一行指数行情，可展开查看更多。")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                FocuslessSwitch(isOn: marketIndexesShownBinding)
+                    .frame(width: 54, height: 30)
+            }
+
+            if settingsStore.settings.showsMarketIndexes {
+                Divider()
+                    .overlay(.secondary.opacity(0.14))
+
+                HStack {
+                    Text("默认显示的指数")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    defaultMarketIndexPicker
+                }
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
     }
 
     private var isUpdateBusy: Bool {
@@ -414,7 +530,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("清空所有持仓")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("删除本地基金列表、待确认操作和交易记录，适合重新开始录入。")
+                    Text("删除本地基金列表、待确认操作、交易记录和组合收益历史，适合彻底重新开始。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -453,12 +569,80 @@ struct SettingsView: View {
         .overlay(PanelDesign.border(cornerRadius: 9))
     }
 
+    private var jdFinanceSessionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("清除这台 Mac 上的京东网页登录状态。不会删除本地持仓、交易记录或历史收益。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let jdFinanceSessionStatusMessage {
+                Text(jdFinanceSessionStatusMessage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: clearJDFinanceSession) {
+                PanelButtonLabel(
+                    title: isClearingJDFinanceSession ? "正在清除..." : "清除京东登录",
+                    systemImage: "person.crop.circle.badge.xmark",
+                    style: .secondary,
+                    isEnabled: !isClearingJDFinanceSession
+                )
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .disabled(isClearingJDFinanceSession)
+            .help("清除本机京东网页登录会话")
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var aboutAndPrivacySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                onOpenPrivacyDisclaimer?()
+            } label: {
+                PanelButtonLabel(
+                    title: "隐私与免责声明",
+                    systemImage: "hand.raised",
+                    style: .secondary
+                )
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(onOpenPrivacyDisclaimer == nil)
+
+            Button {
+                onOpenOnboarding?()
+            } label: {
+                PanelButtonLabel(
+                    title: "重新查看使用引导",
+                    systemImage: "sparkles.rectangle.stack",
+                    style: .secondary
+                )
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .disabled(onOpenOnboarding == nil)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
     private var canClearHoldings: Bool {
         !store.snapshot.funds.isEmpty
             || store.snapshot.pendingTrades?.isEmpty == false
             || store.snapshot.pendingConversions?.isEmpty == false
             || store.snapshot.tradeRecords?.isEmpty == false
             || store.snapshot.syncedAccountTotal != nil
+            || !store.performanceStore.snapshot.days.isEmpty
     }
 
     private func autoRefreshIntervalControl(
@@ -1295,6 +1479,17 @@ struct SettingsView: View {
             }
         } catch {
             clearHoldingsStatusMessage = "清空失败：\(error.localizedDescription)"
+        }
+    }
+
+    private func clearJDFinanceSession() {
+        guard !isClearingJDFinanceSession else { return }
+        isClearingJDFinanceSession = true
+        jdFinanceSessionStatusMessage = nil
+        Task { @MainActor in
+            await JDFinanceWebSession.clearSession()
+            isClearingJDFinanceSession = false
+            jdFinanceSessionStatusMessage = "已清除京东登录；本地持仓和收益记录未变。"
         }
     }
 }

@@ -30,6 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         UNUserNotificationCenter.current().delegate = self
+#if DEBUG
+#else
+        JDFinanceDebugArtifacts.removePersistedFiles()
+#endif
         portfolioStore.load()
         statusBarController = StatusBarController(
             store: portfolioStore,
@@ -44,6 +48,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.updateStore.openUpdate()
             }
         )
+        statusBarController?.presentInitialExperienceIfNeeded()
+#if DEBUG
+        statusBarController?.presentDebugPanelIfRequested()
+#endif
         Task {
             await checkForUpdates()
         }

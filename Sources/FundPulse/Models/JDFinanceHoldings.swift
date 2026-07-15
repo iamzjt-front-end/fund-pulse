@@ -130,6 +130,7 @@ struct JDFinancePendingTransactionDetail: Equatable {
 
 struct JDFinanceTradeOrderRecord: Equatable {
     var stableOrderKey: String? = nil
+    var sourceOrderKeys: [String] = []
     var code: String?
     var codeResolution: JDFinanceFundCodeResolution = .unresolved
     var productName: String?
@@ -363,6 +364,7 @@ struct JDFinanceAutomaticConfirmation: Identifiable, Equatable {
     var recordIDs: [String]
     var syncKey: String?
     var statusText: String?
+    var representedOrderKeys: [String] = []
 }
 
 struct JDFinanceUnrecordedOrder: Identifiable, Equatable {
@@ -502,12 +504,23 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
         pendingDetail?.matchedTradeRecords ?? []
     }
 
+    var logicalMatchedTradeRecords: [JDFinanceTradeOrderRecord] {
+        JDFinanceTradeOrderBatcher.logicalRecords(matchedTradeRecords)
+    }
+
     var candidateTradeRecords: [JDFinanceTradeOrderRecord] {
         pendingDetail?.candidateTradeRecords ?? []
     }
 
     var tradeCountText: String? {
-        transactionTip?.tradeCount.map { "\($0) 笔" }
+        "\(logicalTradeCount) 笔"
+    }
+
+    var logicalTradeCount: Int {
+        if !logicalMatchedTradeRecords.isEmpty {
+            return logicalMatchedTradeRecords.count
+        }
+        return max(transactionTip?.tradeCount ?? 1, 1)
     }
 
     var actionTitle: String {
@@ -517,6 +530,7 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     func canBuildLocalDraft(manualCompletion: JDFinancePendingManualCompletion?) -> Bool {
         switch importKind {
         case .newFund:
+            if !matchedTradeDrafts().isEmpty { return true }
             return localTradeDate(manualCompletion: manualCompletion) != nil
                 && localTradeTimeType(manualCompletion: manualCompletion) != nil
                 && amount > 0
@@ -538,7 +552,30 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     }
 
     func fundPositionDraft(manualCompletion: JDFinancePendingManualCompletion? = nil) -> FundPositionDraft? {
-        guard importKind == .newFund,
+        guard importKind == .newFund else {
+            return nil
+        }
+
+        if let firstDraft = matchedTradeDrafts().first,
+           let positionAmount = firstDraft.amount,
+           positionAmount > 0
+        {
+            return FundPositionDraft(
+                code: code,
+                name: name,
+                positionMode: .amount,
+                positionAmount: positionAmount,
+                positionProfit: holdingIncome ?? 0,
+                shares: nil,
+                cost: nil,
+                positionDate: firstDraft.tradeDate,
+                positionTimeType: firstDraft.tradeTimeType,
+                memo: "京东金融同步待确认",
+                requiresTradeConfirmation: true
+            )
+        }
+
+        guard
               let tradeDate = localTradeDate(manualCompletion: manualCompletion),
               let tradeTimeType = localTradeTimeType(manualCompletion: manualCompletion)
         else {
@@ -655,13 +692,19 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     }
 
     private func matchedTradeDrafts() -> [FundTradeDraft] {
-        guard case let .trade(action) = importKind,
-              !matchedTradeRecords.isEmpty
-        else {
+        let action: FundTradeAction
+        switch importKind {
+        case .newFund:
+            action = .buy
+        case .trade(let pendingAction):
+            action = pendingAction
+        case .conversion, nil:
             return []
         }
+        let records = logicalMatchedTradeRecords.sorted(by: tradeRecordComesBefore)
+        guard !records.isEmpty else { return [] }
 
-        let drafts: [FundTradeDraft] = matchedTradeRecords.compactMap { record in
+        let drafts: [FundTradeDraft] = records.compactMap { record in
             guard let tradeDate = record.tradeDate,
                   let tradeTimeType = record.tradeTimeType
             else {
@@ -693,7 +736,30 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
                 )
             }
         }
-        return drafts.count == matchedTradeRecords.count ? drafts : []
+        return drafts.count == records.count ? drafts : []
+    }
+
+    private func tradeRecordComesBefore(
+        _ lhs: JDFinanceTradeOrderRecord,
+        _ rhs: JDFinanceTradeOrderRecord
+    ) -> Bool {
+        let lhsDate = lhs.tradeDate ?? ""
+        let rhsDate = rhs.tradeDate ?? ""
+        if lhsDate != rhsDate {
+            return lhsDate < rhsDate
+        }
+        return tradeTimeOrder(lhs.tradeTimeType) < tradeTimeOrder(rhs.tradeTimeType)
+    }
+
+    private func tradeTimeOrder(_ timeType: PositionTimeType?) -> Int {
+        switch timeType {
+        case .before15:
+            0
+        case .after15:
+            1
+        case nil:
+            2
+        }
     }
 
     private func normalizedRecordCode(_ record: JDFinanceTradeOrderRecord) -> String? {
@@ -740,6 +806,14 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
 
     var importablePendingNotices: [JDFinanceHoldingPendingNotice] {
         pendingNotices.filter(\.isImportable)
+    }
+
+    var pendingTradeCount: Int {
+        pendingNotices.map(\.logicalTradeCount).reduce(0, +)
+    }
+
+    var importablePendingTradeCount: Int {
+        importablePendingNotices.map(\.logicalTradeCount).reduce(0, +)
     }
 
     var overwritableReconciliationNotices: [JDFinanceReconciliationNotice] {

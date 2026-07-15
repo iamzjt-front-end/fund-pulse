@@ -17,6 +17,7 @@ final class JDFinanceHoldingsSyncStore {
     private let nowProvider: () -> Date
     private var syncGeneration = 0
     private var syncTask: Task<Void, Never>?
+    private var previewAccountKey: String?
 
     init(
         service: JDFinanceHoldingsService = JDFinanceHoldingsService(),
@@ -54,6 +55,8 @@ final class JDFinanceHoldingsSyncStore {
         generation: Int
     ) async {
         isSyncing = true
+        preview = nil
+        previewAccountKey = nil
         errorMessage = nil
         lastError = nil
         statusMessage = "正在同步京东持仓..."
@@ -65,6 +68,13 @@ final class JDFinanceHoldingsSyncStore {
         }
 
         do {
+            guard JDFinanceWebSession.hasUsableCookieHeader(cookieHeader) else {
+                throw JDFinanceHoldingsError.notLoggedIn
+            }
+            guard let currentAccountKey = JDFinanceSyncFingerprint.accountKey(cookieHeader: cookieHeader) else {
+                throw PortfolioStoreError.jdFinanceAccountUnidentified
+            }
+            try Self.validateAccountBinding(currentAccountKey, in: portfolioStore)
             let syncedAt = nowProvider()
             let remoteSnapshot = try await service.fetchSnapshot(
                 cookieHeader: cookieHeader,
@@ -78,18 +88,12 @@ final class JDFinanceHoldingsSyncStore {
             )
             try Task.checkCancellation()
             guard generation == syncGeneration else { return }
+            try Self.validateAccountBinding(currentAccountKey, in: portfolioStore)
 
             let plannedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: resolvedRemoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
             )
-            let currentAccountKey = JDFinanceSyncFingerprint.accountKey(cookieHeader: cookieHeader)
-            if let establishedAccountKey = portfolioStore.snapshot.jdFinanceSyncState?.accountKey,
-               let currentAccountKey,
-               establishedAccountKey != currentAccountKey
-            {
-                throw PortfolioStoreError.jdFinanceAccountMismatch
-            }
             let syncState = Self.nextSyncState(
                 current: portfolioStore.snapshot.jdFinanceSyncState,
                 remoteSnapshot: resolvedRemoteSnapshot,
@@ -110,7 +114,10 @@ final class JDFinanceHoldingsSyncStore {
             updatedPreview.autoConfirmedCount = plannedPreview.automaticConfirmations.count
             updatedPreview.baselineRepresentedCount = plannedPreview.baselineRepresentedCount
             preview = updatedPreview
+            previewAccountKey = currentAccountKey
+#if DEBUG
             Self.writeDebugPreview(updatedPreview, now: syncedAt)
+#endif
             lastSyncedAt = syncedAt
             if updatedPreview.autoConfirmedCount > 0, updatedPreview.isEmpty {
                 statusMessage = "已同步，自动确认 \(updatedPreview.autoConfirmedCount) 笔"
@@ -185,6 +192,7 @@ final class JDFinanceHoldingsSyncStore {
 
         let positionDate = DateOnlyFormatter.string(from: nowProvider())
         do {
+            let accountKey = try validatedPreviewAccount(in: portfolioStore)
             try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
                 for candidate in candidates {
                     try await stagingStore.upsertFund(candidate.draft(positionDate: positionDate))
@@ -194,6 +202,12 @@ final class JDFinanceHoldingsSyncStore {
                 }
                 for candidate in reconciliationCandidates {
                     try await stagingStore.applyJDFinanceReconciliation(candidate)
+                    for order in candidate.matchedTradeRecords {
+                        try stagingStore.markJDFinanceOrderRepresented(
+                            Self.orderKey(order),
+                            dismissed: false
+                        )
+                    }
                 }
                 try await stagingStore.applyAmountPositionSyncUpdates(updates)
                 for candidate in unrecordedCandidates {
@@ -203,6 +217,7 @@ final class JDFinanceHoldingsSyncStore {
                         dismissed: false
                     )
                 }
+                try Self.validateAccountBinding(accountKey, in: portfolioStore)
             }
             var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: preview.remoteSnapshot,
@@ -236,7 +251,15 @@ final class JDFinanceHoldingsSyncStore {
         defer { isApplying = false }
 
         do {
-            try await applyPendingNoticeDraft(notice, to: portfolioStore, manualCompletion: manualCompletion)
+            let accountKey = try validatedPreviewAccount(in: portfolioStore)
+            try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
+                try await self.applyPendingNoticeDraft(
+                    notice,
+                    to: stagingStore,
+                    manualCompletion: manualCompletion
+                )
+                try Self.validateAccountBinding(accountKey, in: portfolioStore)
+            }
             self.preview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: preview.remoteSnapshot,
                 localSnapshot: portfolioStore.snapshot
@@ -255,6 +278,7 @@ final class JDFinanceHoldingsSyncStore {
         syncTask = nil
         isSyncing = false
         preview = nil
+        previewAccountKey = nil
         errorMessage = nil
         lastError = nil
         statusMessage = "已清除京东登录会话"
@@ -267,6 +291,7 @@ final class JDFinanceHoldingsSyncStore {
     ) {
         guard let preview else { return }
         do {
+            _ = try validatedPreviewAccount(in: portfolioStore)
             try portfolioStore.markJDFinanceOrderRepresented(
                 Self.orderKey(order.record),
                 dismissed: true
@@ -290,6 +315,7 @@ final class JDFinanceHoldingsSyncStore {
         do {
             try portfolioStore.resetJDFinanceSyncState()
             preview = nil
+            previewAccountKey = nil
             lastSyncedAt = nil
             errorMessage = nil
             statusMessage = "已重置同步基线，请重新同步"
@@ -310,6 +336,7 @@ final class JDFinanceHoldingsSyncStore {
         defer { isApplying = false }
 
         do {
+            let accountKey = try validatedPreviewAccount(in: portfolioStore)
             let syncedAt = nowProvider()
             try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
                 try stagingStore.applyJDFinanceFullClearance(holding, syncedAt: syncedAt)
@@ -317,6 +344,7 @@ final class JDFinanceHoldingsSyncStore {
                     Self.orderKey(order),
                     dismissed: false
                 )
+                try Self.validateAccountBinding(accountKey, in: portfolioStore)
             }
             var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: preview.remoteSnapshot,
@@ -343,12 +371,14 @@ final class JDFinanceHoldingsSyncStore {
         defer { isApplying = false }
 
         do {
+            let accountKey = try validatedPreviewAccount(in: portfolioStore)
             try await portfolioStore.performJDFinanceAtomicMutation { stagingStore in
                 try await self.importUnrecordedOrder(order, to: stagingStore)
                 try stagingStore.markJDFinanceOrderRepresented(
                     Self.orderKey(order.record),
                     dismissed: false
                 )
+                try Self.validateAccountBinding(accountKey, in: portfolioStore)
             }
             var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: preview.remoteSnapshot,
@@ -371,32 +401,37 @@ final class JDFinanceHoldingsSyncStore {
     ) async throws {
         if let fundDraft = notice.fundPositionDraft(manualCompletion: manualCompletion) {
             try await portfolioStore.upsertFund(fundDraft)
+            let initialTradeDraft = FundTradeDraft(
+                action: .buy,
+                code: fundDraft.code,
+                mode: .amount,
+                amount: fundDraft.positionAmount,
+                shares: nil,
+                tradeDate: fundDraft.positionDate,
+                tradeTimeType: fundDraft.positionTimeType
+            )
             let metadata = syncMetadata(
-                syncKey: JDFinanceSyncFingerprint.tradeDraft(
-                    FundTradeDraft(
-                        action: .buy,
-                        code: fundDraft.code,
-                        mode: .amount,
-                        amount: fundDraft.positionAmount,
-                        shares: nil,
-                        tradeDate: fundDraft.positionDate,
-                        tradeTimeType: fundDraft.positionTimeType
-                    )
-                ),
+                syncKey: JDFinanceSyncFingerprint.tradeDraft(initialTradeDraft),
                 statusText: notice.detailStatusText ?? notice.message
             )
             try portfolioStore.markImportedTradeIfPresent(
-                FundTradeDraft(
-                    action: .buy,
-                    code: fundDraft.code,
-                    mode: .amount,
-                    amount: fundDraft.positionAmount,
-                    shares: nil,
-                    tradeDate: fundDraft.positionDate,
-                    tradeTimeType: fundDraft.positionTimeType
-                ),
+                initialTradeDraft,
                 syncMetadata: metadata
             )
+
+            if let matchedDrafts = notice.tradeDrafts(manualCompletion: manualCompletion),
+               matchedDrafts.count > 1
+            {
+                for tradeDraft in matchedDrafts.dropFirst() {
+                    try await portfolioStore.importTradeIfNeeded(
+                        tradeDraft,
+                        syncMetadata: syncMetadata(
+                            syncKey: JDFinanceSyncFingerprint.tradeDraft(tradeDraft),
+                            statusText: notice.detailStatusText ?? notice.message
+                        )
+                    )
+                }
+            }
             return
         }
 
@@ -430,6 +465,29 @@ final class JDFinanceHoldingsSyncStore {
         }
 
         throw JDFinanceHoldingsError.invalidResponse
+    }
+
+    private func validatedPreviewAccount(in portfolioStore: PortfolioStore) throws -> String {
+        guard let previewAccountKey else {
+            throw PortfolioStoreError.jdFinanceAccountUnidentified
+        }
+        try Self.validateAccountBinding(previewAccountKey, in: portfolioStore)
+        return previewAccountKey
+    }
+
+    private static func validateAccountBinding(
+        _ currentAccountKey: String,
+        in portfolioStore: PortfolioStore
+    ) throws {
+        let establishedAccountKeys = Set([
+            portfolioStore.snapshot.jdFinanceSyncState?.accountKey,
+            portfolioStore.performanceStore.snapshot.jdFinanceSync?.accountKey
+        ].compactMap { $0 })
+        guard establishedAccountKeys.count <= 1,
+              establishedAccountKeys.first.map({ $0 == currentAccountKey }) ?? true
+        else {
+            throw PortfolioStoreError.jdFinanceAccountMismatch
+        }
     }
 
     private func syncMetadata(syncKey: String, statusText: String?) -> FundTradeSyncMetadata {
@@ -569,6 +627,7 @@ final class JDFinanceHoldingsSyncStore {
         var representedKeys = Set(current?.representedOrderKeys ?? [])
         representedKeys.formUnion(plannedPreview.baselineOrderKeys)
         representedKeys.formUnion(plannedPreview.automaticConfirmations.compactMap(\.syncKey))
+        representedKeys.formUnion(plannedPreview.automaticConfirmations.flatMap(\.representedOrderKeys))
 
         var trackedPendingKeys = Set(current?.trackedPendingOrderKeys ?? [])
         let terminalKeys = Set(remoteSnapshot.tradeOrders.compactMap { order -> String? in

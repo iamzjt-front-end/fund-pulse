@@ -230,7 +230,7 @@ EOF
   fi
 fi
 
-"$ROOT_DIR/script/build_and_run.sh" --build
+FUND_PULSE_BUILD_CONFIGURATION=release "$ROOT_DIR/script/build_and_run.sh" --build
 
 rm -rf "$WORK_DIR" "$NOTARY_ZIP_PATH"
 mkdir -p "$OUT_DIR" "$WORK_DIR"

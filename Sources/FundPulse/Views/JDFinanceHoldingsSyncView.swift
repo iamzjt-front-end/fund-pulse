@@ -63,7 +63,11 @@ struct JDFinanceHoldingsSyncView: View {
         onMainPanelRefreshNeeded: @escaping @MainActor () -> Void,
         onClose: @escaping () -> Void
     ) {
+#if DEBUG
         let probe = JDFinanceNetworkProbe(persistsEntriesToDisk: true)
+#else
+        let probe = JDFinanceNetworkProbe(persistsEntriesToDisk: false)
+#endif
         self.portfolioStore = portfolioStore
         self.onRequestLogin = onRequestLogin
         self.onRequestNetworkProbe = onRequestNetworkProbe
@@ -410,7 +414,7 @@ struct JDFinanceHoldingsSyncView: View {
                         if !preview.pendingNotices.isEmpty {
                             previewSection(
                                 title: "京东订单 · 待确认",
-                                count: preview.pendingNotices.count,
+                                count: preview.pendingTradeCount,
                                 tone: PanelDesign.warningAccent
                             ) {
                                 ForEach(preview.pendingNotices) { notice in
@@ -473,7 +477,7 @@ struct JDFinanceHoldingsSyncView: View {
                 countPill("覆盖", preview.reconciliationNotices.count, tone: PanelDesign.accent)
                 countPill("清仓", preview.missingLocalHoldings.count, tone: .green)
                 countPill("冲突", preview.unresolvedHoldings.count, tone: PanelDesign.warningAccent)
-                countPill("提示", preview.pendingNotices.count + preview.warnings.count, tone: PanelDesign.warningAccent)
+                countPill("提示", preview.pendingTradeCount + preview.warnings.count, tone: PanelDesign.warningAccent)
             }
 
             if preview.baselineRepresentedCount > 0 {
@@ -536,7 +540,7 @@ struct JDFinanceHoldingsSyncView: View {
                     syncScopeToggle(
                         scope: .pendingHoldings,
                         title: "待确认",
-                        count: preview.importablePendingNotices.count,
+                        count: preview.importablePendingTradeCount,
                         tone: PanelDesign.warningAccent
                     )
                     syncScopeToggle(
@@ -1088,8 +1092,8 @@ struct JDFinanceHoldingsSyncView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if !notice.matchedTradeRecords.isEmpty {
-                tradeRecordsList(title: "已匹配交易记录", records: notice.matchedTradeRecords)
+            if !notice.logicalMatchedTradeRecords.isEmpty {
+                tradeRecordsList(title: "已匹配买入批次", records: notice.logicalMatchedTradeRecords)
             } else if !notice.candidateTradeRecords.isEmpty {
                 tradeRecordsList(title: "候选交易记录", records: notice.candidateTradeRecords)
             }
@@ -1141,7 +1145,9 @@ struct JDFinanceHoldingsSyncView: View {
                 applyPendingNotice(notice, manualCompletion: nil)
             } label: {
                 PanelButtonLabel(
-                    title: notice.matchedTradeRecords.count > 1 ? "同步 \(notice.matchedTradeRecords.count) 笔" : "同步待确认",
+                    title: notice.logicalMatchedTradeRecords.count > 1
+                        ? "同步 \(notice.logicalMatchedTradeRecords.count) 笔"
+                        : "同步待确认",
                     systemImage: "checkmark.circle",
                     style: .primary,
                     isEnabled: !syncStore.isApplying

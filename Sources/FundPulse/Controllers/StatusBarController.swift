@@ -145,18 +145,20 @@ enum PopoverLayout {
     static let jdFinanceLoginWidth: CGFloat = 1040
     static let jdFinancePreviewWidth: CGFloat = 430
     static let jdFinanceSyncHeight: CGFloat = 720
-    static let settingsWidth: CGFloat = 320
-    static let editorWidth: CGFloat = 360
+    static let standardChildPanelWidth: CGFloat = 360
+    static let settingsWidth: CGFloat = standardChildPanelWidth
+    static let editorWidth: CGFloat = standardChildPanelWidth
+    static let standardChildPanelHeight: CGFloat = 660
     static let editorHeight: CGFloat = 600
-    static let tradeEditorHeight: CGFloat = 660
-    static let fundDetailHeight: CGFloat = 660
     static let tradeRecordsHeight: CGFloat = 520
-    static let portfolioBreakdownWidth: CGFloat = 392
-    static let portfolioBreakdownHeight: CGFloat = 600
-    static let todayIncomeRankingWidth: CGFloat = 392
-    static let todayIncomeRankingHeight: CGFloat = 600
-    static let fundDailyIncomeWidth: CGFloat = 392
+    static let portfolioBreakdownWidth: CGFloat = standardChildPanelWidth
+    static let todayIncomeRankingWidth: CGFloat = standardChildPanelWidth
+    static let fundDailyIncomeWidth: CGFloat = standardChildPanelWidth
     static let fundDailyIncomeHeight: CGFloat = 600
+    static let onboardingWidth: CGFloat = standardChildPanelWidth
+    static let privacyDisclaimerWidth: CGFloat = onboardingWidth
+    static let sampleExperienceWidth: CGFloat = 430
+    static let portfolioPerformanceWidth: CGFloat = 430
     static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
     static let arrowHeight: CGFloat = 10
     static let arrowWidth: CGFloat = 22
@@ -169,14 +171,19 @@ enum PopoverLayout {
     static let jdFinanceLoginSize = NSSize(width: jdFinanceLoginWidth, height: jdFinanceSyncHeight)
     static let jdFinanceNetworkProbeSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
     static let jdFinanceSyncSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
-    static let settingsSize = NSSize(width: settingsWidth, height: height)
+    static let settingsSize = NSSize(width: settingsWidth, height: standardChildPanelHeight)
     static let editorSize = NSSize(width: editorWidth, height: editorHeight)
-    static let tradeEditorSize = NSSize(width: editorWidth, height: tradeEditorHeight)
-    static let fundDetailSize = NSSize(width: editorWidth, height: fundDetailHeight)
+    static let tradeEditorSize = NSSize(width: editorWidth, height: standardChildPanelHeight)
+    static let fundDetailSize = NSSize(width: editorWidth, height: standardChildPanelHeight)
     static let tradeRecordsSize = NSSize(width: editorWidth, height: tradeRecordsHeight)
-    static let portfolioBreakdownSize = NSSize(width: portfolioBreakdownWidth, height: portfolioBreakdownHeight)
-    static let todayIncomeRankingSize = NSSize(width: todayIncomeRankingWidth, height: todayIncomeRankingHeight)
+    static let portfolioBreakdownSize = NSSize(width: portfolioBreakdownWidth, height: standardChildPanelHeight)
+    static let todayIncomeRankingSize = NSSize(width: todayIncomeRankingWidth, height: standardChildPanelHeight)
     static let fundDailyIncomeSize = NSSize(width: fundDailyIncomeWidth, height: fundDailyIncomeHeight)
+    static let onboardingSize = NSSize(width: onboardingWidth, height: standardChildPanelHeight)
+    static let sampleExperienceSize = NSSize(width: sampleExperienceWidth, height: standardChildPanelHeight)
+    static let privacyDisclaimerSize = NSSize(width: privacyDisclaimerWidth, height: standardChildPanelHeight)
+    static let portfolioPerformanceSize = NSSize(width: portfolioPerformanceWidth, height: standardChildPanelHeight)
+    static let jdFinancePerformanceSyncSize = portfolioPerformanceSize
 
     static func clampedMainPanelHeight(_ height: CGFloat) -> CGFloat {
         CGFloat(AppSettings.clampedMainPanelHeight(Int(height.rounded())))
@@ -249,18 +256,21 @@ private final class FundPulsePanel: NSPanel {
     }
 }
 
-private final class PanelCardContainerView: NSView {
+final class PanelCardContainerView: NSView {
     let hostedContentView: NSView
 
     init(contentView: NSView, cornerRadius: CGFloat = PopoverLayout.cornerRadius) {
         hostedContentView = contentView
         super.init(frame: .zero)
 
+        if let hostingView = contentView as? NSHostingView<AnyView> {
+            hostingView.sizingOptions = []
+        }
+
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
         layer?.masksToBounds = true
         updateAppearanceColors()
-        translatesAutoresizingMaskIntoConstraints = false
 
         contentView.wantsLayer = true
         contentView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -308,6 +318,11 @@ private final class PanelCardContainerView: NSView {
 }
 
 @MainActor
+private final class OnboardingAddFlowState {
+    var didSave = false
+}
+
+@MainActor
 final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let store: PortfolioStore
@@ -342,6 +357,15 @@ final class StatusBarController: NSObject {
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
     private let operationReminderScheduler: OperationReminderNotificationScheduler
+    private var settingsSectionSession = SettingsSectionSession()
+    private var onboardingResumeStep = 0
+    private var holdingPerformancePage: HoldingPerformancePage = .ranking
+    private var holdingPerformanceMetric: IncomeRankingMetric = .amount
+    private var holdingPerformanceRange: PortfolioPerformanceRange = .threeMonths
+    private var holdingPerformanceMonth: Date?
+#if DEBUG
+    private var debugPerformanceStore: PortfolioPerformanceStore?
+#endif
 
     private static func makeOperationReminderScheduler() -> OperationReminderNotificationScheduler {
         let center = UNUserNotificationCenter.current()
@@ -402,6 +426,14 @@ final class StatusBarController: NSObject {
         settingsStore.settings.appearanceMode.nsAppearance
     }
 
+    private var performanceStoreForPresentation: PortfolioPerformanceStore {
+#if DEBUG
+        debugPerformanceStore ?? store.performanceStore
+#else
+        store.performanceStore
+#endif
+    }
+
     init(
         store: PortfolioStore,
         settingsStore: AppSettingsStore,
@@ -439,6 +471,82 @@ final class StatusBarController: NSObject {
         operationReminderScheduler.invalidate()
         removeEventMonitors()
     }
+
+    func presentInitialExperienceIfNeeded() {
+        guard OnboardingEligibility.shouldPresent(
+            settings: settingsStore.settings,
+            settingsLoadOrigin: settingsStore.loadOrigin,
+            portfolioLoadState: store.loadState
+        ) else { return }
+
+        onboardingResumeStep = 0
+        NSApp.activate(ignoringOtherApps: true)
+        showMainPanel()
+        showChildPanel(.onboarding(origin: .firstLaunch))
+    }
+
+#if DEBUG
+    func presentDebugPanelIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
+        guard let flagIndex = arguments.firstIndex(of: "--debug-panel"),
+              arguments.indices.contains(flagIndex + 1)
+        else { return }
+
+        let route: ChildPanelRoute
+        switch arguments[flagIndex + 1] {
+        case "onboarding":
+            route = .onboarding(origin: .settings)
+        case "sample":
+            route = .sampleExperience(origin: .settings)
+        case "privacy":
+            route = .privacyDisclaimer(origin: .settings)
+        case "performance":
+            holdingPerformancePage = .ranking
+            route = .portfolioPerformance
+        case "performance-sample":
+            debugPerformanceStore = makeDebugPerformanceStore()
+            holdingPerformancePage = .curve
+            route = .portfolioPerformance
+        case "performance-calendar-sample":
+            debugPerformanceStore = makeDebugPerformanceStore()
+            holdingPerformancePage = .calendar
+            route = .portfolioPerformance
+        case "performance-sync":
+            holdingPerformancePage = .curve
+            route = .jdFinancePerformanceSync
+        case "settings":
+            route = .settings
+        default:
+            return
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        showMainPanel()
+        showChildPanel(route)
+    }
+
+    private func makeDebugPerformanceStore() -> PortfolioPerformanceStore {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-performance-preview-\(UUID().uuidString)")
+        let previewStore = PortfolioPerformanceStore(dataDirectory: directory)
+        let sample = SampleExperienceFactory.make()
+        let days = sample.dailyPerformance.enumerated().map { index, item in
+            PortfolioPerformanceDay(
+                date: DateOnlyFormatter.string(from: item.date),
+                profit: item.dailyIncome,
+                returnRate: item.dailyIncomeRate,
+                status: index == sample.dailyPerformance.count - 1 ? .estimated : .confirmed,
+                updatedAt: sample.generatedAt
+            )
+        }
+        try? previewStore.replace(
+            PortfolioPerformanceSnapshot(
+                trackingStartDate: days.first?.date,
+                days: days
+            )
+        )
+        return previewStore
+    }
+#endif
 
     private func configureStatusItem() {
         guard let button = statusItem.button else { return }
@@ -614,16 +722,20 @@ final class StatusBarController: NSObject {
                 self?.showChildPanel(.portfolioBreakdown)
             },
             onOpenTodayIncomeRanking: { [weak self] in
-                self?.showChildPanel(.incomeRanking(.today, .amount))
+                self?.showChildPanel(.todayIncomeRanking(.amount))
             },
             onOpenTodayRateRanking: { [weak self] in
-                self?.showChildPanel(.incomeRanking(.today, .rate))
+                self?.showChildPanel(.todayIncomeRanking(.rate))
             },
             onOpenHoldingIncomeRanking: { [weak self] in
-                self?.showChildPanel(.incomeRanking(.holding, .amount))
+                self?.holdingPerformancePage = .ranking
+                self?.holdingPerformanceMetric = .amount
+                self?.showChildPanel(.portfolioPerformance)
             },
             onOpenHoldingRateRanking: { [weak self] in
-                self?.showChildPanel(.incomeRanking(.holding, .rate))
+                self?.holdingPerformancePage = .ranking
+                self?.holdingPerformanceMetric = .rate
+                self?.showChildPanel(.portfolioPerformance)
             },
             onAddFund: { [weak self] in
                 self?.showChildPanel(.addFund)
@@ -666,10 +778,10 @@ final class StatusBarController: NSObject {
             showMainPanel()
         }
 
-        if case .jdFinanceSync = activeChildPanel,
-           case .jdFinanceSync = route {
-        } else if case .jdFinanceSync = activeChildPanel {
-            hideJDFinanceLoginPanel(reportCancellation: true)
+        if let activeChildPanel,
+           activeChildPanel.ownsJDFinanceLoginPanel,
+           activeChildPanel != route {
+            hideJDFinanceLoginPanel(reportCancellation: false)
         }
 
         switch ChildPanelRouteResolver.disposition(for: route, in: store.snapshot) {
@@ -809,6 +921,88 @@ final class StatusBarController: NSObject {
 
     private func makeChildPanelContent(for route: ChildPanelRoute) -> (NSView, NSSize)? {
         switch route {
+        case .privacyDisclaimer(let origin):
+            let view = PrivacyDisclaimerView(
+                onBack: { [weak self] in
+                    self?.returnFromPrivacyDisclaimer(origin)
+                },
+                onOpenURL: { url in
+                    NSWorkspace.shared.open(url)
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.privacyDisclaimerSize)
+
+        case .onboarding(let origin):
+            let view = OnboardingView(
+                initialStep: onboardingResumeStep,
+                onAddFund: { [weak self] in
+                    self?.showChildPanel(.onboardingAddFund(origin: origin))
+                },
+                onImportPortfolio: { [weak self] in
+                    guard let self, importFundConfiguration() else { return }
+                    finishOnboarding(origin)
+                },
+                onOpenSample: { [weak self] in
+                    self?.showChildPanel(.sampleExperience(origin: origin))
+                },
+                onStartEmpty: { [weak self] in
+                    self?.finishOnboarding(origin)
+                },
+                onOpenPrivacy: { [weak self] in
+                    self?.onboardingResumeStep = 1
+                    self?.showChildPanel(.privacyDisclaimer(origin: .onboarding(origin)))
+                },
+                onClose: { [weak self] in
+                    self?.closeOnboarding(origin)
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.onboardingSize)
+
+        case .sampleExperience(let origin):
+            let view = SampleExperienceView(
+                onClose: { [weak self] in
+                    self?.onboardingResumeStep = 2
+                    self?.showChildPanel(.onboarding(origin: origin))
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.sampleExperienceSize)
+
+        case .portfolioPerformance:
+            let view = PortfolioPerformanceView(
+                portfolioStore: store,
+                store: performanceStoreForPresentation,
+                initialPage: holdingPerformancePage,
+                initialRankingMetric: holdingPerformanceMetric,
+                initialRange: holdingPerformanceRange,
+                initialDisplayedMonth: holdingPerformanceMonth,
+                onOpenJDFinanceSync: { [weak self] in
+                    self?.showChildPanel(.jdFinancePerformanceSync)
+                },
+                onNavigationChange: { [weak self] page, metric, range, month in
+                    self?.holdingPerformancePage = page
+                    self?.holdingPerformanceMetric = metric
+                    self?.holdingPerformanceRange = range
+                    self?.holdingPerformanceMonth = month
+                },
+                onBack: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioPerformanceSize)
+
+        case .jdFinancePerformanceSync:
+            let view = JDFinancePerformanceSyncView(
+                portfolioStore: store,
+                performanceStore: performanceStoreForPresentation,
+                onRequestLogin: { [weak self] completion in
+                    self?.showJDFinanceLoginPanel(onLoggedIn: completion)
+                },
+                onClose: { [weak self] in
+                    self?.showChildPanel(.portfolioPerformance)
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.jdFinancePerformanceSyncSize)
+
         case .settings:
             let view = SettingsView(
                 store: store,
@@ -826,6 +1020,16 @@ final class StatusBarController: NSObject {
                 },
                 onOpenJDFinanceSync: { [weak self] in
                     self?.showJDFinanceSyncPanel()
+                },
+                onOpenPrivacyDisclaimer: { [weak self] in
+                    self?.showChildPanel(.privacyDisclaimer(origin: .settings))
+                },
+                onOpenOnboarding: { [weak self] in
+                    self?.showChildPanel(.onboarding(origin: .settings))
+                },
+                initialSection: settingsSectionSession.selectedSection,
+                onSectionChanged: { [weak self] section in
+                    self?.settingsSectionSession.select(section)
                 },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
@@ -860,10 +1064,10 @@ final class StatusBarController: NSObject {
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioBreakdownSize)
 
-        case .incomeRanking(let kind, let metric):
+        case .todayIncomeRanking(let metric):
             let view = TodayIncomeRankingPanelView(
                 store: store,
-                kind: kind,
+                kind: .today,
                 metric: metric,
                 onClose: { [weak self] in
                     self?.hideChildPanel()
@@ -883,6 +1087,30 @@ final class StatusBarController: NSObject {
                 },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
+                }
+            )
+            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
+
+        case .onboardingAddFund(let origin):
+            let flowState = OnboardingAddFlowState()
+            let view = FundPositionEditorView(
+                store: store,
+                fund: nil,
+                onSaved: { [weak self, flowState] in
+                    await MainActor.run {
+                        flowState.didSave = true
+                        self?.updateStatusTitle()
+                        self?.sendFundThresholdRemindersIfNeeded()
+                    }
+                },
+                onClose: { [weak self, flowState] in
+                    guard let self else { return }
+                    if flowState.didSave {
+                        finishOnboarding(origin)
+                    } else {
+                        onboardingResumeStep = 2
+                        showChildPanel(.onboarding(origin: origin))
+                    }
                 }
             )
             return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
@@ -1171,11 +1399,45 @@ final class StatusBarController: NSObject {
     }
 
     private func hideChildPanel() {
-        if case .jdFinanceSync = activeChildPanel {
-            hideJDFinanceLoginPanel(reportCancellation: true)
+        if activeChildPanel?.ownsJDFinanceLoginPanel == true {
+            hideJDFinanceLoginPanel(reportCancellation: false)
         }
         childPanelWindow?.orderOut(nil)
         clearChildPanelState()
+    }
+
+    private func returnFromPrivacyDisclaimer(_ origin: PrivacyDisclaimerOrigin) {
+        switch origin {
+        case .settings:
+            showChildPanel(.settings)
+        case .onboarding(let onboardingOrigin):
+            showChildPanel(.onboarding(origin: onboardingOrigin))
+        }
+    }
+
+    private func closeOnboarding(_ origin: OnboardingOrigin) {
+        switch origin {
+        case .firstLaunch:
+            hideChildPanel()
+        case .settings:
+            showChildPanel(.settings)
+        }
+    }
+
+    private func finishOnboarding(_ origin: OnboardingOrigin) {
+        switch origin {
+        case .firstLaunch:
+            do {
+                try settingsStore.completeOnboarding()
+                onboardingResumeStep = 0
+                hideChildPanel()
+            } catch {
+                presentConfigurationError(title: "保存首次设置失败", error: error)
+            }
+        case .settings:
+            onboardingResumeStep = 0
+            showChildPanel(.settings)
+        }
     }
 
     private func handleChildPanelCancel() {
@@ -1183,6 +1445,18 @@ final class StatusBarController: NSObject {
             showChildPanel(.fundDetail(fundCode: fundCode))
         } else if case .fundDailyIncome(let fundCode) = activeChildPanel {
             showChildPanel(.fundDetail(fundCode: fundCode))
+        } else if case .sampleExperience(let origin) = activeChildPanel {
+            onboardingResumeStep = 2
+            showChildPanel(.onboarding(origin: origin))
+        } else if case .privacyDisclaimer(let origin) = activeChildPanel {
+            returnFromPrivacyDisclaimer(origin)
+        } else if case .onboardingAddFund(let origin) = activeChildPanel {
+            onboardingResumeStep = 2
+            showChildPanel(.onboarding(origin: origin))
+        } else if case .onboarding(let origin) = activeChildPanel {
+            closeOnboarding(origin)
+        } else if case .jdFinancePerformanceSync = activeChildPanel {
+            showChildPanel(.portfolioPerformance)
         } else {
             hideChildPanel()
         }
@@ -1250,11 +1524,21 @@ final class StatusBarController: NSObject {
         switch activeChildPanel {
         case .settings:
             size = PopoverLayout.settingsSize
+        case .privacyDisclaimer:
+            size = PopoverLayout.privacyDisclaimerSize
+        case .onboarding:
+            size = PopoverLayout.onboardingSize
+        case .sampleExperience:
+            size = PopoverLayout.sampleExperienceSize
+        case .portfolioPerformance:
+            size = PopoverLayout.portfolioPerformanceSize
+        case .jdFinancePerformanceSync:
+            size = PopoverLayout.jdFinancePerformanceSyncSize
         case .jdFinanceSync:
             size = PopoverLayout.jdFinanceSyncSize
         case .portfolioBreakdown:
             size = PopoverLayout.portfolioBreakdownSize
-        case .incomeRanking:
+        case .todayIncomeRanking:
             size = PopoverLayout.todayIncomeRankingSize
         case .fundDetail:
             size = PopoverLayout.fundDetailSize
@@ -1262,7 +1546,7 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.fundDailyIncomeSize
         case .tradeRecords:
             size = PopoverLayout.tradeRecordsSize
-        case .addFund, .editFund:
+        case .addFund, .onboardingAddFund, .editFund:
             size = PopoverLayout.editorSize
         case .buyFund, .sellFund, .convertFund, .editTradeRecord, .editConversion, .editPendingTradeRecord, .editPendingConversion:
             size = PopoverLayout.tradeEditorSize
@@ -1782,6 +2066,11 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func importFundConfigurationFromMenu() {
+        _ = importFundConfiguration()
+    }
+
+    @discardableResult
+    private func importFundConfiguration() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
 
         let panel = NSOpenPanel()
@@ -1793,15 +2082,17 @@ final class StatusBarController: NSObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
 
         do {
             try store.importPortfolio(from: url)
             updateStatusTitle()
             sendFundThresholdRemindersIfNeeded()
             showMainPanel()
+            return true
         } catch {
             presentConfigurationError(title: "导入基金配置失败", error: error)
+            return false
         }
     }
 

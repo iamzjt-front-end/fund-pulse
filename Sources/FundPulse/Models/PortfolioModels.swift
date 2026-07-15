@@ -15,6 +15,10 @@ struct PortfolioSnapshot: Codable, Equatable {
     var tradeRecords: [FundTradeRecord]? = nil
     var syncedAccountTotal: PortfolioSyncedAccountTotal? = nil
     var jdFinanceSyncState: JDFinanceSyncState? = nil
+    // Only populated in exported backups. Runtime history lives in
+    // portfolio-performance.json so high-frequency quote refreshes do not
+    // repeatedly rewrite a growing history array.
+    var portfolioPerformanceHistory: PortfolioPerformanceSnapshot? = nil
 
     static let empty = PortfolioSnapshot(
         updateTime: .now,
@@ -28,48 +32,6 @@ struct PortfolioSnapshot: Codable, Equatable {
         migration: nil
     )
 
-    static let sample = PortfolioSnapshot(
-        updateTime: .now,
-        totalAmount: 19_579.27,
-        holdingIncome: -420.74,
-        holdingIncomeRate: -2.10,
-        todayIncome: 86.65,
-        todayIncomeRate: 0.44,
-        pendingCount: 3,
-        funds: [
-            FundPosition(
-                code: "588760",
-                name: "科创人工智能ETF广发",
-                dateText: "06-18 15:00",
-                todayIncome: 0,
-                todayRate: 4.21,
-                holdingRate: nil,
-                status: .pending,
-                isUpdated: false
-            ),
-            FundPosition(
-                code: "026210",
-                name: "平安科技精选混合发起式A",
-                dateText: "06-18 15:00",
-                todayIncome: 57.24,
-                todayRate: 2.80,
-                holdingRate: 5.07,
-                status: .holding,
-                isUpdated: true
-            ),
-            FundPosition(
-                code: "018926",
-                name: "南方中证电池ETF联接A",
-                dateText: "06-18 15:00",
-                todayIncome: -33.20,
-                todayRate: -1.01,
-                holdingRate: -6.88,
-                status: .holding,
-                isUpdated: true
-            )
-        ],
-        migration: nil
-    )
 }
 
 struct JDFinanceSyncState: Codable, Equatable {

@@ -61,7 +61,7 @@ struct FundTradeEditorView: View {
             footer
                 .layoutPriority(1)
         }
-        .frame(width: PopoverLayout.editorWidth, height: PopoverLayout.tradeEditorHeight)
+        .frame(width: PopoverLayout.editorWidth, height: PopoverLayout.standardChildPanelHeight)
         .background(PanelDesign.panelBackground)
         .onAppear {
             scheduleReferenceNetValueLookup()

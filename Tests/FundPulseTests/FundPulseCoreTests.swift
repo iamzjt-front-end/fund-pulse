@@ -1777,6 +1777,173 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinanceHoldingsSyncRejectsDifferentPerformanceAccountBeforeRequest() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-cross-account-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let performanceStore = PortfolioPerformanceStore(dataDirectory: directory)
+        let establishedAccount = try XCTUnwrap(
+            JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=history-account")
+        )
+        try performanceStore.replace(
+            PortfolioPerformanceSnapshot(
+                jdFinanceSync: .init(
+                    accountKey: establishedAccount,
+                    coveredFrom: "2026-01-01",
+                    coveredThrough: "2026-07-14",
+                    lastSyncedAt: .now,
+                    isComplete: true
+                )
+            )
+        )
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceHoldingsResponse
+        ])
+        let syncStore = JDFinanceHoldingsSyncStore(service: service)
+        let portfolioStore = PortfolioStore(
+            dataDirectory: directory,
+            performanceStore: performanceStore
+        )
+        portfolioStore.load()
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=session; pt_pin=different-account"
+        )
+
+        XCTAssertEqual(MockURLProtocol.responseStore.requests().count, 0)
+        XCTAssertNil(syncStore.preview)
+        XCTAssertNil(portfolioStore.snapshot.jdFinanceSyncState)
+        XCTAssertNil(portfolioStore.snapshot.syncedAccountTotal)
+        XCTAssertEqual(syncStore.errorMessage, PortfolioStoreError.jdFinanceAccountMismatch.localizedDescription)
+    }
+
+    @MainActor
+    func testJDFinanceHoldingsSyncRechecksPerformanceAccountAfterRequest() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-account-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        MockURLProtocol.responseStore.set([
+            JDFinanceHoldingsService.endpoint.absoluteString: Data(Self.jdFinanceHoldingsResponse.utf8)
+        ])
+        MockURLProtocol.responseStore.setResponseDelay(nanoseconds: 120_000_000)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let performanceStore = PortfolioPerformanceStore(dataDirectory: directory)
+        let portfolioStore = PortfolioStore(
+            dataDirectory: directory,
+            performanceStore: performanceStore
+        )
+        portfolioStore.load()
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: URLSession(configuration: configuration))
+        )
+        let differentAccount = try XCTUnwrap(
+            JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=different-history-account")
+        )
+
+        let syncTask = Task { @MainActor in
+            await syncStore.synchronize(
+                portfolioStore: portfolioStore,
+                cookieHeader: "pt_key=session; pt_pin=request-account"
+            )
+        }
+        try await Task.sleep(for: .milliseconds(30))
+        try performanceStore.replace(
+            PortfolioPerformanceSnapshot(
+                jdFinanceSync: .init(
+                    accountKey: differentAccount,
+                    coveredFrom: "2026-01-01",
+                    coveredThrough: "2026-07-14",
+                    lastSyncedAt: .now,
+                    isComplete: true
+                )
+            )
+        )
+        await syncTask.value
+
+        XCTAssertNil(portfolioStore.snapshot.jdFinanceSyncState)
+        XCTAssertNil(portfolioStore.snapshot.syncedAccountTotal)
+        XCTAssertNil(syncStore.preview)
+        XCTAssertEqual(syncStore.errorMessage, PortfolioStoreError.jdFinanceAccountMismatch.localizedDescription)
+    }
+
+    @MainActor
+    func testJDFinanceHoldingsPreviewCannotApplyAfterAccountAnchorChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-preview-account-race-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let performanceStore = PortfolioPerformanceStore(dataDirectory: directory)
+        let portfolioStore = PortfolioStore(
+            dataDirectory: directory,
+            performanceStore: performanceStore
+        )
+        portfolioStore.load()
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: jdFinanceServiceWithMockResponses([
+                JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceHoldingsResponse
+            ])
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=session; pt_pin=preview-account"
+        )
+        XCTAssertFalse(try XCTUnwrap(syncStore.preview).newHoldings.isEmpty)
+        let originalSnapshot = portfolioStore.snapshot
+        let differentAccount = try XCTUnwrap(
+            JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=different-history-account")
+        )
+        try performanceStore.replace(
+            PortfolioPerformanceSnapshot(
+                jdFinanceSync: .init(
+                    accountKey: differentAccount,
+                    coveredFrom: "2026-01-01",
+                    coveredThrough: "2026-07-14",
+                    lastSyncedAt: .now,
+                    isComplete: true
+                )
+            )
+        )
+
+        await syncStore.applyNewHoldings(to: portfolioStore)
+
+        XCTAssertEqual(portfolioStore.snapshot, originalSnapshot)
+        XCTAssertEqual(syncStore.errorMessage, PortfolioStoreError.jdFinanceAccountMismatch.localizedDescription)
+        XCTAssertEqual(syncStore.statusMessage, "同步失败")
+    }
+
+    @MainActor
+    func testJDFinanceHoldingsSyncRejectsUnidentifiedCookieWhenAccountIsEstablished() async throws {
+        let establishedAccount = try XCTUnwrap(
+            JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=established-account")
+        )
+        var snapshot = PortfolioSnapshot.empty
+        snapshot.jdFinanceSyncState = JDFinanceSyncState(
+            accountKey: establishedAccount,
+            baselineEstablishedAt: .now
+        )
+        let portfolioStore = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: snapshot)
+        )
+        portfolioStore.load()
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: Self.jdFinanceHoldingsResponse
+        ])
+        let syncStore = JDFinanceHoldingsSyncStore(service: service)
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=session-without-account-id"
+        )
+
+        XCTAssertEqual(MockURLProtocol.responseStore.requests().count, 0)
+        XCTAssertNil(syncStore.preview)
+        XCTAssertEqual(syncStore.errorMessage, PortfolioStoreError.jdFinanceAccountUnidentified.localizedDescription)
+        XCTAssertEqual(portfolioStore.snapshot.jdFinanceSyncState?.accountKey, establishedAccount)
+    }
+
+    @MainActor
     func testJDFinanceSyncStoreIgnoresOlderRequestCompletion() async throws {
         let emptyOrders = #"{"resultCode":0,"resultData":{"data":{"orderList":[]}}}"#
         MockURLProtocol.responseStore.set([
@@ -2061,6 +2228,108 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(record.profit ?? 0, -88.88, accuracy: 0.0001)
         XCTAssertEqual(syncStore.preview?.importablePendingNotices.map(\.code), [])
         XCTAssertEqual(syncStore.statusMessage, "已同步 1 项数据")
+    }
+
+    @MainActor
+    func testJDFinanceSyncStoreImportsQDIIThreePaymentRowsAsTwoPendingBuys() async throws {
+        func suggestPrefix(_ key: String) throws -> String {
+            var components = try XCTUnwrap(
+                URLComponents(string: "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx")
+            )
+            components.queryItems = [
+                URLQueryItem(name: "m", value: "1"),
+                URLQueryItem(name: "key", value: key)
+            ]
+            return try XCTUnwrap(components.url).absoluteString + "&callback="
+        }
+
+        let now = try chinaDate("2026-07-15 14:07")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-qdii-split-payment-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+        let fundName = "富国全球科技互联网股票(QDII)C"
+        let holdingsResponse = """
+        {"success":true,"resultCode":0,"resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":{"text":"2,000.00"},"holdIncome":{"text":"0.00"}},"fundData":{"fundList":[{"productList":[{"skuId":"1022184","productName":"\(fundName)","totalAmount":{"text":"2,000.00"},"holdIncome":{"text":"0.00"},"transactionTip":{"text":"交易：3笔买入中合计2000.00元"}}]}]}}}}
+        """
+        let tradeOrderResponse = """
+        {"resultCode":0,"resultData":{"data":{"tradeOrderVoList":[
+          {"orderId":"today-card","productId":"1022184","productName":"\(fundName)","tradeTypeCode":"TRANSFER_IN","allAmount":"900.00","bizTime":"2026-07-15 10:05:00","statusCode":"PAY_SUCC","statusName":"支付成功"},
+          {"orderId":"today-balance","productId":"1022184","productName":"\(fundName)","tradeTypeCode":"TRANSFER_IN","allAmount":"100.00","bizTime":"2026-07-15 10:05:00","statusCode":"PAY_SUCC","statusName":"支付成功"},
+          {"orderId":"yesterday-buy","productId":"1022184","productName":"\(fundName)","tradeTypeCode":"TRANSFER_IN","allAmount":"1000.00","bizTime":"2026-07-13 16:05:00","statusCode":"PAY_SUCC","statusName":"支付成功"}
+        ]}}}
+        """
+        let exactSuggestResponse = """
+        FundPulseSuggest_123({"Datas":[{"CODE":"VSS","NAME":"Vanguard FTSE All-World ex-US Small-Cap ETF","CATEGORYDESC":"美股"}]});
+        """
+        let baseSuggestResponse = """
+        FundPulseSuggest_123({"Datas":[
+          {"CODE":"100055","NAME":"富国全球科技互联网股票(QDII)A","CATEGORYDESC":"基金"},
+          {"CODE":"022184","NAME":"富国全球科技互联网股票(QDII)C","CATEGORYDESC":"基金"},
+          {"CODE":"026228","NAME":"富国全球科技互联网股票(QDII)D","CATEGORYDESC":"基金"}
+        ]});
+        """
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            try suggestPrefix(fundName): exactSuggestResponse,
+            try suggestPrefix("富国全球科技互联网股票"): baseSuggestResponse,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "022184",
+                name: fundName,
+                netValueDate: "2026-07-11",
+                netValue: 1,
+                estimatedNetValue: 1,
+                growthRate: 0,
+                estimateTime: "2026-07-15 14:07"
+            )
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            codeResolver: JDFinanceFundCodeResolver(quoteService: FundQuoteService(session: session)),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: FundQuoteService(session: session),
+            now: { now }
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        let notice = try XCTUnwrap(syncStore.preview?.importablePendingNotices.first)
+        XCTAssertEqual(notice.code, "022184")
+        XCTAssertEqual(notice.tradeCountText, "2 笔")
+        XCTAssertEqual(syncStore.preview?.pendingTradeCount, 2)
+        XCTAssertEqual(syncStore.preview?.importablePendingTradeCount, 2)
+        XCTAssertTrue(syncStore.preview?.unresolvedHoldings.isEmpty == true)
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: false,
+            importPending: true
+        )
+
+        let records = (portfolioStore.snapshot.tradeRecords ?? [])
+            .filter { $0.code == "022184" }
+            .sorted { ($0.tradeDate, $0.tradeTimeType.rawValue) < ($1.tradeDate, $1.tradeTimeType.rawValue) }
+        XCTAssertEqual(portfolioStore.snapshot.pendingCount, 2)
+        XCTAssertEqual(records.map(\.kind), [.newFund, .buy])
+        XCTAssertEqual(records.map(\.amount), [1_000, 1_000])
+        XCTAssertEqual(records.map(\.tradeDate), ["2026-07-13", "2026-07-15"])
+        XCTAssertEqual(records.map(\.tradeTimeType), [.after15, .before15])
+        XCTAssertEqual(records.map(\.acceptedDate), ["2026-07-14", "2026-07-15"])
+        XCTAssertTrue(records.allSatisfy { $0.status == .pending })
+        XCTAssertTrue(records.allSatisfy { $0.syncSource == .jdFinance })
+        XCTAssertTrue(records.allSatisfy { $0.waitsForExternalConfirmation == true })
     }
 
     @MainActor
@@ -2576,6 +2845,142 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(JDFinanceWebSession.hasUsableCookieHeader("pt_key=; pt_pin=test"))
         XCTAssertTrue(JDFinanceWebSession.hasUsableCookieHeader("pt_key=abc; pt_pin=test"))
         XCTAssertTrue(JDFinanceWebSession.hasUsableCookieHeader("thor=abc; pin=test"))
+    }
+
+    @MainActor
+    func testJDFinanceCookieCleanupDeletesOnlyJDDomains() throws {
+        func cookie(name: String, domain: String) throws -> HTTPCookie {
+            try XCTUnwrap(
+                HTTPCookie(properties: [
+                    .name: name,
+                    .value: "value",
+                    .domain: domain,
+                    .path: "/"
+                ])
+            )
+        }
+
+        let storage = InMemoryJDFinanceCookieStorage(cookies: [
+            try cookie(name: "jd-root", domain: ".jd.com"),
+            try cookie(name: "jd-subdomain", domain: "api.jd.com"),
+            try cookie(name: "legacy-jd", domain: ".360buy.com"),
+            try cookie(name: "jd-pay", domain: "cashier.jdpay.com"),
+            try cookie(name: "similar-domain", domain: "notjd.com"),
+            try cookie(name: "suffix-trap", domain: "jd.com.example.com"),
+            try cookie(name: "unrelated", domain: "example.com")
+        ])
+
+        JDFinanceWebSession.clearJDCookies(in: storage)
+
+        XCTAssertEqual(
+            Set(storage.deletedCookies.map(\.name)),
+            ["jd-root", "jd-subdomain", "legacy-jd", "jd-pay"]
+        )
+        XCTAssertEqual(
+            Set((storage.cookies ?? []).map(\.name)),
+            ["similar-domain", "suffix-trap", "unrelated"]
+        )
+        XCTAssertTrue(JDFinanceWebSession.isJDDomain(".JD.com."))
+        XCTAssertFalse(JDFinanceWebSession.isJDDomain("jd.com.example.com"))
+    }
+
+    func testJDFinanceCookieHeaderOnlyForwardsRootDomainAuthenticationCookies() throws {
+        func cookie(
+            name: String,
+            value: String,
+            domain: String,
+            path: String = "/"
+        ) throws -> HTTPCookie {
+            try XCTUnwrap(
+                HTTPCookie(properties: [
+                    .name: name,
+                    .value: value,
+                    .domain: domain,
+                    .path: path
+                ])
+            )
+        }
+
+        let header = JDFinanceCookieHeaderFilter.scopedHeader(from: [
+            try cookie(name: "pt_key", value: "auth", domain: ".jd.com"),
+            try cookie(name: "pt_key", value: "stale-duplicate", domain: ".jd.com"),
+            try cookie(name: "pt_pin", value: "user", domain: ".jd.com"),
+            try cookie(name: "payment_token", value: "private", domain: ".jd.com"),
+            try cookie(name: "pt_key", value: "payment-auth", domain: ".jdpay.com"),
+            try cookie(name: "thor", value: "subdomain-only", domain: "jdjr.jd.com"),
+            try cookie(name: "wskey", value: "wrong-path", domain: ".jd.com", path: "/login")
+        ])
+
+        XCTAssertEqual(header, "pt_key=auth; pt_pin=user")
+    }
+
+    func testJDFinanceCookieHeaderSelectionDoesNotMixWebKitAndSharedStores() throws {
+        func cookie(name: String, value: String) throws -> HTTPCookie {
+            try XCTUnwrap(
+                HTTPCookie(properties: [
+                    .name: name,
+                    .value: value,
+                    .domain: ".jd.com",
+                    .path: "/"
+                ])
+            )
+        }
+
+        let header = JDFinanceCookieHeaderFilter.preferredScopedHeader(
+            webKitCookies: [try cookie(name: "pt_key", value: "web-auth")],
+            sharedCookies: [try cookie(name: "pt_pin", value: "shared-account")]
+        )
+
+        XCTAssertNil(header)
+    }
+
+    func testJDFinanceCookieHeaderSelectionFallsBackToCompleteSharedStore() throws {
+        func cookie(name: String, value: String) throws -> HTTPCookie {
+            try XCTUnwrap(
+                HTTPCookie(properties: [
+                    .name: name,
+                    .value: value,
+                    .domain: ".jd.com",
+                    .path: "/"
+                ])
+            )
+        }
+
+        let header = JDFinanceCookieHeaderFilter.preferredScopedHeader(
+            webKitCookies: [try cookie(name: "pt_key", value: "incomplete-web-auth")],
+            sharedCookies: [
+                try cookie(name: "pt_key", value: "shared-auth"),
+                try cookie(name: "pt_pin", value: "shared-account")
+            ]
+        )
+
+        XCTAssertEqual(header, "pt_key=shared-auth; pt_pin=shared-account")
+    }
+
+    func testJDFinanceCookieHeaderSelectionPrefersCompleteWebKitStore() throws {
+        func cookie(name: String, value: String) throws -> HTTPCookie {
+            try XCTUnwrap(
+                HTTPCookie(properties: [
+                    .name: name,
+                    .value: value,
+                    .domain: ".jd.com",
+                    .path: "/"
+                ])
+            )
+        }
+
+        let header = JDFinanceCookieHeaderFilter.preferredScopedHeader(
+            webKitCookies: [
+                try cookie(name: "pt_key", value: "web-auth"),
+                try cookie(name: "pt_pin", value: "web-account")
+            ],
+            sharedCookies: [
+                try cookie(name: "pt_key", value: "shared-auth"),
+                try cookie(name: "pt_pin", value: "shared-account")
+            ]
+        )
+
+        XCTAssertEqual(header, "pt_key=web-auth; pt_pin=web-account")
     }
 
     func testJDFinanceHoldingsParserAcceptsValidEmptyProductListAndZeroTotal() throws {
@@ -3194,6 +3599,104 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(drafts.map(\.code), ["025500", "025500"])
         XCTAssertEqual(drafts.map(\.tradeDate), ["2026-07-03", "2026-07-04"])
         XCTAssertEqual(drafts.map(\.tradeTimeType), [.before15, .after15])
+    }
+
+    func testJDFinanceNewFundPendingNoticeMergesSplitPaymentsIntoTwoLogicalBuys() throws {
+        let name = "富国全球科技互联网股票(QDII)C"
+        let matchedRecords = [
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-today-card",
+                code: "022184",
+                productName: name,
+                action: .buy,
+                amount: 900,
+                shares: nil,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                submittedAt: "2026-07-15 10:05:00",
+                status: .pending,
+                statusText: "支付成功"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-today-balance",
+                code: "022184",
+                productName: name,
+                action: .buy,
+                amount: 100,
+                shares: nil,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                submittedAt: "2026-07-15 10:05:00",
+                status: .pending,
+                statusText: "支付成功"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-yesterday",
+                code: "022184",
+                productName: name,
+                action: .buy,
+                amount: 1_000,
+                shares: nil,
+                tradeDate: "2026-07-13",
+                tradeTimeType: .after15,
+                submittedAt: "2026-07-13 16:05:00",
+                status: .pending,
+                statusText: "支付成功"
+            )
+        ]
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 2_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: 0,
+            totalIncome: nil,
+            products: [
+                JDFinanceHoldingProduct(
+                    skuID: "1022184",
+                    code: "022184",
+                    name: name,
+                    totalAmount: 2_000,
+                    yesterdayIncome: nil,
+                    todayIncome: nil,
+                    holdIncome: 0,
+                    holdRate: nil,
+                    transactionTip: JDFinanceTransactionTip(
+                        text: "交易：3笔买入中合计2000.00元",
+                        action: .buy,
+                        tradeCount: 3,
+                        totalAmount: 2_000
+                    ),
+                    pendingDetail: JDFinancePendingTransactionDetail(
+                        action: .buy,
+                        amount: 2_000,
+                        shares: nil,
+                        tradeDate: nil,
+                        tradeTimeType: nil,
+                        statusText: "匹配交易记录：3 笔",
+                        matchedTradeRecords: matchedRecords
+                    )
+                )
+            ],
+            tradeOrders: matchedRecords,
+            tradeOrderFetchState: .complete
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: .empty
+        )
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        let drafts = try XCTUnwrap(notice.tradeDrafts())
+        let fundDraft = try XCTUnwrap(notice.fundPositionDraft())
+
+        XCTAssertEqual(notice.importKind, .newFund)
+        XCTAssertEqual(notice.tradeCountText, "2 笔")
+        XCTAssertEqual(drafts.map(\.amount), [1_000, 1_000])
+        XCTAssertEqual(drafts.map(\.tradeDate), ["2026-07-13", "2026-07-15"])
+        XCTAssertEqual(drafts.map(\.tradeTimeType), [.after15, .before15])
+        XCTAssertEqual(try XCTUnwrap(fundDraft.positionAmount), 1_000, accuracy: 0.0001)
+        XCTAssertEqual(fundDraft.positionDate, "2026-07-13")
+        XCTAssertEqual(fundDraft.positionTimeType, .after15)
     }
 
     func testJDFinanceSyncPreviewUsesMatchedTradeRecordCodeWhenHoldingCodeIsMissing() throws {
@@ -4077,6 +4580,117 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(preview.reconciliationNotices.isEmpty)
     }
 
+    func testJDFinanceFinalSplitPaymentsConfirmOneLogicalLocalBuy() throws {
+        let now = try chinaDate("2026-07-15 16:00")
+        let localRecord = jdWaitingRecord(
+            id: "split-payment-buy",
+            kind: .buy,
+            code: "022184",
+            amount: 1_000,
+            shares: nil,
+            now: now
+        )
+        let orders = [
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-split-900",
+                code: "022184",
+                productName: "富国全球科技互联网股票(QDII)C",
+                action: .buy,
+                amount: 900,
+                shares: nil,
+                tradeDate: "2026-07-13",
+                tradeTimeType: .before15,
+                submittedAt: "2026-07-13 10:05:00",
+                status: .succeeded,
+                statusText: "订单完成"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-split-100",
+                code: "022184",
+                productName: "富国全球科技互联网股票(QDII)C",
+                action: .buy,
+                amount: 100,
+                shares: nil,
+                tradeDate: "2026-07-13",
+                tradeTimeType: .before15,
+                submittedAt: "2026-07-13 10:05:00",
+                status: .succeeded,
+                statusText: "订单完成"
+            )
+        ]
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 1_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [],
+                tradeOrders: orders,
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [], records: [localRecord], now: now)
+        )
+
+        XCTAssertEqual(preview.automaticConfirmations.map(\.recordIDs), [["split-payment-buy"]])
+        XCTAssertEqual(
+            preview.automaticConfirmations.first?.representedOrderKeys,
+            ["jd-order-split-100", "jd-order-split-900"]
+        )
+        XCTAssertTrue(preview.reconciliationNotices.isEmpty)
+        XCTAssertTrue(preview.unrecordedOrders.isEmpty)
+    }
+
+    func testJDFinanceTradeOrderBatcherDoesNotMergeDifferentSubmissionTimes() {
+        var first = jdOrder(
+            key: "independent-payment-900",
+            code: "022184",
+            action: .buy,
+            amount: 900,
+            shares: nil,
+            status: .succeeded
+        )
+        var second = jdOrder(
+            key: "independent-payment-100",
+            code: "022184",
+            action: .buy,
+            amount: 100,
+            shares: nil,
+            status: .succeeded
+        )
+        first.submittedAt = "2026-07-13 10:05:00"
+        second.submittedAt = "2026-07-13 10:06:00"
+        let records = [first, second]
+
+        XCTAssertEqual(JDFinanceTradeOrderBatcher.logicalRecords(records), records)
+        XCTAssertNil(JDFinanceTradeOrderBatcher.combinedRecord(records))
+    }
+
+    func testJDFinanceTradeOrderBatcherDoesNotMergeMissingSubmissionTimes() {
+        var first = jdOrder(
+            key: "missing-time-payment-900",
+            code: "022184",
+            action: .buy,
+            amount: 900,
+            shares: nil,
+            status: .succeeded
+        )
+        var second = jdOrder(
+            key: "missing-time-payment-100",
+            code: "022184",
+            action: .buy,
+            amount: 100,
+            shares: nil,
+            status: .succeeded
+        )
+        first.submittedAt = nil
+        second.submittedAt = nil
+        let records = [first, second]
+
+        XCTAssertEqual(JDFinanceTradeOrderBatcher.logicalRecords(records), records)
+        XCTAssertNil(JDFinanceTradeOrderBatcher.combinedRecord(records))
+    }
+
     func testJDFinanceOrderCompletedWithoutSharesPlansAutomaticConfirmation() throws {
         let now = try chinaDate("2026-07-14 10:00")
         let localRecord = jdWaitingRecord(
@@ -4289,6 +4903,111 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(preview.unrecordedOrders.map(\.id), ["unrecorded-buy"])
         XCTAssertTrue(preview.unrecordedOrders[0].isImportable)
+    }
+
+    func testJDFinanceDistinctSuccessfulPaymentRowsRemainSeparateInUnrecordedQueue() throws {
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 1_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [],
+            tradeOrders: [
+                jdOrder(
+                    key: "successful-payment-900",
+                    code: "022184",
+                    action: .buy,
+                    amount: 900,
+                    shares: nil,
+                    status: .succeeded
+                ),
+                jdOrder(
+                    key: "successful-payment-100",
+                    code: "022184",
+                    action: .buy,
+                    amount: 100,
+                    shares: nil,
+                    status: .succeeded
+                )
+            ],
+            tradeOrderFetchState: .complete
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: PortfolioSnapshot(
+                updateTime: .now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [],
+                migration: nil,
+                jdFinanceSyncState: JDFinanceSyncState(baselineEstablishedAt: .distantPast)
+            )
+        )
+
+        XCTAssertEqual(
+            Set(preview.unrecordedOrders.map(\.id)),
+            Set(["successful-payment-900", "successful-payment-100"])
+        )
+    }
+
+    func testJDFinanceNewPaymentRowIsNotHiddenByRepresentedRowInSameTradeBucket() throws {
+        let representedKey = "represented-payment"
+        let newKey = "new-payment"
+        let remoteSnapshot = JDFinanceHoldingsSnapshot(
+            totalAssets: 1_000,
+            yesterdayIncome: nil,
+            todayIncome: nil,
+            holdIncome: nil,
+            totalIncome: nil,
+            products: [],
+            tradeOrders: [
+                jdOrder(
+                    key: representedKey,
+                    code: "022184",
+                    action: .buy,
+                    amount: 900,
+                    shares: nil,
+                    status: .succeeded
+                ),
+                jdOrder(
+                    key: newKey,
+                    code: "022184",
+                    action: .buy,
+                    amount: 100,
+                    shares: nil,
+                    status: .succeeded
+                )
+            ],
+            tradeOrderFetchState: .complete
+        )
+        let localSnapshot = PortfolioSnapshot(
+            updateTime: .now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [],
+            migration: nil,
+            jdFinanceSyncState: JDFinanceSyncState(
+                baselineEstablishedAt: .distantPast,
+                representedOrderKeys: [representedKey]
+            )
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: remoteSnapshot,
+            localSnapshot: localSnapshot
+        )
+
+        XCTAssertEqual(preview.unrecordedOrders.map(\.id), [newKey])
     }
 
     func testJDFinanceFirstSyncTreatsHistoricalSuccessAsCurrentHoldingBaseline() {
@@ -4558,8 +5277,12 @@ final class FundPulseCoreTests: XCTestCase {
     func testJDFinanceAccountIdentityIsHashedAndStable() {
         let first = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_key=secret; pt_pin=test-user")
         let second = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=test-user; pt_key=changed")
+        let preferredFirst = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pin=alternate; pt_pin=test-user")
+        let preferredSecond = JDFinanceSyncFingerprint.accountKey(cookieHeader: "pt_pin=test-user; pin=alternate")
 
         XCTAssertEqual(first, second)
+        XCTAssertEqual(preferredFirst, preferredSecond)
+        XCTAssertEqual(first, preferredFirst)
         XCTAssertTrue(first?.hasPrefix("jd-account-") == true)
         XCTAssertFalse(first?.contains("test-user") == true)
     }
@@ -4866,6 +5589,84 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(repository.savedSnapshots.count, 1)
         XCTAssertEqual(store.snapshot.totalAmount, 456)
+    }
+
+    @MainActor
+    func testJDFinanceAtomicMutationDoesNotWriteRealPerformanceHistoryBeforeCommit() async throws {
+        let now = try chinaDate("2026-07-15 14:30")
+        let directory = temporaryPortfolioDirectory(prefix: "jd-atomic-performance")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let initial = jdPortfolio(
+            funds: [
+                conversionFund(
+                    code: "013284",
+                    name: "华夏中证细分食品饮料产业主题ETF发起式联接C",
+                    shares: 100,
+                    cost: 1
+                )
+            ],
+            records: [],
+            now: now
+        )
+        let repository = JSONPortfolioRepository(dataDirectory: directory)
+        try repository.save(initial)
+
+        let performanceStore = PortfolioPerformanceStore(dataDirectory: directory)
+        try performanceStore.replace(
+            PortfolioPerformanceSnapshot(
+                trackingStartDate: "2026-07-14",
+                localRecordingStartDate: "2026-07-14",
+                days: [
+                    PortfolioPerformanceDay(
+                        date: "2026-07-14",
+                        profit: 8,
+                        returnRate: 0.8,
+                        status: .confirmed,
+                        updatedAt: try chinaDate("2026-07-14 21:00")
+                    )
+                ]
+            )
+        )
+        let expectedPerformance = performanceStore.snapshot
+        let expectedPerformanceData = try Data(contentsOf: performanceStore.dataFileURL)
+        let quoteService = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: "013284",
+                name: "华夏中证细分食品饮料产业主题ETF发起式联接C",
+                netValueDate: "2026-07-14",
+                netValue: 1,
+                estimatedNetValue: 1.02,
+                growthRate: 2,
+                estimateTime: "2026-07-15 14:30"
+            )
+        ])
+        let store = PortfolioStore(
+            repository: repository,
+            quoteService: quoteService,
+            performanceStore: performanceStore,
+            now: { now }
+        )
+        store.load()
+
+        do {
+            try await store.performJDFinanceAtomicMutation { stagingStore in
+                await stagingStore.refreshQuotes()
+                XCTAssertEqual(
+                    stagingStore.performanceStore.snapshot.days.map(\.date),
+                    ["2026-07-14", "2026-07-15"]
+                )
+                throw PortfolioStoreError.invalidCode
+            }
+            XCTFail("Expected staged mutation to fail")
+        } catch {
+            XCTAssertEqual(error as? PortfolioStoreError, .invalidCode)
+        }
+
+        XCTAssertEqual(store.snapshot, initial)
+        XCTAssertEqual(try Data(contentsOf: performanceStore.dataFileURL), expectedPerformanceData)
+        let reloadedPerformanceStore = PortfolioPerformanceStore(dataDirectory: directory)
+        XCTAssertEqual(reloadedPerformanceStore.snapshot, expectedPerformance)
     }
 
     @MainActor
@@ -5555,6 +6356,25 @@ final class FundPulseCoreTests: XCTestCase {
             Self.tradeTestCode
         )
         XCTAssertNil(ChildPanelRoute.settings.selectedFundCode)
+    }
+
+    func testMetricChildPanelsUseStandardSize() {
+        XCTAssertEqual(
+            PopoverLayout.portfolioBreakdownSize.height,
+            PopoverLayout.standardChildPanelHeight
+        )
+        XCTAssertEqual(
+            PopoverLayout.todayIncomeRankingSize.height,
+            PopoverLayout.standardChildPanelHeight
+        )
+        XCTAssertEqual(
+            PopoverLayout.portfolioBreakdownSize.width,
+            PopoverLayout.standardChildPanelWidth
+        )
+        XCTAssertEqual(
+            PopoverLayout.todayIncomeRankingSize.width,
+            PopoverLayout.standardChildPanelWidth
+        )
     }
 
     func testChildPanelRouteResolverReadsLatestSnapshotValues() throws {
@@ -6353,6 +7173,76 @@ final class FundPulseCoreTests: XCTestCase {
         let code = await service.lookupFundCode(name: "易方达上证科创50ETF联接C")
 
         XCTAssertEqual(code, "011609")
+    }
+
+    func testLookupFundCodeRetriesQDIIBaseNameAndStillMatchesExactShareClass() async throws {
+        func suggestPrefix(_ key: String) throws -> String {
+            var components = try XCTUnwrap(
+                URLComponents(string: "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx")
+            )
+            components.queryItems = [
+                URLQueryItem(name: "m", value: "1"),
+                URLQueryItem(name: "key", value: key)
+            ]
+            return try XCTUnwrap(components.url).absoluteString + "&callback="
+        }
+
+        let fullName = "富国全球科技互联网股票(QDII)C"
+        let baseName = "富国全球科技互联网股票"
+        let service = quoteServiceWithMockResponses([
+            try suggestPrefix(fullName): """
+            FundPulseSuggest_123({"Datas":[{"CODE":"VSS","NAME":"Vanguard FTSE All-World ex-US Small-Cap ETF","CATEGORYDESC":"美股"}]});
+            """,
+            try suggestPrefix(baseName): """
+            FundPulseSuggest_123({"Datas":[
+              {"CODE":"100055","NAME":"富国全球科技互联网股票(QDII)A","SHORTNAME":"富国全球科技互联网股票(QDII)A","CATEGORYDESC":"基金"},
+              {"CODE":"022184","NAME":"富国全球科技互联网股票(QDII)C","SHORTNAME":"富国全球科技互联网股票(QDII)C","CATEGORYDESC":"基金"},
+              {"CODE":"026228","NAME":"富国全球科技互联网股票(QDII)D","SHORTNAME":"富国全球科技互联网股票(QDII)D","CATEGORYDESC":"基金"}
+            ]});
+            """
+        ])
+
+        let code = await service.lookupFundCode(name: fullName)
+        let requestedKeys = MockURLProtocol.responseStore.requests().compactMap { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?
+                .first(where: { $0.name == "key" })?
+                .value
+        }
+
+        XCTAssertEqual(code, "022184")
+        XCTAssertTrue(requestedKeys.contains(fullName))
+        XCTAssertTrue(requestedKeys.contains(baseName))
+    }
+
+    func testLookupFundCodeRejectsAmbiguousExactQDIIShareClassMatches() async throws {
+        func suggestPrefix(_ key: String) throws -> String {
+            var components = try XCTUnwrap(
+                URLComponents(string: "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx")
+            )
+            components.queryItems = [
+                URLQueryItem(name: "m", value: "1"),
+                URLQueryItem(name: "key", value: key)
+            ]
+            return try XCTUnwrap(components.url).absoluteString + "&callback="
+        }
+
+        let fullName = "富国全球科技互联网股票(QDII)C"
+        let baseName = "富国全球科技互联网股票"
+        let ambiguousResponse = """
+        FundPulseSuggest_123({"Datas":[
+          {"CODE":"022184","NAME":"\(fullName)","CATEGORYDESC":"基金"},
+          {"CODE":"999999","NAME":"\(fullName)","CATEGORYDESC":"基金"}
+        ]});
+        """
+        let service = quoteServiceWithMockResponses([
+            try suggestPrefix(fullName): ambiguousResponse,
+            try suggestPrefix(baseName): ambiguousResponse
+        ])
+
+        let code = await service.lookupFundCode(name: fullName)
+
+        XCTAssertNil(code)
     }
 
     func testFundDetailSupplementUsesFundBabyTrendAndTopHoldingsSources() async throws {
@@ -8535,6 +9425,80 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(impact.sellAmount, 0, accuracy: 0.0001)
         XCTAssertEqual(impact.conversionCount, 1)
         XCTAssertEqual(impact.netAmount, 0, accuracy: 0.0001)
+    }
+
+    func testPendingActivityPresentationSeparatesOrderTimeFromWaitingReason() {
+        var activity = makePendingHeaderActivity(id: "new-fund", kind: .newFund, displayAmount: 1_000)
+        activity.code = "022184"
+        activity.name = "富国全球科技互联网股票(QDII)C"
+        activity.tradeDate = "2026-07-14"
+        activity.tradeTimeType = .before15
+        activity.acceptedDate = "2026-07-14"
+
+        let presentation = PendingActivityPresentation(activity: activity)
+
+        XCTAssertEqual(presentation.orderText, "022184 · 07-14 15:00前下单")
+        XCTAssertEqual(presentation.waitingText, "等待 07-14 正式净值 · 发布后自动确认")
+    }
+
+    func testPendingActivityPresentationUsesNextAcceptedDateForAfter15Order() {
+        var activity = makePendingHeaderActivity(id: "after-15", kind: .buy, displayAmount: 1_000)
+        activity.code = "022184"
+        activity.tradeDate = "2026-07-14"
+        activity.tradeTimeType = .after15
+        activity.acceptedDate = "2026-07-15"
+
+        let presentation = PendingActivityPresentation(activity: activity)
+
+        XCTAssertEqual(presentation.orderText, "022184 · 07-14 15:00后下单")
+        XCTAssertEqual(presentation.waitingText, "等待 07-15 正式净值 · 发布后自动确认")
+    }
+
+    func testPendingActivityPresentationExplainsExternalConfirmationWait() {
+        var activity = makePendingHeaderActivity(id: "jd-waiting", kind: .buy, displayAmount: 1_000)
+        activity.waitsForExternalConfirmation = true
+
+        let presentation = PendingActivityPresentation(activity: activity)
+
+        XCTAssertEqual(presentation.waitingText, "等待京东最终确认 · 同步后更新")
+    }
+
+    func testPendingActivityPresentationExplainsConversionAndFailureReasons() {
+        var activity = makePendingHeaderActivity(
+            id: "conversion",
+            kind: .conversionOut,
+            displayAmount: 1_000,
+            conversionID: "conversion"
+        )
+        activity.acceptedDate = "2026-07-15"
+
+        XCTAssertEqual(
+            PendingActivityPresentation(activity: activity).waitingText,
+            "等待双方 07-15 正式净值 · 齐备后自动确认"
+        )
+
+        activity.failureReason = "可转换份额不足"
+        XCTAssertEqual(
+            PendingActivityPresentation(activity: activity).waitingText,
+            "暂无法确认 · 可转换份额不足"
+        )
+    }
+
+    func testPendingActivityPresentationFallsBackWhenAcceptedDateIsMalformed() {
+        var activity = makePendingHeaderActivity(id: "legacy", kind: .newFund, displayAmount: 1_000)
+        activity.acceptedDate = ""
+
+        XCTAssertEqual(
+            PendingActivityPresentation(activity: activity).waitingText,
+            "等待正式净值 · 发布后自动确认"
+        )
+    }
+
+    func testPendingActivityPresentationNoticeExplainsDelayedQDIIConfirmation() {
+        XCTAssertEqual(
+            PendingActivityPresentation.noticeText,
+            "系统会持续检查正式净值和外部状态，条件满足后自动确认；QDII 等基金次日仍待确认通常正常。"
+        )
     }
 
     func testPendingActivityBuilderListsPendingTradesMatchingHeaderCount() throws {
@@ -12988,6 +13952,24 @@ private struct MockBodyResponseRule {
 private extension Double {
     var roundedMoneyForTest: Double {
         (self * 100).rounded() / 100
+    }
+}
+
+private final class InMemoryJDFinanceCookieStorage: JDFinanceCookieStorage {
+    private(set) var cookies: [HTTPCookie]?
+    private(set) var deletedCookies: [HTTPCookie] = []
+
+    init(cookies: [HTTPCookie]) {
+        self.cookies = cookies
+    }
+
+    func deleteCookie(_ cookie: HTTPCookie) {
+        deletedCookies.append(cookie)
+        cookies?.removeAll {
+            $0.name == cookie.name
+                && $0.domain == cookie.domain
+                && $0.path == cookie.path
+        }
     }
 }
 
