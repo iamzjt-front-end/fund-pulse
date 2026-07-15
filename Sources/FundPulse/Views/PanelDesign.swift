@@ -13,7 +13,6 @@ enum PanelDesign {
     static let warningBackground = Color(nsColor: warningBackgroundNSColor)
     static let warningBorder = Color(nsColor: warningBorderNSColor)
     static let warningAccent = Color(nsColor: warningAccentNSColor)
-    static let keyboardFocusIndicator = Color(nsColor: .keyboardFocusIndicatorColor)
 
     static let panelBackgroundNSColor = NSColor(name: nil) { appearance in
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -95,12 +94,18 @@ enum PanelDesign {
     }
 }
 
-struct PanelHeader: View {
-    private enum FocusedControl: Hashable {
-        case action
-        case close
+enum PanelFocusAppearance {
+    static func suppressedRoot<Content: View>(_ content: Content) -> AnyView {
+        AnyView(content.focusEffectDisabled())
     }
 
+    @MainActor
+    static func hostingView<Content: View>(_ content: Content) -> NSHostingView<AnyView> {
+        NSHostingView(rootView: PanelFocusAppearance.suppressedRoot(content))
+    }
+}
+
+struct PanelHeader: View {
     let systemImage: String
     let title: String
     let subtitle: String
@@ -115,8 +120,6 @@ struct PanelHeader: View {
     var actionHelp: String? = nil
     var onAction: (() -> Void)? = nil
     let onClose: () -> Void
-
-    @FocusState private var focusedControl: FocusedControl?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -195,13 +198,6 @@ struct PanelHeader: View {
                 }
                 .buttonStyle(.plain)
                 .focusEffectDisabled()
-                .focused($focusedControl, equals: .action)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(PanelDesign.keyboardFocusIndicator, lineWidth: 2)
-                        .padding(-2)
-                        .opacity(focusedControl == .action ? 1 : 0)
-                }
                 .accessibilityLabel(actionTitle)
                 .help(actionHelp ?? actionTitle)
                 .layoutPriority(2)
@@ -218,13 +214,6 @@ struct PanelHeader: View {
             }
             .buttonStyle(.plain)
             .focusEffectDisabled()
-            .focused($focusedControl, equals: .close)
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(PanelDesign.keyboardFocusIndicator, lineWidth: 2)
-                    .padding(-2)
-                    .opacity(focusedControl == .close ? 1 : 0)
-            }
             .accessibilityLabel("关闭")
             .help("关闭")
             .keyboardShortcut(.cancelAction)
@@ -257,8 +246,6 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
     let title: (Value) -> String
     var tint: Color = PanelDesign.accent
     var accessibilityLabelText: String? = nil
-
-    @FocusState private var isKeyboardFocused: Bool
 
     var body: some View {
         HStack(spacing: 4) {
@@ -294,18 +281,11 @@ struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
         .padding(2)
         .background(PanelDesign.selectorBackground, in: Capsule())
         .overlay {
-            ZStack {
-                Capsule()
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.36), lineWidth: 0.6)
-                Capsule()
-                    .stroke(PanelDesign.keyboardFocusIndicator, lineWidth: 2)
-                    .padding(-2)
-                    .opacity(isKeyboardFocused ? 1 : 0)
-            }
+            Capsule()
+                .stroke(Color(nsColor: .separatorColor).opacity(0.36), lineWidth: 0.6)
         }
         .focusable()
         .focusEffectDisabled()
-        .focused($isKeyboardFocused)
         .onMoveCommand { direction in
             guard let currentIndex = values.firstIndex(of: selection) else { return }
             let nextIndex: Int

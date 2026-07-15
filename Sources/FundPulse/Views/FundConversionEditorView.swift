@@ -1533,11 +1533,10 @@ private struct TargetSuggestionPanelBridge: NSViewRepresentable {
 
         @MainActor
         private func updateContent(_ content: some View, size: CGSize, panel: NSPanel) {
-            let erasedContent = AnyView(content)
             if let hostingView {
-                hostingView.rootView = erasedContent
+                hostingView.rootView = PanelFocusAppearance.suppressedRoot(content)
             } else {
-                let hostingView = NSHostingView(rootView: erasedContent)
+                let hostingView = PanelFocusAppearance.hostingView(content)
                 hostingView.wantsLayer = true
                 hostingView.layer?.backgroundColor = NSColor.clear.cgColor
                 hostingView.autoresizingMask = [.width, .height]

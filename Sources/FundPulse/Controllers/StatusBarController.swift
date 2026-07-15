@@ -340,7 +340,7 @@ final class StatusBarController: NSObject {
     private var mainPanelWindow: FundPulsePanel?
     private var childPanelWindow: FundPulsePanel?
     private var jdFinanceLoginWindow: FundPulsePanel?
-    private var mainPanelHostingView: NSHostingView<MainPanelWindowView>?
+    private var mainPanelHostingView: NSHostingView<AnyView>?
     private var activeChildPanel: ChildPanelRoute?
     private var selectedFundCode: String?
     private var jdFinanceLoginCompletion: ((String?) -> Void)?
@@ -685,7 +685,7 @@ final class StatusBarController: NSObject {
             self?.closeAllPanels()
         }
 
-        let hostingView = NSHostingView(rootView: makeMainPanelRootView())
+        let hostingView = PanelFocusAppearance.hostingView(makeMainPanelRootView())
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -698,7 +698,9 @@ final class StatusBarController: NSObject {
     }
 
     private func updateMainPanelRootView() {
-        mainPanelHostingView?.rootView = makeMainPanelRootView()
+        mainPanelHostingView?.rootView = PanelFocusAppearance.suppressedRoot(
+            makeMainPanelRootView()
+        )
     }
 
     private func makeMainPanelRootView() -> MainPanelWindowView {
@@ -846,7 +848,7 @@ final class StatusBarController: NSObject {
             }
         )
         let size = PopoverLayout.jdFinanceLoginSize
-        let container = PanelCardContainerView(contentView: NSHostingView(rootView: AnyView(view)))
+        let container = PanelCardContainerView(contentView: PanelFocusAppearance.hostingView(view))
         container.frame = NSRect(origin: .zero, size: size)
         container.applyAppearance(panelAppearance)
         window.contentView = container
@@ -875,7 +877,7 @@ final class StatusBarController: NSObject {
             }
         )
         let size = PopoverLayout.jdFinanceNetworkProbeSize
-        let container = PanelCardContainerView(contentView: NSHostingView(rootView: AnyView(view)))
+        let container = PanelCardContainerView(contentView: PanelFocusAppearance.hostingView(view))
         container.frame = NSRect(origin: .zero, size: size)
         container.applyAppearance(panelAppearance)
         window.contentView = container
@@ -930,7 +932,7 @@ final class StatusBarController: NSObject {
                     NSWorkspace.shared.open(url)
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.privacyDisclaimerSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.privacyDisclaimerSize)
 
         case .onboarding(let origin):
             let view = OnboardingView(
@@ -956,7 +958,7 @@ final class StatusBarController: NSObject {
                     self?.closeOnboarding(origin)
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.onboardingSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.onboardingSize)
 
         case .sampleExperience(let origin):
             let view = SampleExperienceView(
@@ -965,7 +967,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.onboarding(origin: origin))
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.sampleExperienceSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.sampleExperienceSize)
 
         case .portfolioPerformance:
             let view = PortfolioPerformanceView(
@@ -988,7 +990,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioPerformanceSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.portfolioPerformanceSize)
 
         case .jdFinancePerformanceSync:
             let view = JDFinancePerformanceSyncView(
@@ -1001,7 +1003,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.portfolioPerformance)
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.jdFinancePerformanceSyncSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.jdFinancePerformanceSyncSize)
 
         case .settings:
             let view = SettingsView(
@@ -1035,7 +1037,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.settingsSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.settingsSize)
 
         case .jdFinanceSync:
             let view = JDFinanceHoldingsSyncView(
@@ -1053,7 +1055,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.jdFinanceSyncSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.jdFinanceSyncSize)
 
         case .portfolioBreakdown:
             let view = PortfolioAllocationPanelView(
@@ -1062,7 +1064,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.portfolioBreakdownSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.portfolioBreakdownSize)
 
         case .todayIncomeRanking(let metric):
             let view = TodayIncomeRankingPanelView(
@@ -1073,7 +1075,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.todayIncomeRankingSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.todayIncomeRankingSize)
 
         case .addFund:
             let view = FundPositionEditorView(
@@ -1089,7 +1091,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.editorSize)
 
         case .onboardingAddFund(let origin):
             let flowState = OnboardingAddFlowState()
@@ -1113,7 +1115,7 @@ final class StatusBarController: NSObject {
                     }
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.editorSize)
 
         case .fundDetail(let fundCode):
             let view = FundDetailView(
@@ -1144,7 +1146,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.fundDetailSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.fundDetailSize)
 
         case .fundDailyIncome(let fundCode):
             let view = FundDailyIncomePanelView(
@@ -1154,7 +1156,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.fundDetail(fundCode: fundCode))
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.fundDailyIncomeSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.fundDailyIncomeSize)
 
         case .tradeRecords(let fundCode):
             let view = FundTradeRecordsPanelView(
@@ -1181,7 +1183,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.fundDetail(fundCode: fundCode))
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeRecordsSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeRecordsSize)
 
         case .buyFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
@@ -1199,7 +1201,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .sellFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
@@ -1217,7 +1219,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .convertFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
@@ -1234,7 +1236,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .editTradeRecord(let fundCode, let recordID):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }),
@@ -1257,7 +1259,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.tradeRecords(fundCode: fundCode))
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .editConversion(let sourceFundCode, let recordID, let returnFundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == sourceFundCode }),
@@ -1278,7 +1280,7 @@ final class StatusBarController: NSObject {
                     self?.showChildPanel(.tradeRecords(fundCode: returnFundCode))
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .editPendingTradeRecord(let fundCode, let recordID):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }),
@@ -1301,7 +1303,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .editPendingConversion(let fundCode, let recordID):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }),
@@ -1322,7 +1324,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.tradeEditorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .editFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
@@ -1339,7 +1341,7 @@ final class StatusBarController: NSObject {
                     self?.hideChildPanel()
                 }
             )
-            return (NSHostingView(rootView: AnyView(view)), PopoverLayout.editorSize)
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.editorSize)
         }
     }
 

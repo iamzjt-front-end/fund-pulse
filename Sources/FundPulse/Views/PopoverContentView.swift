@@ -3087,9 +3087,9 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
             )
 
             if let hostingView {
-                hostingView.rootView = AnyView(content)
+                hostingView.rootView = PanelFocusAppearance.suppressedRoot(content)
             } else {
-                let hostingView = NSHostingView(rootView: AnyView(content))
+                let hostingView = PanelFocusAppearance.hostingView(content)
                 hostingView.frame = NSRect(
                     origin: .zero,
                     size: NSSize(
