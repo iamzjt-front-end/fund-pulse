@@ -2,6 +2,39 @@ import XCTest
 @testable import FundPulse
 
 final class AppStoreFeatureIntegrationTests: XCTestCase {
+    func testEveryPanelHostingRootSuppressesBlueFocusEffects() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Sources/FundPulse")
+        let sourceFiles = try FileManager.default
+            .subpathsOfDirectory(atPath: sourceRoot.path)
+            .filter { $0.hasSuffix(".swift") }
+
+        var hostingRootLines: [String] = []
+        var sourceText = ""
+        for relativePath in sourceFiles {
+            let text = try String(
+                contentsOf: sourceRoot.appending(path: relativePath),
+                encoding: .utf8
+            )
+            sourceText += text
+            hostingRootLines.append(contentsOf: text.components(separatedBy: .newlines).filter {
+                $0.contains("NSHostingView(rootView:") || $0.contains(".rootView =")
+            })
+        }
+
+        XCTAssertFalse(hostingRootLines.isEmpty)
+        XCTAssertTrue(
+            hostingRootLines.allSatisfy { $0.contains("PanelFocusAppearance.suppressedRoot") },
+            "Every SwiftUI hosting root must suppress focus visuals: \(hostingRootLines)"
+        )
+        XCTAssertTrue(sourceText.contains("enum PanelFocusAppearance"))
+        XCTAssertTrue(sourceText.contains(".focusEffectDisabled()"))
+        XCTAssertFalse(sourceText.contains("keyboardFocusIndicator"))
+    }
+
     @MainActor
     func testPortfolioBackupRoundTripCarriesPerformanceHistoryWithoutEmbeddingItInLivePortfolio() throws {
         let sourceDirectory = temporaryDirectory()
