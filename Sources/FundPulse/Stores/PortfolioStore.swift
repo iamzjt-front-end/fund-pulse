@@ -1286,11 +1286,6 @@ final class PortfolioStore {
 
         var remaining: [FundPendingTrade] = []
         for pendingTrade in pendingTrades {
-            guard !waitsForExternalConfirmation(pendingTrade) else {
-                remaining.append(pendingTrade)
-                continue
-            }
-
             let draft = pendingTrade.draft
             guard let index = snapshot.funds.firstIndex(where: { $0.code == draft.code }) else {
                 continue
@@ -1304,6 +1299,8 @@ final class PortfolioStore {
                 remaining.append(pendingTrade)
                 continue
             }
+            // 京东的“支付成功/确认中”只应阻止当日提前入账；进入受理日的
+            // 次日后，基金份额确认以本地确认净值为准，不能被旧的外部等待标记永久卡住。
             guard let confirmedNetValue = await quoteService.fetchConfirmedNetValue(
                 code: draft.code,
                 acceptedDate: acceptedDate,
@@ -2741,6 +2738,8 @@ final class PortfolioStore {
                 record.sellFeeMode = draft.sellFeeMode
                 record.sellFeeValue = draft.sellFeeValue
                 record.confirmedAt = .now
+                record.externalStatus = .externalConfirmed
+                record.waitsForExternalConfirmation = false
             }
         ) {
             return
@@ -2760,8 +2759,11 @@ final class PortfolioStore {
                 record.sellFeeMode = draft.sellFeeMode
                 record.sellFeeValue = draft.sellFeeValue
                 record.confirmedAt = record.confirmedAt ?? .now
+                record.externalStatus = .externalConfirmed
+                record.waitsForExternalConfirmation = false
                 if let syncMetadata = syncMetadata(from: pendingTrade) {
-                    apply(syncMetadata, to: &record)
+                    record.syncSource = syncMetadata.source
+                    record.syncKey = syncMetadata.syncKey ?? record.syncKey
                 }
             }
         ) {

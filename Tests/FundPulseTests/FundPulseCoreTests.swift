@@ -3982,7 +3982,7 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testJDFinanceWaitingPendingBuyDoesNotAutoConfirmOnRefresh() async throws {
+    func testJDFinanceWaitingPendingBuyAutoConfirmsOnNextDay() async throws {
         let now = try chinaDate("2026-07-08 09:30")
         let createdAt = try chinaDate("2026-07-07 14:30")
         let service = tradeQuoteService(
@@ -4086,13 +4086,15 @@ final class FundPulseCoreTests: XCTestCase {
 
         await store.refreshQuotes()
 
-        XCTAssertEqual(store.snapshot.pendingTrades?.count, 1)
+        XCTAssertNil(store.snapshot.pendingTrades)
         let record = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.id == "pending-buy-record" })
-        XCTAssertEqual(record.status, .pending)
-        XCTAssertNil(record.confirmedShares)
+        XCTAssertEqual(record.status, .confirmed)
+        XCTAssertEqual(record.confirmedShares ?? 0, 50, accuracy: 0.000001)
+        XCTAssertEqual(record.externalStatus, .externalConfirmed)
+        XCTAssertEqual(record.waitsForExternalConfirmation, false)
         let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "013284" })
-        XCTAssertEqual(fund.migratedShares ?? 0, 100, accuracy: 0.000001)
-        XCTAssertEqual(fund.currentAmount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.migratedShares ?? 0, 150, accuracy: 0.000001)
+        XCTAssertEqual(fund.currentAmount ?? 0, 1_500, accuracy: 0.0001)
     }
 
     func testJDFinancePendingRemoteDoesNotDuplicateLocallyConfirmedTrade() throws {
