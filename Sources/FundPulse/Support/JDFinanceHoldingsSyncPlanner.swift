@@ -112,9 +112,14 @@ enum JDFinanceHoldingsSyncPlanner {
             let transactionTipText = product.transactionTipText?.trimmingCharacters(in: .whitespacesAndNewlines)
             let localFund = localFundsByCode[product.code]
             let localConfirmedCandidate = localConfirmedCandidate(for: product, records: localTradeRecords)
-            let hasLocalPending = localFund?.status == .pending
-                || localPendingTradeCodes.contains(product.code)
-                || localPendingConversionCodes.contains(product.code)
+            let hasLocalPending = hasLocalPendingTransaction(
+                for: product,
+                localFund: localFund,
+                localSnapshot: localSnapshot,
+                localTradeRecords: localTradeRecords,
+                localPendingTradeCodes: localPendingTradeCodes,
+                localPendingConversionCodes: localPendingConversionCodes
+            )
             let localPendingMessage: String? = if hasLocalPending {
                 localPendingConfirmationMessage(for: product)
             } else {
@@ -1172,6 +1177,193 @@ enum JDFinanceHoldingsSyncPlanner {
         product.transactionTipText?.isEmpty == false
     }
 
+    private struct PendingBatchKey: Hashable {
+        var date: String
+        var timeType: String
+        var action: String
+    }
+
+    private static func hasLocalPendingTransaction(
+        for product: JDFinanceHoldingProduct,
+        localFund: FundPosition?,
+        localSnapshot: PortfolioSnapshot,
+        localTradeRecords: [FundTradeRecord],
+        localPendingTradeCodes: Set<String>,
+        localPendingConversionCodes: Set<String>
+    ) -> Bool {
+        let fallback = localFund?.status == .pending
+            || localPendingTradeCodes.contains(product.code)
+            || localPendingConversionCodes.contains(product.code)
+        let remoteTotals = pendingBatchTotals(for: product)
+        guard !remoteTotals.isEmpty else {
+            return fallback
+        }
+
+        let localTotals = pendingBatchTotals(
+            in: localSnapshot,
+            tradeRecords: localTradeRecords,
+            code: product.code
+        )
+        guard !localTotals.isEmpty else {
+            // Older snapshots can retain only the fund-level pending marker.
+            // Without transaction-level evidence, preserve that legacy state.
+            return fallback
+        }
+
+        return remoteTotals.allSatisfy { localTotals[$0.key] == $0.value }
+    }
+
+    private static func pendingBatchTotals(
+        for product: JDFinanceHoldingProduct
+    ) -> [PendingBatchKey: Int64] {
+        let expectedAction = product.pendingDetail?.action ?? product.transactionTip?.action
+        var totals: [PendingBatchKey: Int64] = [:]
+
+        for record in product.pendingDetail?.matchedTradeRecords ?? [] {
+            let action = record.action ?? expectedAction
+            guard let action,
+                  let date = record.tradeDate,
+                  let timeType = record.tradeTimeType,
+                  let value = pendingBatchValue(action: action, amount: record.amount, shares: record.shares)
+            else {
+                continue
+            }
+            let key = PendingBatchKey(
+                date: date,
+                timeType: timeType.rawValue,
+                action: action.rawValue
+            )
+            totals[key, default: 0] += value
+        }
+
+        if totals.isEmpty,
+           let detail = product.pendingDetail,
+           let action = detail.action ?? product.transactionTip?.action,
+           let date = detail.tradeDate,
+           let timeType = detail.tradeTimeType,
+           let value = pendingBatchValue(action: action, amount: detail.amount ?? product.transactionTip?.totalAmount, shares: detail.shares)
+        {
+            let key = PendingBatchKey(
+                date: date,
+                timeType: timeType.rawValue,
+                action: action.rawValue
+            )
+            totals[key] = value
+        }
+
+        return totals
+    }
+
+    private static func pendingBatchTotals(
+        in snapshot: PortfolioSnapshot,
+        tradeRecords: [FundTradeRecord],
+        code: String
+    ) -> [PendingBatchKey: Int64] {
+        var totals: [PendingBatchKey: Int64] = [:]
+        let representedRecordIDs = Set((snapshot.pendingTrades ?? []).compactMap(\.recordID))
+
+        for record in tradeRecords where record.code == code && isJDFinancePending(record) {
+            guard let action = pendingBatchAction(for: record.kind),
+                  let value = pendingBatchValue(action: action, amount: record.amount, shares: record.shares ?? record.confirmedShares)
+            else {
+                continue
+            }
+            addPendingBatchValue(
+                value,
+                date: record.tradeDate,
+                timeType: record.tradeTimeType,
+                action: action,
+                to: &totals
+            )
+        }
+
+        for pendingTrade in snapshot.pendingTrades ?? [] {
+            if let recordID = pendingTrade.recordID, representedRecordIDs.contains(recordID) {
+                continue
+            }
+            guard pendingTrade.code == code,
+                  pendingTrade.syncSource == .jdFinance,
+                  let value = pendingBatchValue(
+                      action: pendingBatchAction(for: pendingTrade.action),
+                      amount: pendingTrade.amount,
+                      shares: pendingTrade.shares
+                  )
+            else {
+                continue
+            }
+            addPendingBatchValue(
+                value,
+                date: pendingTrade.tradeDate,
+                timeType: pendingTrade.tradeTimeType,
+                action: pendingBatchAction(for: pendingTrade.action),
+                to: &totals
+            )
+        }
+
+        return totals
+    }
+
+    private static func isJDFinancePending(_ record: FundTradeRecord) -> Bool {
+        record.status == .pending
+            && (record.syncSource == .jdFinance
+                || record.externalStatus == .waitingExternalConfirmation
+                || record.waitsForExternalConfirmation == true)
+    }
+
+    private static func pendingBatchAction(for kind: FundTradeKind) -> JDFinancePendingTradeAction? {
+        switch kind {
+        case .newFund, .buy:
+            .buy
+        case .sell:
+            .sell
+        case .conversionOut:
+            .conversion
+        case .conversionIn:
+            nil
+        }
+    }
+
+    private static func pendingBatchAction(for action: FundTradeAction) -> JDFinancePendingTradeAction {
+        switch action {
+        case .buy:
+            .buy
+        case .sell:
+            .sell
+        }
+    }
+
+    private static func pendingBatchValue(
+        action: JDFinancePendingTradeAction,
+        amount: Double?,
+        shares: Double?
+    ) -> Int64? {
+        switch action {
+        case .buy:
+            guard let amount, amount > 0 else { return nil }
+            return Int64((amount * 100).rounded())
+        case .sell, .conversion:
+            guard let shares, shares > 0 else { return nil }
+            return Int64((shares * 1_000_000).rounded())
+        case .unknown:
+            return nil
+        }
+    }
+
+    private static func addPendingBatchValue(
+        _ value: Int64,
+        date: String,
+        timeType: PositionTimeType,
+        action: JDFinancePendingTradeAction,
+        to totals: inout [PendingBatchKey: Int64]
+    ) {
+        let key = PendingBatchKey(
+            date: date,
+            timeType: timeType.rawValue,
+            action: action.rawValue
+        )
+        totals[key, default: 0] += value
+    }
+
     private static func pendingImportKind(
         for product: JDFinanceHoldingProduct,
         localFund: FundPosition?,
@@ -1193,7 +1385,7 @@ enum JDFinanceHoldingsSyncPlanner {
             return .newFund
         }
 
-        guard localFund?.status == .holding else {
+        guard localFund?.status == .holding || localFund?.status == .pending else {
             return nil
         }
 

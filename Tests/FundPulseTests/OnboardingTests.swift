@@ -92,7 +92,7 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(PopoverLayout.sampleExperienceSize.width, 430)
         XCTAssertEqual(PopoverLayout.portfolioPerformanceSize.width, 430)
         XCTAssertEqual(PopoverLayout.jdFinancePerformanceSyncSize.width, 430)
-        XCTAssertEqual(PopoverLayout.jdFinanceSyncSize.width, 430)
+        XCTAssertEqual(PopoverLayout.jdFinanceSyncSize.width, 500)
         XCTAssertEqual(PopoverLayout.jdFinanceNetworkProbeSize.width, 430)
         XCTAssertEqual(PopoverLayout.jdFinanceLoginSize.width, 1040)
     }

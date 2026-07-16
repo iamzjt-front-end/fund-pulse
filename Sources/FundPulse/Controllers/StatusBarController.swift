@@ -144,6 +144,7 @@ enum PopoverLayout {
     static let mainWidth: CGFloat = 360
     static let jdFinanceLoginWidth: CGFloat = 1040
     static let jdFinancePreviewWidth: CGFloat = 430
+    static let jdFinanceSyncWidth: CGFloat = 500
     static let jdFinanceSyncHeight: CGFloat = 720
     static let standardChildPanelWidth: CGFloat = 360
     static let settingsWidth: CGFloat = standardChildPanelWidth
@@ -170,7 +171,7 @@ enum PopoverLayout {
     static let mainWindowSize = mainWindowFrameSize(forHeight: height)
     static let jdFinanceLoginSize = NSSize(width: jdFinanceLoginWidth, height: jdFinanceSyncHeight)
     static let jdFinanceNetworkProbeSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
-    static let jdFinanceSyncSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
+    static let jdFinanceSyncSize = NSSize(width: jdFinanceSyncWidth, height: jdFinanceSyncHeight)
     static let settingsSize = NSSize(width: settingsWidth, height: standardChildPanelHeight)
     static let editorSize = NSSize(width: editorWidth, height: editorHeight)
     static let tradeEditorSize = NSSize(width: editorWidth, height: standardChildPanelHeight)

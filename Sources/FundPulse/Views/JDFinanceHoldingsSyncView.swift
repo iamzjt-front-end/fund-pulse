@@ -524,37 +524,46 @@ struct JDFinanceHoldingsSyncView: View {
             }
 
             if hasSelectableScopes(preview) {
-                HStack(spacing: 8) {
-                    syncScopeToggle(
-                        scope: .newHoldings,
-                        title: "新增",
-                        count: preview.newHoldings.count,
-                        tone: PanelDesign.accent
-                    )
-                    syncScopeToggle(
-                        scope: .changedHoldings,
-                        title: "金额/收益",
-                        count: preview.changedHoldings.count,
-                        tone: .orange
-                    )
-                    syncScopeToggle(
-                        scope: .pendingHoldings,
-                        title: "待确认",
-                        count: preview.importablePendingTradeCount,
-                        tone: PanelDesign.warningAccent
-                    )
-                    syncScopeToggle(
-                        scope: .reconciliations,
-                        title: "待覆盖",
-                        count: preview.overwritableReconciliationNotices.count,
-                        tone: PanelDesign.accent
-                    )
-                    syncScopeToggle(
-                        scope: .unrecordedOrders,
-                        title: "未入账",
-                        count: preview.importableUnrecordedOrders.count,
-                        tone: .purple
-                    )
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("同步范围")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                        spacing: 6
+                    ) {
+                        syncScopeToggle(
+                            scope: .newHoldings,
+                            title: "新增",
+                            count: preview.newHoldings.count,
+                            tone: PanelDesign.accent
+                        )
+                        syncScopeToggle(
+                            scope: .changedHoldings,
+                            title: "金额/收益",
+                            count: preview.changedHoldings.count,
+                            tone: .orange
+                        )
+                        syncScopeToggle(
+                            scope: .pendingHoldings,
+                            title: "待确认",
+                            count: preview.importablePendingTradeCount,
+                            tone: PanelDesign.warningAccent
+                        )
+                        syncScopeToggle(
+                            scope: .reconciliations,
+                            title: "待覆盖",
+                            count: preview.overwritableReconciliationNotices.count,
+                            tone: PanelDesign.accent
+                        )
+                        syncScopeToggle(
+                            scope: .unrecordedOrders,
+                            title: "未入账",
+                            count: preview.importableUnrecordedOrders.count,
+                            tone: .purple
+                        )
+                    }
                 }
             } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty || !preview.unresolvedHoldings.isEmpty || !preview.warnings.isEmpty {
                 Label("未选中的清仓、冲突和处理中记录仅作为提示，不会写入本地。", systemImage: "info.circle")
@@ -641,13 +650,13 @@ struct JDFinanceHoldingsSyncView: View {
                     .font(.system(size: 10, weight: .semibold))
                 Text(quietItems.joined(separator: " · "))
                     .font(.system(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.74)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.secondary)
             .padding(.horizontal, 10)
-            .frame(height: 30)
+            .padding(.vertical, 7)
             .background(PanelDesign.inputBackground.opacity(0.48), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay(PanelDesign.border(cornerRadius: 8))
         }
@@ -1169,11 +1178,7 @@ struct JDFinanceHoldingsSyncView: View {
                 .foregroundStyle(.secondary)
 
             ForEach(Array(records.enumerated()), id: \.offset) { index, record in
-                Text(tradeRecordText(index: index, record: record))
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                tradeRecordRow(index: index, record: record)
             }
         }
         .padding(.horizontal, 7)
@@ -1183,30 +1188,56 @@ struct JDFinanceHoldingsSyncView: View {
         .overlay(PanelDesign.border(cornerRadius: 7))
     }
 
-    private func tradeRecordText(index: Int, record: JDFinanceTradeOrderRecord) -> String {
-        var parts = ["\(index + 1)."]
-        if let tradeDate = record.tradeDate {
-            parts.append(tradeDate)
-        }
-        if let timeType = record.tradeTimeType {
-            parts.append(timeType.title)
-        }
-        if let amount = record.amount {
-            if record.action == .conversion {
-                parts.append(shareText(record.shares ?? amount))
-            } else {
-                parts.append(MoneyFormatter.plainMoney(amount))
+    private func tradeRecordRow(index: Int, record: JDFinanceTradeOrderRecord) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text("\(index + 1).")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(tradeRecordTimingText(record))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 4)
+                    Text(tradeRecordValueText(record))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .monospacedDigit()
+                }
+
+                if let statusText = record.statusText, !statusText.isEmpty {
+                    Text(statusText)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let targetName = record.conversionTargetName, !targetName.isEmpty {
+                    Text("→ \(targetName)")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        if record.action == .conversion,
-           let targetName = record.conversionTargetName
-        {
-            parts.append("→ \(targetName)")
+    }
+
+    private func tradeRecordTimingText(_ record: JDFinanceTradeOrderRecord) -> String {
+        [record.tradeDate, record.tradeTimeType?.title]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    private func tradeRecordValueText(_ record: JDFinanceTradeOrderRecord) -> String {
+        if record.action == .conversion {
+            return shareText(record.shares ?? record.amount ?? 0)
         }
-        if let statusText = record.statusText {
-            parts.append(statusText)
-        }
-        return parts.joined(separator: " ")
+        return record.amount.map(MoneyFormatter.plainMoney) ?? "--"
     }
 
     private func shareText(_ value: Double) -> String {
@@ -1318,15 +1349,15 @@ struct JDFinanceHoldingsSyncView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(code)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(code)
                         .font(.system(size: 11, weight: .semibold))
                         .monospacedDigit()
-                    Text(name)
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        Text(name)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 6)
                 Text(badge)

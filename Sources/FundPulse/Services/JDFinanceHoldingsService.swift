@@ -602,7 +602,7 @@ struct JDFinanceHoldingsService: Sendable {
         }
 
         let amountMatches = candidates.filter { matchesAmount($0, product: product) }
-        if amountMatches.count == 1, let matchedRecord = amountMatches.first {
+        if let matchedRecord = uniqueAmountMatchedTradeOrder(in: amountMatches) {
             return [matchedRecord]
         }
 
@@ -731,7 +731,21 @@ struct JDFinanceHoldingsService: Sendable {
             guard let amount = record.amount else { return false }
             return abs(amount - expectedAmount) < 0.01
         }
-        return amountMatches.count == 1 ? amountMatches.first : nil
+        return uniqueAmountMatchedTradeOrder(in: amountMatches)
+    }
+
+    private static func uniqueAmountMatchedTradeOrder(
+        in records: [JDFinanceTradeOrderRecord]
+    ) -> JDFinanceTradeOrderRecord? {
+        if records.count == 1 {
+            return records.first
+        }
+
+        // A recent payment-success order is still waiting for fund confirmation.
+        // Prefer that record over an older completed order with the same amount;
+        // the latter is historical evidence, not the current pending trade.
+        let pendingRecords = records.filter { $0.effectiveStatus == .pending }
+        return pendingRecords.count == 1 ? pendingRecords.first : nil
     }
 
     private static func matchingUngroupedTradeOrderRecords(
