@@ -338,6 +338,7 @@ struct JDFinanceHoldingsSyncView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         quietPreviewSummary(preview)
+                        pendingOrderStateSummary(preview)
 
                         if !preview.newHoldings.isEmpty {
                             previewSection(
@@ -413,7 +414,7 @@ struct JDFinanceHoldingsSyncView: View {
 
                         if !preview.pendingNotices.isEmpty {
                             previewSection(
-                                title: "京东订单 · 待确认",
+                                title: "京东订单状态",
                                 count: preview.pendingTradeCount,
                                 tone: PanelDesign.warningAccent
                             ) {
@@ -444,6 +445,7 @@ struct JDFinanceHoldingsSyncView: View {
 
     private func previewOverview(_ preview: JDFinanceHoldingsSyncPreview) -> some View {
         let canApply = canApplySelectedData(preview)
+        let scopeColumnCount = max(1, min(3, selectableScopeCount(preview)))
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
@@ -465,19 +467,6 @@ struct JDFinanceHoldingsSyncView: View {
                     overviewMetric("产品", "\(preview.remoteSnapshot.products.count)", tone: .secondary)
                     tradeOrderCompletenessLabel(preview.remoteSnapshot.tradeOrderFetchState)
                 }
-            }
-
-            HStack(spacing: 7) {
-                countPill("自动确认", preview.autoConfirmedCount, tone: .green)
-                countPill("新增", preview.newHoldings.count, tone: PanelDesign.accent)
-                countPill("差异", preview.changedHoldings.count, tone: .orange)
-                countPill("未入账", preview.unrecordedOrders.count, tone: .purple)
-            }
-            HStack(spacing: 7) {
-                countPill("覆盖", preview.reconciliationNotices.count, tone: PanelDesign.accent)
-                countPill("清仓", preview.missingLocalHoldings.count, tone: .green)
-                countPill("冲突", preview.unresolvedHoldings.count, tone: PanelDesign.warningAccent)
-                countPill("提示", preview.pendingTradeCount + preview.warnings.count, tone: PanelDesign.warningAccent)
             }
 
             if preview.baselineRepresentedCount > 0 {
@@ -525,44 +514,54 @@ struct JDFinanceHoldingsSyncView: View {
 
             if hasSelectableScopes(preview) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("同步范围")
+                    Text("选择要同步的内容")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
 
                     LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: scopeColumnCount),
                         spacing: 6
                     ) {
-                        syncScopeToggle(
-                            scope: .newHoldings,
-                            title: "新增",
-                            count: preview.newHoldings.count,
-                            tone: PanelDesign.accent
-                        )
-                        syncScopeToggle(
-                            scope: .changedHoldings,
-                            title: "金额/收益",
-                            count: preview.changedHoldings.count,
-                            tone: .orange
-                        )
-                        syncScopeToggle(
-                            scope: .pendingHoldings,
-                            title: "待确认",
-                            count: preview.importablePendingTradeCount,
-                            tone: PanelDesign.warningAccent
-                        )
-                        syncScopeToggle(
-                            scope: .reconciliations,
-                            title: "待覆盖",
-                            count: preview.overwritableReconciliationNotices.count,
-                            tone: PanelDesign.accent
-                        )
-                        syncScopeToggle(
-                            scope: .unrecordedOrders,
-                            title: "未入账",
-                            count: preview.importableUnrecordedOrders.count,
-                            tone: .purple
-                        )
+                        if !preview.newHoldings.isEmpty {
+                            syncScopeToggle(
+                                scope: .newHoldings,
+                                title: "新增",
+                                count: preview.newHoldings.count,
+                                tone: PanelDesign.accent
+                            )
+                        }
+                        if !preview.changedHoldings.isEmpty {
+                            syncScopeToggle(
+                                scope: .changedHoldings,
+                                title: "金额/收益",
+                                count: preview.changedHoldings.count,
+                                tone: .orange
+                            )
+                        }
+                        if preview.importablePendingTradeCount > 0 {
+                            syncScopeToggle(
+                                scope: .pendingHoldings,
+                                title: "待确认",
+                                count: preview.importablePendingTradeCount,
+                                tone: PanelDesign.warningAccent
+                            )
+                        }
+                        if !preview.overwritableReconciliationNotices.isEmpty {
+                            syncScopeToggle(
+                                scope: .reconciliations,
+                                title: "待覆盖",
+                                count: preview.overwritableReconciliationNotices.count,
+                                tone: PanelDesign.accent
+                            )
+                        }
+                        if preview.importableUnrecordedOrders.count > 0 {
+                            syncScopeToggle(
+                                scope: .unrecordedOrders,
+                                title: "未入账",
+                                count: preview.importableUnrecordedOrders.count,
+                                tone: .purple
+                            )
+                        }
                     }
                 }
             } else if !preview.missingLocalHoldings.isEmpty || !preview.pendingNotices.isEmpty || !preview.unresolvedHoldings.isEmpty || !preview.warnings.isEmpty {
@@ -611,28 +610,6 @@ struct JDFinanceHoldingsSyncView: View {
             .foregroundStyle(color)
     }
 
-    private func countPill(_ title: String, _ count: Int, tone: Color) -> some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(tone.opacity(count == 0 ? 0.28 : 0.86))
-                .frame(width: 6, height: 6)
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
-            Text("\(count)")
-                .font(.system(size: 10, weight: .bold))
-                .monospacedDigit()
-        }
-        .foregroundStyle(count == 0 ? Color.secondary.opacity(0.66) : tone)
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity)
-        .frame(height: 24)
-        .background(PanelDesign.inputBackground.opacity(count == 0 ? 0.42 : 0.72), in: Capsule())
-        .overlay(
-            Capsule()
-                .stroke(Color(nsColor: .separatorColor).opacity(count == 0 ? 0.12 : 0.22), lineWidth: 0.6)
-        )
-    }
-
     @ViewBuilder
     private func quietPreviewSummary(_ preview: JDFinanceHoldingsSyncPreview) -> some View {
         let quietItems = [
@@ -662,12 +639,47 @@ struct JDFinanceHoldingsSyncView: View {
         }
     }
 
+    @ViewBuilder
+    private func pendingOrderStateSummary(_ preview: JDFinanceHoldingsSyncPreview) -> some View {
+        if !preview.pendingNotices.isEmpty {
+            let parts = [
+                preview.localPendingTradeCount > 0
+                    ? "本地待确认 \(preview.localPendingTradeCount)"
+                    : nil,
+                preview.localConfirmedJDPendingTradeCount > 0
+                    ? "京东状态待更新 \(preview.localConfirmedJDPendingTradeCount)"
+                    : nil,
+                preview.positionCoveredMissingLedgerTradeCount > 0
+                    ? "金额已覆盖但流水缺失 \(preview.positionCoveredMissingLedgerTradeCount)"
+                    : nil,
+                preview.importablePendingTradeCount > 0
+                    ? "可同步 \(preview.importablePendingTradeCount)"
+                    : nil
+            ].compactMap { $0 }
+
+            Label(parts.joined(separator: " · "), systemImage: "list.bullet.rectangle")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(PanelDesign.inputBackground.opacity(0.48), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(PanelDesign.border(cornerRadius: 8))
+        }
+    }
+
     private func hasSelectableScopes(_ preview: JDFinanceHoldingsSyncPreview) -> Bool {
-        !preview.newHoldings.isEmpty ||
-            !preview.changedHoldings.isEmpty ||
-            !preview.importablePendingNotices.isEmpty ||
-            !preview.overwritableReconciliationNotices.isEmpty ||
+        selectableScopeCount(preview) > 0
+    }
+
+    private func selectableScopeCount(_ preview: JDFinanceHoldingsSyncPreview) -> Int {
+        [
+            !preview.newHoldings.isEmpty,
+            !preview.changedHoldings.isEmpty,
+            !preview.importablePendingNotices.isEmpty,
+            !preview.overwritableReconciliationNotices.isEmpty,
             !preview.importableUnrecordedOrders.isEmpty
+        ].count(where: { $0 })
     }
 
     private func syncScopeToggle(
@@ -1126,8 +1138,15 @@ struct JDFinanceHoldingsSyncView: View {
     }
 
     private func pendingNoticeBadge(for notice: JDFinanceHoldingPendingNotice) -> String {
-        if case .localConfirmedJDPending = notice.syncState {
-            return "本地已确认 · 京东待确认"
+        switch notice.localCoverage {
+        case .confirmed:
+            return "本地已确认 · 京东待更新"
+        case .pending:
+            return "本地待确认"
+        case .positionOnly:
+            return "金额已覆盖 · 流水缺失"
+        case .none:
+            break
         }
         if notice.isImportable { return "可同步" }
         if notice.requiresManualCompletion { return "需补全" }
