@@ -424,6 +424,9 @@ struct PopoverContentView: View {
                 }
             }
             .zIndex(isSortMenuPresented ? 20 : 0)
+            .opacity(filter == .pending ? 0 : 1)
+            .allowsHitTesting(filter != .pending)
+            .accessibilityHidden(filter == .pending)
 
             toolbarActionGroup
         }
