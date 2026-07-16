@@ -4129,7 +4129,7 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testJDFinanceWaitingPendingBuyAutoConfirmsOnNextDay() async throws {
+    func testJDFinanceOrphanedPendingBuyRepairsIndexAndAutoConfirmsOnNextDay() async throws {
         let now = try chinaDate("2026-07-08 09:30")
         let createdAt = try chinaDate("2026-07-07 14:30")
         let service = tradeQuoteService(
@@ -4159,30 +4159,12 @@ final class FundPulseCoreTests: XCTestCase {
                 holdingIncomeRate: 0,
                 todayIncome: 0,
                 todayIncomeRate: 0,
-                pendingCount: 1,
+                pendingCount: 0,
                 funds: [
                     conversionFund(code: "013284", name: "上银价值增长3个月持有期混合A", shares: 100, cost: 10)
                 ],
                 migration: nil,
-                pendingTrades: [
-                    FundPendingTrade(
-                        id: "pending-buy",
-                        recordID: "pending-buy-record",
-                        action: .buy,
-                        code: "013284",
-                        mode: .amount,
-                        amount: 500,
-                        shares: nil,
-                        tradeDate: "2026-07-07",
-                        tradeTimeType: .before15,
-                        createdAt: createdAt,
-                        syncSource: syncMetadata.source,
-                        syncKey: syncMetadata.syncKey,
-                        externalStatus: syncMetadata.externalStatus,
-                        externalStatusText: syncMetadata.externalStatusText,
-                        waitsForExternalConfirmation: syncMetadata.waitsForExternalConfirmation
-                    )
-                ],
+                pendingTrades: nil,
                 tradeRecords: [
                     FundTradeRecord(
                         id: "initial-record",
@@ -4242,6 +4224,76 @@ final class FundPulseCoreTests: XCTestCase {
         let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "013284" })
         XCTAssertEqual(fund.migratedShares ?? 0, 150, accuracy: 0.000001)
         XCTAssertEqual(fund.currentAmount ?? 0, 1_500, accuracy: 0.0001)
+
+        await store.refreshQuotes()
+
+        XCTAssertNil(store.snapshot.pendingTrades)
+        XCTAssertEqual(store.snapshot.tradeRecords?.filter { $0.id == "pending-buy-record" }.count, 1)
+        XCTAssertEqual(store.snapshot.funds.first?.migratedShares ?? 0, 150, accuracy: 0.000001)
+    }
+
+    @MainActor
+    func testJDFinanceOrphanedQDIIBuyRepairsIndexButWaitsForAcceptedDateNAV() async throws {
+        let now = try chinaDate("2026-07-17 00:10")
+        let createdAt = try chinaDate("2026-07-16 14:30")
+        let code = "022184"
+        let name = "富国全球科技互联网股票(QDII)C"
+        let service = tradeQuoteService(
+            code: code,
+            name: name,
+            date: "2026-07-15",
+            netValue: 5.6886
+        )
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-orphaned-qdii-buy-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        let pendingRecord = FundTradeRecord(
+            id: "orphaned-qdii-buy",
+            kind: .buy,
+            status: .pending,
+            code: code,
+            name: name,
+            mode: .amount,
+            amount: 1_000,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: createdAt,
+            confirmedAt: nil,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            externalStatus: .waitingExternalConfirmation,
+            externalStatusText: "支付成功",
+            waitsForExternalConfirmation: true
+        )
+        try seedPortfolio(
+            jdPortfolio(
+                funds: [conversionFund(code: code, name: name, shares: 100, cost: 5.6886)],
+                records: [pendingRecord],
+                now: now
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        await store.refreshQuotes()
+
+        XCTAssertEqual(store.snapshot.pendingTrades?.count, 1)
+        XCTAssertEqual(store.snapshot.pendingTrades?.first?.recordID, pendingRecord.id)
+        XCTAssertEqual(store.snapshot.tradeRecords?.first?.status, .pending)
+        XCTAssertEqual(store.snapshot.funds.first?.migratedShares ?? 0, 100, accuracy: 0.000001)
+
+        await store.refreshQuotes()
+
+        XCTAssertEqual(store.snapshot.pendingTrades?.count, 1)
+        XCTAssertEqual(store.snapshot.tradeRecords?.filter { $0.id == pendingRecord.id }.count, 1)
+        XCTAssertEqual(store.snapshot.funds.first?.migratedShares ?? 0, 100, accuracy: 0.000001)
     }
 
     func testJDFinancePendingRemoteDoesNotDuplicateLocallyConfirmedTrade() throws {

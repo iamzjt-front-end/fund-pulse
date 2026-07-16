@@ -1367,6 +1367,7 @@ final class PortfolioStore {
     }
 
     private func processPendingTrades(quotes: [String: FundQuote]) async {
+        repairPendingTradeIndexFromRecords()
         guard let pendingTrades = snapshot.pendingTrades, !pendingTrades.isEmpty else {
             return
         }
@@ -1375,6 +1376,7 @@ final class PortfolioStore {
         for pendingTrade in pendingTrades {
             let draft = pendingTrade.draft
             guard let index = snapshot.funds.firstIndex(where: { $0.code == draft.code }) else {
+                remaining.append(pendingTrade)
                 continue
             }
 
@@ -2332,6 +2334,24 @@ final class PortfolioStore {
             }
         let next = existing + rebuilt
         snapshot.pendingTrades = next.isEmpty ? nil : next
+    }
+
+    private func repairPendingTradeIndexFromRecords() {
+        let recordCodes = Set((snapshot.tradeRecords ?? []).compactMap { record -> String? in
+            guard record.status == .pending,
+                  record.kind == .buy || record.kind == .sell
+            else {
+                return nil
+            }
+            return record.code
+        })
+        let indexedCodes = Set((snapshot.pendingTrades ?? []).map(\.code))
+
+        for code in recordCodes.union(indexedCodes).sorted() {
+            rebuildPendingTradesFromRecords(for: code)
+        }
+        snapshot.pendingCount = (snapshot.pendingTrades?.count ?? 0)
+            + (snapshot.pendingConversions?.count ?? 0)
     }
 
     private func rebuildFundPositionFromTradeRecords(code: String) throws {
