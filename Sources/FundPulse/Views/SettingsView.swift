@@ -172,6 +172,13 @@ struct SettingsView: View {
             }
             .id(selectedSection)
             .scrollIndicators(.hidden)
+
+            Divider()
+                .opacity(0.45)
+
+            settingsFooter
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
         }
         .frame(
             width: PopoverLayout.settingsWidth,
@@ -309,17 +316,15 @@ struct SettingsView: View {
         }
     }
 
-    private var aboutSettingsContent: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            PanelSection(title: "关于与隐私") {
-                aboutAndPrivacySection
-            }
+    private var settingsFooter: some View {
+        plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
+            NSApp.terminate(nil)
+        }
+    }
 
-            PanelSection(title: "应用") {
-                plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
-                    NSApp.terminate(nil)
-                }
-            }
+    private var aboutSettingsContent: some View {
+        PanelSection(title: "关于与隐私") {
+            aboutAndPrivacySection
         }
     }
 
