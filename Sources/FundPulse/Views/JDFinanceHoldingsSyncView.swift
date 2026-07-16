@@ -838,12 +838,12 @@ struct JDFinanceHoldingsSyncView: View {
     }
 
     private func differenceCard(_ difference: JDFinanceHoldingDifference) -> some View {
-        let amountDelta = difference.jdAmount - (difference.localAmount ?? 0)
+        let amountDelta = difference.amountDelta
         let incomeDelta = optionalDelta(difference.jdHoldingIncome, difference.localHoldingIncome)
 
         return comparisonCardHeader(code: difference.code, name: difference.name, badge: "对比", tone: .orange) {
             HStack(spacing: 8) {
-                metricPair("京东", MoneyFormatter.plainMoney(difference.jdAmount), tone: .primary)
+                metricPair(jdAmountMetricTitle(difference), MoneyFormatter.plainMoney(difference.jdAmount), tone: .primary)
                 metricPair("本地", moneyOrDash(difference.localAmount), tone: .secondary)
                 metricPair("差额", MoneyFormatter.money(amountDelta, signed: true), tone: toneColor(amountDelta))
             }
@@ -856,6 +856,15 @@ struct JDFinanceHoldingsSyncView: View {
                 metricPair("收益差", incomeDelta.map { MoneyFormatter.money($0, signed: true) } ?? "--", tone: toneColor(incomeDelta))
             }
         }
+    }
+
+    private func jdAmountMetricTitle(_ difference: JDFinanceHoldingDifference) -> String {
+        guard let pendingBuyAmount = difference.jdPendingBuyAmount,
+              pendingBuyAmount >= 0.01
+        else {
+            return "京东"
+        }
+        return "京东（含加仓 \(MoneyFormatter.plainMoney(pendingBuyAmount))）"
     }
 
     private func missingHoldingCard(_ holding: JDFinanceMissingLocalHolding) -> some View {

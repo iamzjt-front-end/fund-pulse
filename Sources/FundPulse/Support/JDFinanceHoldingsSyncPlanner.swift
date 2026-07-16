@@ -26,8 +26,17 @@ enum JDFinanceHoldingsSyncPlanner {
         let initiallyResolvedProducts = remoteSnapshot.products.map {
             resolvedProduct($0, localFundsByCode: localFundsByCode, localFundsByName: localFundsByName)
         }
+        let localTradeRecords = localSnapshot.tradeRecords ?? []
         let consolidation = consolidatedProducts(initiallyResolvedProducts)
-        let remoteProducts = consolidation.products
+        let remoteProducts = consolidation.products.map { product in
+            var reconciledProduct = product
+            reconciledProduct.reconciledPendingBuyAmount = reconciledPendingBuyAmount(
+                for: product,
+                localSnapshot: localSnapshot,
+                localTradeRecords: localTradeRecords
+            )
+            return reconciledProduct
+        }
         let resolvedProducts = remoteProducts.filter(\.isCodeResolved)
         let unresolvedProducts = remoteProducts.filter { !$0.isCodeResolved }
         let resolvedRemoteSnapshot = JDFinanceHoldingsSnapshot(
@@ -43,7 +52,6 @@ enum JDFinanceHoldingsSyncPlanner {
         let remoteCodes = Set(resolvedProducts.map(\.code))
         let localPendingTradeCodes = Set(localSnapshot.pendingTrades?.map(\.code) ?? [])
         let localPendingConversionCodes = Set((localSnapshot.pendingConversions ?? []).flatMap { [$0.fromCode, $0.toCode] })
-        let localTradeRecords = localSnapshot.tradeRecords ?? []
 
         let newHoldings = resolvedProducts
             .filter { localFundsByCode[$0.code] == nil && !hasPendingTransactionTip($0) }
@@ -59,7 +67,7 @@ enum JDFinanceHoldingsSyncPlanner {
 
             let localHoldingIncome = holdingIncome(for: localFund)
             let localHoldingRate = localFund.holdingRate ?? localFund.confirmedHoldingRate
-            let amountChanged = moneyDifference(product.totalAmount, localAmount)
+            let amountChanged = moneyDifference(product.comparableHoldingAmount, localAmount)
             let incomeChanged = optionalMoneyDifference(product.holdIncome, localHoldingIncome)
 
             guard amountChanged || incomeChanged else {
@@ -1263,7 +1271,7 @@ enum JDFinanceHoldingsSyncPlanner {
         var totals: [PendingBatchKey: Int64] = [:]
         let representedRecordIDs = Set((snapshot.pendingTrades ?? []).compactMap(\.recordID))
 
-        for record in tradeRecords where record.code == code && isJDFinancePending(record) {
+        for record in tradeRecords where record.code == code && isJDFinanceTrackedPendingBatchRecord(record) {
             guard let action = pendingBatchAction(for: record.kind),
                   let value = pendingBatchValue(action: action, amount: record.amount, shares: record.shares ?? record.confirmedShares)
             else {
@@ -1304,11 +1312,102 @@ enum JDFinanceHoldingsSyncPlanner {
         return totals
     }
 
-    private static func isJDFinancePending(_ record: FundTradeRecord) -> Bool {
-        record.status == .pending
-            && (record.syncSource == .jdFinance
-                || record.externalStatus == .waitingExternalConfirmation
-                || record.waitsForExternalConfirmation == true)
+    private static func reconciledPendingBuyAmount(
+        for product: JDFinanceHoldingProduct,
+        localSnapshot: PortfolioSnapshot,
+        localTradeRecords: [FundTradeRecord]
+    ) -> Double? {
+        guard (product.pendingDetail?.action ?? product.transactionTip?.action) == .buy,
+              product.syncedPendingBuyAmount != nil
+        else {
+            return nil
+        }
+
+        let remoteTotals = pendingBatchTotals(for: product)
+        guard !remoteTotals.isEmpty else { return nil }
+        let localTrackedTotals = pendingBatchTotals(
+            in: localSnapshot,
+            tradeRecords: localTradeRecords,
+            code: product.code
+        )
+        guard remoteTotals.allSatisfy({ localTrackedTotals[$0.key] == $0.value }) else {
+            return nil
+        }
+
+        let pendingOnlyTotals = pendingOnlyBatchTotals(
+            in: localSnapshot,
+            tradeRecords: localTradeRecords,
+            code: product.code
+        )
+        let pendingCents = remoteTotals.keys.reduce(Int64(0)) {
+            $0 + (pendingOnlyTotals[$1] ?? 0)
+        }
+        return Double(pendingCents) / 100
+    }
+
+    private static func pendingOnlyBatchTotals(
+        in snapshot: PortfolioSnapshot,
+        tradeRecords: [FundTradeRecord],
+        code: String
+    ) -> [PendingBatchKey: Int64] {
+        var totals: [PendingBatchKey: Int64] = [:]
+        let tradeRecordIDs = Set(tradeRecords.map(\.id))
+
+        for record in tradeRecords where record.code == code
+            && record.status == .pending
+            && isJDFinanceTrackedPendingBatchRecord(record)
+        {
+            guard let action = pendingBatchAction(for: record.kind),
+                  let value = pendingBatchValue(
+                    action: action,
+                    amount: record.amount,
+                    shares: record.shares ?? record.confirmedShares
+                  )
+            else {
+                continue
+            }
+            addPendingBatchValue(
+                value,
+                date: record.tradeDate,
+                timeType: record.tradeTimeType,
+                action: action,
+                to: &totals
+            )
+        }
+
+        for pendingTrade in snapshot.pendingTrades ?? [] {
+            if let recordID = pendingTrade.recordID, tradeRecordIDs.contains(recordID) {
+                continue
+            }
+            guard pendingTrade.code == code,
+                  pendingTrade.syncSource == .jdFinance,
+                  let value = pendingBatchValue(
+                    action: pendingBatchAction(for: pendingTrade.action),
+                    amount: pendingTrade.amount,
+                    shares: pendingTrade.shares
+                  )
+            else {
+                continue
+            }
+            addPendingBatchValue(
+                value,
+                date: pendingTrade.tradeDate,
+                timeType: pendingTrade.tradeTimeType,
+                action: pendingBatchAction(for: pendingTrade.action),
+                to: &totals
+            )
+        }
+
+        return totals
+    }
+
+    private static func isJDFinanceTrackedPendingBatchRecord(_ record: FundTradeRecord) -> Bool {
+        guard record.status != .failed else { return false }
+        let isJDFinanceTracked = record.syncSource == .jdFinance
+            || record.externalStatus == .waitingExternalConfirmation
+            || record.waitsForExternalConfirmation == true
+        guard isJDFinanceTracked else { return false }
+        return record.status == .pending || waitsForJDFinalConfirmation(record)
     }
 
     private static func pendingBatchAction(for kind: FundTradeKind) -> JDFinancePendingTradeAction? {

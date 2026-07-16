@@ -52,6 +52,7 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
     var transactionTip: JDFinanceTransactionTip? = nil
     var detailRequest: JDFinanceHoldingDetailRequest? = nil
     var pendingDetail: JDFinancePendingTransactionDetail? = nil
+    var reconciledPendingBuyAmount: Double? = nil
 
     var transactionTipText: String? {
         transactionTip?.text
@@ -60,6 +61,9 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
     // The holding amount returned by JD includes this aggregate buy amount,
     // while the buy is still in confirmation and should not earn today's P/L.
     var syncedPendingBuyAmount: Double? {
+        if let reconciledPendingBuyAmount {
+            return reconciledPendingBuyAmount > 0.01 ? reconciledPendingBuyAmount : nil
+        }
         let action = pendingDetail?.action ?? transactionTip?.action
         guard action == .buy else { return nil }
         let pendingAmount = transactionTip?.totalAmount ?? pendingDetail?.amount
@@ -72,6 +76,10 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
             return nil
         }
         return pendingAmount
+    }
+
+    var comparableHoldingAmount: Double {
+        max(totalAmount - (syncedPendingBuyAmount ?? 0), 0)
     }
 
     var isCodeResolved: Bool {
@@ -292,6 +300,14 @@ struct JDFinanceHoldingDifference: Identifiable, Equatable {
     var jdHoldingRate: Double?
     var localHoldingRate: Double?
     var jdPendingBuyAmount: Double? = nil
+
+    var comparableJDAmount: Double {
+        max(jdAmount - (jdPendingBuyAmount ?? 0), 0)
+    }
+
+    var amountDelta: Double {
+        comparableJDAmount - (localAmount ?? 0)
+    }
 }
 
 struct JDFinanceMissingLocalHolding: Identifiable, Equatable {

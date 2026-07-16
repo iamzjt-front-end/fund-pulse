@@ -655,6 +655,11 @@ final class PortfolioStore {
             }
         }
 
+        confirmPendingNewFundsCoveredByJDFinanceBaselines(
+            in: &updatedSnapshot,
+            syncedAt: syncedAt
+        )
+
         if let syncState {
             updatedSnapshot.jdFinanceSyncState = syncState
         }
@@ -662,6 +667,54 @@ final class PortfolioStore {
         try save(updatedSnapshot)
         snapshot = updatedSnapshot
         loadState = .loaded
+    }
+
+    private func confirmPendingNewFundsCoveredByJDFinanceBaselines(
+        in snapshot: inout PortfolioSnapshot,
+        syncedAt: Date
+    ) {
+        guard var records = snapshot.tradeRecords, !records.isEmpty else { return }
+        let baselines = records.filter { record in
+            record.kind == .newFund
+                && record.status == .confirmed
+                && record.syncSource == .jdFinance
+                && record.isReconciliationBaseline == true
+        }
+        guard !baselines.isEmpty else { return }
+
+        var coveredRecordIDs = Set<String>()
+        for index in records.indices {
+            guard records[index].kind == .newFund,
+                  records[index].status == .pending,
+                  records[index].syncSource == .jdFinance,
+                  let baseline = baselines.first(where: { baseline in
+                      baseline.code == records[index].code
+                          && baseline.acceptedDate >= records[index].acceptedDate
+                          && baseline.createdAt >= records[index].createdAt
+                  })
+            else {
+                continue
+            }
+
+            records[index].status = .confirmed
+            records[index].confirmedAt = records[index].confirmedAt ?? baseline.confirmedAt ?? syncedAt
+            records[index].externalStatus = .externalConfirmed
+            records[index].externalStatusText = "已包含在京东持仓对账基线"
+            records[index].waitsForExternalConfirmation = false
+            coveredRecordIDs.insert(records[index].id)
+        }
+
+        guard !coveredRecordIDs.isEmpty else { return }
+        snapshot.tradeRecords = records
+        snapshot.pendingTrades?.removeAll { pendingTrade in
+            pendingTrade.recordID.map(coveredRecordIDs.contains) == true
+                || coveredRecordIDs.contains(pendingTrade.id)
+        }
+        if snapshot.pendingTrades?.isEmpty == true {
+            snapshot.pendingTrades = nil
+        }
+        snapshot.pendingCount = (snapshot.pendingTrades?.count ?? 0)
+            + (snapshot.pendingConversions?.count ?? 0)
     }
 
     func markJDFinanceOrderRepresented(_ orderKey: String, dismissed: Bool) throws {

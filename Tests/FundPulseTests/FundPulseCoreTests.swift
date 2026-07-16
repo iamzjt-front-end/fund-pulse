@@ -3450,6 +3450,8 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(preview.changedHoldings.map(\.code), ["024424"])
         let difference = try XCTUnwrap(preview.changedHoldings.first)
         XCTAssertEqual(difference.jdAmount, 20_686.71, accuracy: 0.0001)
+        XCTAssertEqual(difference.comparableJDAmount, 19_686.71, accuracy: 0.0001)
+        XCTAssertEqual(difference.amountDelta, 0, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(difference.localAmount), 19_686.71, accuracy: 0.0001)
         XCTAssertEqual(preview.pendingNotices.map(\.code), ["024424"])
         let notice = try XCTUnwrap(preview.pendingNotices.first)
@@ -3531,19 +3533,19 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(preview.pendingNotices.map(\.code), ["022485"])
     }
 
-    func testJDFinanceHoldingProductExposesPendingBuyAggregateWithoutAmountDifference() throws {
+    func testJDFinanceSyncPreviewDoesNotTreatEmbeddedPendingBuyAsAmountDifference() throws {
         let now = try chinaDate("2026-07-16 16:00")
         let product = JDFinanceHoldingProduct(
             skuID: "1026210",
             code: "026210",
             name: "平安科技精选混合发起式A",
-            totalAmount: 10_000,
-            holdIncome: 0,
+            totalAmount: 26_628.86,
+            holdIncome: -6_390.07,
             transactionTip: JDFinanceTransactionTip(
-                text: "交易：2笔买入中合计2000.00元",
+                text: "交易：3笔买入中合计3500.00元",
                 action: .buy,
-                tradeCount: 2,
-                totalAmount: 2_000
+                tradeCount: 3,
+                totalAmount: 3_500
             )
         )
         let localFund = FundPosition(
@@ -3552,19 +3554,19 @@ final class FundPulseCoreTests: XCTestCase {
             dateText: "07-16 15:00",
             todayIncome: 0,
             todayRate: 0,
-            holdingIncome: 0,
-            holdingRate: 0,
-            currentAmount: 10_000,
+            holdingIncome: -6_390.07,
+            holdingRate: -21.65,
+            currentAmount: 23_128.86,
             status: .holding,
             isUpdated: true
         )
 
         let preview = JDFinanceHoldingsSyncPlanner.preview(
             remoteSnapshot: JDFinanceHoldingsSnapshot(
-                totalAssets: 10_000,
+                totalAssets: 26_628.86,
                 yesterdayIncome: nil,
                 todayIncome: nil,
-                holdIncome: 0,
+                holdIncome: -6_390.07,
                 totalIncome: nil,
                 products: [product]
             ),
@@ -3572,7 +3574,8 @@ final class FundPulseCoreTests: XCTestCase {
         )
 
         XCTAssertTrue(preview.changedHoldings.isEmpty)
-        XCTAssertEqual(product.syncedPendingBuyAmount ?? 0, 2_000, accuracy: 0.0001)
+        XCTAssertEqual(product.syncedPendingBuyAmount ?? 0, 3_500, accuracy: 0.0001)
+        XCTAssertEqual(product.comparableHoldingAmount, 23_128.86, accuracy: 0.0001)
     }
 
     func testJDFinanceSyncPreviewBuildsPendingTradeWhenDetailIsComplete() throws {
@@ -5451,6 +5454,206 @@ final class FundPulseCoreTests: XCTestCase {
         let notice = try XCTUnwrap(preview.pendingNotices.first)
         XCTAssertEqual(notice.importKind, .trade(.buy))
         XCTAssertTrue(notice.isImportable)
+    }
+
+    func testJDFinancePlannerDoesNotOfferAlreadySyncedMixedPendingBatches() throws {
+        let now = try chinaDate("2026-07-16 23:00")
+        let name = "富国全球科技互联网股票(QDII)C"
+        let remoteOrders = [
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-022184-0715-card",
+                code: "022184",
+                codeResolution: .explicit,
+                productName: name,
+                action: .buy,
+                amount: 900,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                status: .pending,
+                statusCode: "PAY_SUCC",
+                statusText: "支付成功"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-022184-0715-balance",
+                code: "022184",
+                codeResolution: .explicit,
+                productName: name,
+                action: .buy,
+                amount: 100,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                status: .pending,
+                statusCode: "PAY_SUCC",
+                statusText: "支付成功"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-022184-0716-card",
+                code: "022184",
+                codeResolution: .explicit,
+                productName: name,
+                action: .buy,
+                amount: 900,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                status: .pending,
+                statusCode: "PAY_SUCC",
+                statusText: "支付成功"
+            ),
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "jd-order-022184-0716-balance",
+                code: "022184",
+                codeResolution: .explicit,
+                productName: name,
+                action: .buy,
+                amount: 100,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                status: .pending,
+                statusCode: "PAY_SUCC",
+                statusText: "支付成功"
+            )
+        ]
+        let product = JDFinanceHoldingProduct(
+            skuID: "1022184",
+            code: "022184",
+            name: name,
+            totalAmount: 3_004.61,
+            holdIncome: 4.61,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：4笔买入中合计2000.00元",
+                action: .buy,
+                tradeCount: 4,
+                totalAmount: 2_000
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 2_000,
+                tradeDate: nil,
+                tradeTimeType: .before15,
+                statusText: "匹配交易记录：4 笔",
+                matchedTradeRecords: remoteOrders
+            )
+        )
+        let localRecords = [
+            FundTradeRecord(
+                id: "local-confirmed-022184-0715-card",
+                kind: .buy,
+                status: .confirmed,
+                code: "022184",
+                name: name,
+                mode: .amount,
+                amount: 900,
+                shares: nil,
+                confirmedShares: 158.21,
+                price: 5.6886,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                acceptedDate: "2026-07-15",
+                createdAt: now,
+                confirmedAt: now,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                externalStatus: .waitingExternalConfirmation,
+                waitsForExternalConfirmation: true
+            ),
+            FundTradeRecord(
+                id: "local-confirmed-022184-0715-balance",
+                kind: .buy,
+                status: .confirmed,
+                code: "022184",
+                name: name,
+                mode: .amount,
+                amount: 100,
+                shares: nil,
+                confirmedShares: 17.58,
+                price: 5.6886,
+                tradeDate: "2026-07-15",
+                tradeTimeType: .before15,
+                acceptedDate: "2026-07-15",
+                createdAt: now,
+                confirmedAt: now,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                externalStatus: .waitingExternalConfirmation,
+                waitsForExternalConfirmation: true
+            ),
+            FundTradeRecord(
+                id: "local-pending-022184-0716-card",
+                kind: .buy,
+                status: .pending,
+                code: "022184",
+                name: name,
+                mode: .amount,
+                amount: 900,
+                shares: nil,
+                confirmedShares: nil,
+                price: nil,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                acceptedDate: "2026-07-16",
+                createdAt: now,
+                confirmedAt: nil,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                externalStatus: .waitingExternalConfirmation,
+                waitsForExternalConfirmation: true
+            ),
+            FundTradeRecord(
+                id: "local-pending-022184-0716-balance",
+                kind: .buy,
+                status: .pending,
+                code: "022184",
+                name: name,
+                mode: .amount,
+                amount: 100,
+                shares: nil,
+                confirmedShares: nil,
+                price: nil,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                acceptedDate: "2026-07-16",
+                createdAt: now,
+                confirmedAt: nil,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                externalStatus: .waitingExternalConfirmation,
+                waitsForExternalConfirmation: true
+            )
+        ]
+        let fund = FundPosition(
+            code: "022184",
+            name: name,
+            dateText: "07-16 15:00",
+            todayIncome: 4.61,
+            todayRate: 0.15,
+            holdingIncome: 4.61,
+            holdingRate: 0.46,
+            currentAmount: 1_004.61,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 3_004.61,
+                yesterdayIncome: nil,
+                todayIncome: 4.63,
+                holdIncome: 4.61,
+                totalIncome: nil,
+                products: [product],
+                tradeOrders: remoteOrders,
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [fund], records: localRecords, now: now)
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertNil(notice.importKind)
+        XCTAssertFalse(notice.isImportable)
+        let difference = try XCTUnwrap(preview.changedHoldings.first)
+        XCTAssertEqual(difference.code, "022184")
+        XCTAssertEqual(difference.jdPendingBuyAmount ?? 0, 1_000, accuracy: 0.0001)
+        XCTAssertEqual(difference.comparableJDAmount, 2_004.61, accuracy: 0.0001)
     }
 
     func testJDFinanceWholePositionRecordDoesNotMasqueradeAsPendingOrder() throws {
@@ -13022,6 +13225,111 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertNil(store.snapshot.funds[0].syncedPendingBuyDate)
         XCTAssertNil(store.snapshot.funds[0].syncedTodayIncome)
         XCTAssertNil(store.snapshot.funds[0].syncedTodayIncomeDate)
+    }
+
+    @MainActor
+    func testJDFinanceSyncMetadataConfirmsPendingNewFundCoveredByBaseline() throws {
+        let now = try chinaDate("2026-07-16 23:00")
+        let name = "富国全球科技互联网股票(QDII)C"
+        let fund = FundPosition(
+            code: "022184",
+            name: name,
+            dateText: "07-16 15:00",
+            todayIncome: 4.61,
+            todayRate: 0.15,
+            holdingIncome: 4.61,
+            holdingRate: 0.46,
+            currentAmount: 1_004.61,
+            status: .holding,
+            isUpdated: true
+        )
+        let pendingRecord = FundTradeRecord(
+            id: "pending-new-fund-022184",
+            kind: .newFund,
+            status: .pending,
+            code: fund.code,
+            name: name,
+            mode: .amount,
+            amount: 1_000,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-13",
+            tradeTimeType: .after15,
+            acceptedDate: "2026-07-14",
+            createdAt: now.addingTimeInterval(-86_400),
+            confirmedAt: nil,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            externalStatus: .waitingExternalConfirmation,
+            waitsForExternalConfirmation: true
+        )
+        let baselineRecord = FundTradeRecord(
+            id: "jd-baseline-022184",
+            kind: .newFund,
+            status: .confirmed,
+            code: fund.code,
+            name: name,
+            mode: .amount,
+            amount: 3_004.61,
+            shares: nil,
+            confirmedShares: 528.18,
+            price: 5.6886,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: now,
+            confirmedAt: now,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            externalStatus: .externalConfirmed,
+            externalStatusText: "京东持仓对账基线",
+            waitsForExternalConfirmation: false,
+            isReconciliationBaseline: true
+        )
+        var snapshot = jdPortfolio(
+            funds: [fund],
+            records: [pendingRecord, baselineRecord],
+            now: now
+        )
+        snapshot.pendingCount = 1
+        snapshot.pendingTrades = [
+            FundPendingTrade(
+                id: "pending-trade-022184",
+                recordID: pendingRecord.id,
+                action: .buy,
+                code: fund.code,
+                mode: .amount,
+                amount: 1_000,
+                shares: nil,
+                tradeDate: pendingRecord.tradeDate,
+                tradeTimeType: pendingRecord.tradeTimeType,
+                createdAt: pendingRecord.createdAt,
+                syncSource: .jdFinance,
+                externalStatus: .waitingExternalConfirmation,
+                waitsForExternalConfirmation: true
+            )
+        ]
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: snapshot),
+            now: { now }
+        )
+        store.load()
+
+        try store.applyJDFinanceSyncMetadata(
+            accountTotal: 3_004.61,
+            confirmations: [],
+            syncedAt: now,
+            syncedPendingBuyAmounts: [fund.code: 2_000]
+        )
+
+        let updatedRecord = try XCTUnwrap(
+            store.snapshot.tradeRecords?.first(where: { $0.id == pendingRecord.id })
+        )
+        XCTAssertEqual(updatedRecord.status, .confirmed)
+        XCTAssertEqual(updatedRecord.externalStatus, .externalConfirmed)
+        XCTAssertEqual(updatedRecord.waitsForExternalConfirmation, false)
+        XCTAssertTrue(store.snapshot.pendingTrades?.isEmpty ?? true)
     }
 
     func testPortfolioCalculatorExcludesSameDayLotFromTodayIncomeAfterNavUpdated() throws {
