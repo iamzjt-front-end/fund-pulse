@@ -57,6 +57,23 @@ struct JDFinanceHoldingProduct: Identifiable, Equatable {
         transactionTip?.text
     }
 
+    // The holding amount returned by JD includes this aggregate buy amount,
+    // while the buy is still in confirmation and should not earn today's P/L.
+    var syncedPendingBuyAmount: Double? {
+        let action = pendingDetail?.action ?? transactionTip?.action
+        guard action == .buy else { return nil }
+        let pendingAmount = transactionTip?.totalAmount ?? pendingDetail?.amount
+        guard let pendingAmount,
+              pendingAmount > 0,
+              totalAmount > pendingAmount + 0.01
+        else {
+            // A pure pending-order row is not an existing holding with an
+            // embedded buy; importing it must not zero out the local holding.
+            return nil
+        }
+        return pendingAmount
+    }
+
     var isCodeResolved: Bool {
         codeResolution.isResolved && !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -274,6 +291,7 @@ struct JDFinanceHoldingDifference: Identifiable, Equatable {
     var localHoldingIncome: Double?
     var jdHoldingRate: Double?
     var localHoldingRate: Double?
+    var jdPendingBuyAmount: Double? = nil
 }
 
 struct JDFinanceMissingLocalHolding: Identifiable, Equatable {

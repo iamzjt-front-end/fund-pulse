@@ -101,11 +101,25 @@ final class JDFinanceHoldingsSyncStore {
                 accountKey: currentAccountKey,
                 syncedAt: syncedAt
             )
+            let syncedPendingBuyAmounts = plannedPreview.remoteSnapshot.products.reduce(
+                into: [String: Double?]()
+            ) { result, product in
+                guard product.isCodeResolved else { return }
+                result[product.code] = product.syncedPendingBuyAmount
+            }
+            let syncedTodayIncomes = plannedPreview.remoteSnapshot.products.reduce(
+                into: [String: Double?]()
+            ) { result, product in
+                guard product.isCodeResolved else { return }
+                result[product.code] = product.todayIncome
+            }
             try portfolioStore.applyJDFinanceSyncMetadata(
                 accountTotal: resolvedRemoteSnapshot.totalAssets,
                 confirmations: plannedPreview.automaticConfirmations,
                 syncedAt: syncedAt,
-                syncState: syncState
+                syncState: syncState,
+                syncedPendingBuyAmounts: syncedPendingBuyAmounts,
+                syncedTodayIncomes: syncedTodayIncomes
             )
             var updatedPreview = JDFinanceHoldingsSyncPlanner.preview(
                 remoteSnapshot: resolvedRemoteSnapshot,
@@ -170,6 +184,7 @@ final class JDFinanceHoldingsSyncStore {
                     code: $0.code,
                     amount: $0.jdAmount,
                     holdingIncome: $0.jdHoldingIncome,
+                    syncedPendingBuyAmount: $0.jdPendingBuyAmount,
                     syncedAt: self.nowProvider()
                 )
             }

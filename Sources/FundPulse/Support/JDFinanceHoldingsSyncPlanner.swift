@@ -74,7 +74,8 @@ enum JDFinanceHoldingsSyncPlanner {
                 jdHoldingIncome: product.holdIncome,
                 localHoldingIncome: localHoldingIncome,
                 jdHoldingRate: product.holdRate,
-                localHoldingRate: localHoldingRate
+                localHoldingRate: localHoldingRate,
+                jdPendingBuyAmount: product.syncedPendingBuyAmount
             )
         }
 

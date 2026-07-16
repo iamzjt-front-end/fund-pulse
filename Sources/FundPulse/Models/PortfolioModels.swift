@@ -79,6 +79,12 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var positionTimeType: PositionTimeType? = nil
     var pendingAmount: Double? = nil
     var pendingProfit: Double? = nil
+    // JD's synced holding amount may include today's buy orders before shares are confirmed.
+    var syncedPendingBuyAmount: Double? = nil
+    var syncedPendingBuyDate: String? = nil
+    // JD's daily income is the authoritative value returned by the holdings endpoint.
+    var syncedTodayIncome: Double? = nil
+    var syncedTodayIncomeDate: String? = nil
     var zdfRange: Double? = nil
     var jzNotice: Double? = nil
     var memo: String? = nil
@@ -369,6 +375,7 @@ struct FundAmountPositionSyncUpdate: Equatable {
     var code: String
     var amount: Double
     var holdingIncome: Double?
+    var syncedPendingBuyAmount: Double? = nil
     var syncedAt: Date? = nil
 }
 

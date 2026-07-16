@@ -334,6 +334,9 @@ final class PortfolioStore {
                 fund: fund
             )
             let holdingRate = principal > 0 ? holdingIncome / principal * 100 : nil
+            let baselineDate = update.syncedAt ?? nowProvider()
+            let tradeDate = DateOnlyFormatter.string(from: baselineDate)
+            let syncedPendingBuyAmount = roundedMoney(max(update.syncedPendingBuyAmount ?? 0, 0))
 
             fund.name = quote.name.isEmpty ? fund.name : quote.name
             fund.dateText = dateText(for: quote, fallback: fund.dateText)
@@ -353,11 +356,11 @@ final class PortfolioStore {
             fund.migratedCost = lot.cost
             fund.pendingAmount = nil
             fund.pendingProfit = nil
+            fund.syncedPendingBuyAmount = syncedPendingBuyAmount > 0 ? syncedPendingBuyAmount : nil
+            fund.syncedPendingBuyDate = syncedPendingBuyAmount > 0 ? tradeDate : nil
 
             snapshot.funds[index] = fund
 
-            let baselineDate = update.syncedAt ?? nowProvider()
-            let tradeDate = DateOnlyFormatter.string(from: baselineDate)
             var records = snapshot.tradeRecords ?? []
             records.append(FundTradeRecord(
                 id: UUID().uuidString,
@@ -557,9 +560,16 @@ final class PortfolioStore {
         accountTotal: Double?,
         confirmations: [JDFinanceAutomaticConfirmation],
         syncedAt: Date,
-        syncState: JDFinanceSyncState? = nil
+        syncState: JDFinanceSyncState? = nil,
+        syncedPendingBuyAmounts: [String: Double?] = [:],
+        syncedTodayIncomes: [String: Double?] = [:]
     ) throws {
-        guard accountTotal.map({ $0 >= 0 }) == true || !confirmations.isEmpty || syncState != nil else {
+        guard accountTotal.map({ $0 >= 0 }) == true
+                || !confirmations.isEmpty
+                || syncState != nil
+                || !syncedPendingBuyAmounts.isEmpty
+                || !syncedTodayIncomes.isEmpty
+        else {
             return
         }
 
@@ -572,6 +582,30 @@ final class PortfolioStore {
                 syncedAt: syncedAt
             )
             updatedSnapshot.totalAmount = roundedAmount
+        }
+
+        let syncedPendingBuyDate = DateOnlyFormatter.string(from: syncedAt)
+        for (code, rawAmount) in syncedPendingBuyAmounts {
+            guard let index = updatedSnapshot.funds.firstIndex(where: { $0.code == code }),
+                  updatedSnapshot.funds[index].status == .holding
+            else {
+                continue
+            }
+            let amount = roundedMoney(max(rawAmount ?? 0, 0))
+            updatedSnapshot.funds[index].syncedPendingBuyAmount = amount > 0 ? amount : nil
+            updatedSnapshot.funds[index].syncedPendingBuyDate = amount > 0 ? syncedPendingBuyDate : nil
+        }
+
+        let syncedTodayIncomeDate = DateOnlyFormatter.string(from: syncedAt)
+        for (code, rawIncome) in syncedTodayIncomes {
+            guard let index = updatedSnapshot.funds.firstIndex(where: { $0.code == code }),
+                  updatedSnapshot.funds[index].status == .holding
+            else {
+                continue
+            }
+            let income = rawIncome.flatMap { $0.isFinite ? roundedMoney($0) : nil }
+            updatedSnapshot.funds[index].syncedTodayIncome = income
+            updatedSnapshot.funds[index].syncedTodayIncomeDate = income == nil ? nil : syncedTodayIncomeDate
         }
 
         for confirmation in confirmations {
