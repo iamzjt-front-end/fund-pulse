@@ -643,6 +643,7 @@ final class JDFinanceHoldingsSyncStore {
         representedKeys.formUnion(plannedPreview.baselineOrderKeys)
         representedKeys.formUnion(plannedPreview.automaticConfirmations.compactMap(\.syncKey))
         representedKeys.formUnion(plannedPreview.automaticConfirmations.flatMap(\.representedOrderKeys))
+        representedKeys.formUnion(plannedPreview.pendingNotices.flatMap(\.representedOrderKeys))
 
         var trackedPendingKeys = Set(current?.trackedPendingOrderKeys ?? [])
         let terminalKeys = Set(remoteSnapshot.tradeOrders.compactMap { order -> String? in

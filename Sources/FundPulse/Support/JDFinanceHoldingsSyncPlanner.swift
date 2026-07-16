@@ -67,7 +67,12 @@ enum JDFinanceHoldingsSyncPlanner {
 
             let localHoldingIncome = holdingIncome(for: localFund)
             let localHoldingRate = localFund.holdingRate ?? localFund.confirmedHoldingRate
-            let amountChanged = moneyDifference(product.comparableHoldingAmount, localAmount)
+            let pendingBuyAmount = pendingBuyAmountForComparison(
+                product: product,
+                localAmount: localAmount
+            )
+            let comparableJDAmount = max(product.totalAmount - (pendingBuyAmount ?? 0), 0)
+            let amountChanged = moneyDifference(comparableJDAmount, localAmount)
             let incomeChanged = optionalMoneyDifference(product.holdIncome, localHoldingIncome)
 
             guard amountChanged || incomeChanged else {
@@ -83,7 +88,7 @@ enum JDFinanceHoldingsSyncPlanner {
                 localHoldingIncome: localHoldingIncome,
                 jdHoldingRate: product.holdRate,
                 localHoldingRate: localHoldingRate,
-                jdPendingBuyAmount: product.syncedPendingBuyAmount
+                jdPendingBuyAmount: pendingBuyAmount
             )
         }
 
@@ -129,6 +134,41 @@ enum JDFinanceHoldingsSyncPlanner {
                 localPendingTradeCodes: localPendingTradeCodes,
                 localPendingConversionCodes: localPendingConversionCodes
             )
+            let action = product.pendingDetail?.action ?? product.transactionTip?.action ?? .unknown
+            let isPositionCoveredWithoutLedger: Bool = if action == .buy,
+                                                          localConfirmedCandidate == nil,
+                                                          !hasLocalPending,
+                                                          let localFund,
+                                                          let localAmount = currentAmount(for: localFund)
+            {
+                !moneyDifference(product.totalAmount, localAmount)
+            } else {
+                false
+            }
+            let localCoverage: JDFinancePendingLocalCoverage = if localConfirmedCandidate != nil {
+                .confirmed
+            } else if hasLocalPending {
+                .pending
+            } else if isPositionCoveredWithoutLedger {
+                .positionOnly
+            } else {
+                .none
+            }
+            let logicalTradeCount = max(
+                JDFinanceTradeOrderBatcher.logicalRecords(product.pendingDetail?.matchedTradeRecords ?? []).count,
+                product.transactionTip?.tradeCount ?? 1
+            )
+            var coverageCounts = pendingBuyCoverageCounts(
+                for: product,
+                localTradeRecords: localTradeRecords
+            )
+            if localCoverage == .confirmed, coverageCounts.confirmed == 0 {
+                coverageCounts.confirmed = logicalTradeCount
+            } else if localCoverage == .pending, coverageCounts.pending == 0 {
+                coverageCounts.pending = logicalTradeCount
+            } else if localCoverage == .positionOnly {
+                coverageCounts.positionOnly = logicalTradeCount
+            }
             let localPendingMessage: String? = if hasLocalPending {
                 localPendingConfirmationMessage(for: product)
             } else {
@@ -143,15 +183,29 @@ enum JDFinanceHoldingsSyncPlanner {
                 )
             }
             let localConfirmedMessage: String? = if localConfirmedCandidate != nil {
-                "本地已确认，京东仍待确认；差额仅展示，不写入本地"
+                "本地已确认，京东状态尚未更新；仅展示状态，不会写入本地。"
+            } else {
+                nil
+            }
+            let positionCoveredMessage: String? = if isPositionCoveredWithoutLedger {
+                "本地持有金额已覆盖这笔买入，但缺少可唯一匹配的交易流水；仅提示，不会重复写入持仓。"
             } else {
                 nil
             }
 
-            guard let message = [localPendingMessage, localConfirmedMessage, transactionTipText]
+            guard let message = [localPendingMessage, localConfirmedMessage, positionCoveredMessage, transactionTipText]
                 .compactMap({ $0 })
                 .first(where: { !$0.isEmpty })
             else { return nil }
+
+            let representedOrderKeys: [String] = if localCoverage == .confirmed || localCoverage == .positionOnly {
+                Array(Set(
+                    JDFinanceTradeOrderBatcher.logicalRecords(product.pendingDetail?.matchedTradeRecords ?? [])
+                        .map(orderIdentityKey)
+                )).sorted()
+            } else {
+                []
+            }
 
             return JDFinanceHoldingPendingNotice(
                 code: product.code,
@@ -162,7 +216,7 @@ enum JDFinanceHoldingsSyncPlanner {
                 transactionTip: product.transactionTip,
                 yesterdayIncomeNotice: product.yesterdayIncomeNotice,
                 pendingDetail: product.pendingDetail,
-                importKind: localConfirmedCandidate == nil ? pendingImportKind(
+                importKind: localCoverage == .none ? pendingImportKind(
                     for: product,
                     localFund: localFund,
                     localFundsByCode: localFundsByCode,
@@ -170,7 +224,12 @@ enum JDFinanceHoldingsSyncPlanner {
                     hasLocalPending: hasLocalPending,
                     amount: amount
                 ) : nil,
-                syncState: syncState
+                syncState: syncState,
+                localCoverage: localCoverage,
+                representedOrderKeys: representedOrderKeys,
+                localConfirmedTradeCount: coverageCounts.confirmed,
+                localPendingTradeCount: coverageCounts.pending,
+                positionCoveredTradeCount: coverageCounts.positionOnly
             )
         }
         let reconciliation = reconciliationResult(
@@ -413,6 +472,19 @@ enum JDFinanceHoldingsSyncPlanner {
         roundedMoney(lhs) != roundedMoney(rhs)
     }
 
+    private static func pendingBuyAmountForComparison(
+        product: JDFinanceHoldingProduct,
+        localAmount: Double
+    ) -> Double? {
+        // JD can keep reporting an order as pending after its confirmed NAV has
+        // already been applied locally. In that state both full amounts match,
+        // so subtracting the remote pending tip would create a false difference.
+        guard moneyDifference(product.totalAmount, localAmount) else {
+            return nil
+        }
+        return product.syncedPendingBuyAmount
+    }
+
     private static func roundedMoney(_ value: Double) -> Double {
         (value * 100).rounded() / 100
     }
@@ -422,8 +494,20 @@ enum JDFinanceHoldingsSyncPlanner {
     }
 
     private struct LocalConfirmedCandidate {
-        var record: FundTradeRecord
+        var records: [FundTradeRecord]
         var linkedRecord: FundTradeRecord?
+
+        var record: FundTradeRecord { records[0] }
+
+        init(record: FundTradeRecord, linkedRecord: FundTradeRecord? = nil) {
+            records = [record]
+            self.linkedRecord = linkedRecord
+        }
+
+        init(records: [FundTradeRecord]) {
+            self.records = records
+            linkedRecord = nil
+        }
     }
 
     private static func localConfirmedCandidate(
@@ -442,6 +526,9 @@ enum JDFinanceHoldingsSyncPlanner {
                         || (record.kind == .newFund && record.syncSource == .jdFinance))
                     && record.code == product.code
                     && timingMatches(record: record, tradeDate: tradeDate, tradeTimeType: tradeTimeType)
+            }
+            if let batchCandidate = confirmedBuyBatchCandidate(candidates, product: product) {
+                return batchCandidate
             }
             guard let record = uniqueConfirmedCandidate(
                 candidates,
@@ -482,6 +569,106 @@ enum JDFinanceHoldingsSyncPlanner {
         case .unknown:
             return nil
         }
+    }
+
+    private struct ConfirmedBuyBatchKey: Hashable {
+        var date: String
+        var timeType: PositionTimeType
+        var amountCents: Int64
+    }
+
+    private struct PendingBuyCoverageCounts {
+        var confirmed = 0
+        var pending = 0
+        var positionOnly = 0
+    }
+
+    private static func confirmedBuyBatchCandidate(
+        _ candidates: [FundTradeRecord],
+        product: JDFinanceHoldingProduct
+    ) -> LocalConfirmedCandidate? {
+        let remoteRecords = JDFinanceTradeOrderBatcher.logicalRecords(
+            product.pendingDetail?.matchedTradeRecords ?? []
+        ).filter { ($0.action ?? .unknown) == .buy }
+        guard remoteRecords.count > 1 else { return nil }
+
+        var localRecordsByKey: [ConfirmedBuyBatchKey: [FundTradeRecord]] = [:]
+        for record in candidates where record.kind == .buy {
+            guard let amount = record.amount else { continue }
+            let key = ConfirmedBuyBatchKey(
+                date: record.tradeDate,
+                timeType: record.tradeTimeType,
+                amountCents: Int64((amount * 100).rounded())
+            )
+            localRecordsByKey[key, default: []].append(record)
+        }
+
+        var matchedRecords: [FundTradeRecord] = []
+        for remoteRecord in remoteRecords {
+            guard let date = remoteRecord.tradeDate,
+                  let timeType = remoteRecord.tradeTimeType,
+                  let amount = remoteRecord.amount
+            else { return nil }
+            let key = ConfirmedBuyBatchKey(
+                date: date,
+                timeType: timeType,
+                amountCents: Int64((amount * 100).rounded())
+            )
+            guard var localRecords = localRecordsByKey[key], !localRecords.isEmpty else {
+                return nil
+            }
+            matchedRecords.append(localRecords.removeFirst())
+            localRecordsByKey[key] = localRecords
+        }
+
+        return LocalConfirmedCandidate(records: matchedRecords)
+    }
+
+    private static func pendingBuyCoverageCounts(
+        for product: JDFinanceHoldingProduct,
+        localTradeRecords: [FundTradeRecord]
+    ) -> PendingBuyCoverageCounts {
+        let remoteRecords = JDFinanceTradeOrderBatcher.logicalRecords(
+            product.pendingDetail?.matchedTradeRecords ?? []
+        ).filter { ($0.action ?? .unknown) == .buy }
+        guard !remoteRecords.isEmpty else { return PendingBuyCoverageCounts() }
+
+        var confirmedByKey: [ConfirmedBuyBatchKey: Int] = [:]
+        var pendingByKey: [ConfirmedBuyBatchKey: Int] = [:]
+        for record in localTradeRecords where record.code == product.code && record.kind == .buy {
+            guard let amount = record.amount else { continue }
+            let key = ConfirmedBuyBatchKey(
+                date: record.tradeDate,
+                timeType: record.tradeTimeType,
+                amountCents: Int64((amount * 100).rounded())
+            )
+            if record.status == .confirmed {
+                confirmedByKey[key, default: 0] += 1
+            } else if record.status == .pending {
+                pendingByKey[key, default: 0] += 1
+            }
+        }
+
+        var result = PendingBuyCoverageCounts()
+        for remoteRecord in remoteRecords {
+            guard let date = remoteRecord.tradeDate,
+                  let timeType = remoteRecord.tradeTimeType,
+                  let amount = remoteRecord.amount
+            else { continue }
+            let key = ConfirmedBuyBatchKey(
+                date: date,
+                timeType: timeType,
+                amountCents: Int64((amount * 100).rounded())
+            )
+            if let count = confirmedByKey[key], count > 0 {
+                result.confirmed += 1
+                confirmedByKey[key] = count - 1
+            } else if let count = pendingByKey[key], count > 0 {
+                result.pending += 1
+                pendingByKey[key] = count - 1
+            }
+        }
+        return result
     }
 
     private static func uniqueConfirmedCandidate(
@@ -552,8 +739,8 @@ enum JDFinanceHoldingsSyncPlanner {
     ) -> JDFinanceSyncDifference {
         let pendingAmount = product.pendingDetail?.amount ?? product.transactionTip?.totalAmount
         let pendingShares = product.pendingDetail?.shares
-        let localAmount = candidate.record.amount
-        let localShares = candidate.record.confirmedShares ?? candidate.record.shares
+        let localAmount = candidate.records.compactMap(\.amount).reduce(0, +)
+        let localShares = candidate.records.compactMap { $0.confirmedShares ?? $0.shares }.reduce(0, +)
         return JDFinanceSyncDifference(
             amountDelta: amountDelta(jd: pendingAmount, local: localAmount),
             sharesDelta: sharesDelta(jd: pendingShares, local: localShares),

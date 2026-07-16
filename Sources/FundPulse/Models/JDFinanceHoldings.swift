@@ -258,6 +258,13 @@ enum JDFinancePendingImportKind: Equatable {
     case conversion(toCode: String, toName: String?)
 }
 
+enum JDFinancePendingLocalCoverage: Equatable {
+    case none
+    case pending
+    case confirmed
+    case positionOnly
+}
+
 struct JDFinancePendingManualCompletion: Equatable {
     var tradeDate: String
     var tradeTimeType: PositionTimeType
@@ -521,6 +528,11 @@ struct JDFinanceHoldingPendingNotice: Identifiable, Equatable {
     var pendingDetail: JDFinancePendingTransactionDetail? = nil
     var importKind: JDFinancePendingImportKind? = nil
     var syncState: JDFinanceSyncPreviewState? = nil
+    var localCoverage: JDFinancePendingLocalCoverage = .none
+    var representedOrderKeys: [String] = []
+    var localConfirmedTradeCount: Int = 0
+    var localPendingTradeCount: Int = 0
+    var positionCoveredTradeCount: Int = 0
 
     var isImportable: Bool {
         canBuildLocalDraft(manualCompletion: nil)
@@ -848,6 +860,18 @@ struct JDFinanceHoldingsSyncPreview: Equatable {
 
     var importablePendingTradeCount: Int {
         importablePendingNotices.map(\.logicalTradeCount).reduce(0, +)
+    }
+
+    var localConfirmedJDPendingTradeCount: Int {
+        pendingNotices.map(\.localConfirmedTradeCount).reduce(0, +)
+    }
+
+    var localPendingTradeCount: Int {
+        pendingNotices.map(\.localPendingTradeCount).reduce(0, +)
+    }
+
+    var positionCoveredMissingLedgerTradeCount: Int {
+        pendingNotices.map(\.positionCoveredTradeCount).reduce(0, +)
     }
 
     var overwritableReconciliationNotices: [JDFinanceReconciliationNotice] {

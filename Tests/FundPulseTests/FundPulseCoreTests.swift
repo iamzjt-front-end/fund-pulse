@@ -3578,6 +3578,97 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(product.comparableHoldingAmount, 23_128.86, accuracy: 0.0001)
     }
 
+    func testJDFinanceSyncPreviewPrefersFullAmountWhenLocalAlreadyIncludesPendingBuy() throws {
+        let now = try chinaDate("2026-07-17 00:24")
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            totalAmount: 26_628.86,
+            holdIncome: -6_390.07,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：3笔买入中合计3500.00元",
+                action: .buy,
+                tradeCount: 3,
+                totalAmount: 3_500
+            )
+        )
+        let localFund = FundPosition(
+            code: product.code,
+            name: product.name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: -6_390.07,
+            holdingRate: -21.65,
+            currentAmount: 26_628.86,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 26_628.86,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: -6_390.07,
+                totalIncome: nil,
+                products: [product]
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: [], now: now)
+        )
+
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertEqual(preview.pendingNotices.map(\.code), ["026210"])
+    }
+
+    func testJDFinanceSyncPreviewKeepsIncomeDifferenceWithoutReintroducingPendingBuyDelta() throws {
+        let now = try chinaDate("2026-07-17 00:24")
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            totalAmount: 26_628.86,
+            holdIncome: -6_390.07,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：3笔买入中合计3500.00元",
+                action: .buy,
+                tradeCount: 3,
+                totalAmount: 3_500
+            )
+        )
+        let localFund = FundPosition(
+            code: product.code,
+            name: product.name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: -6_300,
+            holdingRate: -21.65,
+            currentAmount: 26_628.86,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 26_628.86,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: -6_390.07,
+                totalIncome: nil,
+                products: [product]
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: [], now: now)
+        )
+
+        let difference = try XCTUnwrap(preview.changedHoldings.first)
+        XCTAssertEqual(difference.amountDelta, 0, accuracy: 0.0001)
+        XCTAssertNil(difference.jdPendingBuyAmount)
+        XCTAssertEqual(difference.jdHoldingIncome ?? 0, -6_390.07, accuracy: 0.0001)
+        XCTAssertEqual(difference.localHoldingIncome ?? 0, -6_300, accuracy: 0.0001)
+    }
+
     func testJDFinanceSyncPreviewBuildsPendingTradeWhenDetailIsComplete() throws {
         let remoteSnapshot = JDFinanceHoldingsSnapshot(
             totalAssets: 20_686.71,
@@ -4380,6 +4471,253 @@ final class FundPulseCoreTests: XCTestCase {
         } else {
             XCTFail("Expected local confirmed JD pending state")
         }
+    }
+
+    func testJDFinancePendingSplitBuyMatchesConfirmedLocalBatch() throws {
+        let now = try chinaDate("2026-07-17 00:31")
+        let code = "026210"
+        let name = "平安科技精选混合发起式A"
+        let amounts = [500.0, 1_000, 2_000]
+        let remoteOrders = amounts.enumerated().map { index, amount in
+            JDFinanceTradeOrderRecord(
+                stableOrderKey: "026210-split-\(index)",
+                code: code,
+                codeResolution: .explicit,
+                productName: name,
+                action: .buy,
+                amount: amount,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                status: .pending,
+                statusCode: "PAY_SUCC",
+                statusText: "支付成功"
+            )
+        }
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: code,
+            name: name,
+            totalAmount: 26_628.86,
+            holdIncome: -6_390.07,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：3笔买入中合计3500.00元",
+                action: .buy,
+                tradeCount: 3,
+                totalAmount: 3_500
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 3_500,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                statusText: "匹配交易记录：3 笔",
+                matchedTradeRecords: remoteOrders
+            )
+        )
+        let localRecords = amounts.enumerated().map { index, amount in
+            FundTradeRecord(
+                id: "local-026210-split-\(index)",
+                kind: .buy,
+                status: .confirmed,
+                code: code,
+                name: name,
+                mode: .amount,
+                amount: amount,
+                shares: nil,
+                confirmedShares: amount / 2,
+                price: 2,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                acceptedDate: "2026-07-16",
+                createdAt: now,
+                confirmedAt: now,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                externalStatus: .externalConfirmed,
+                waitsForExternalConfirmation: false
+            )
+        }
+        let localFund = FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: -6_390.07,
+            holdingRate: -21.65,
+            currentAmount: 26_628.86,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 26_628.86,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: -6_390.07,
+                totalIncome: nil,
+                products: [product],
+                tradeOrders: remoteOrders,
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: localRecords, now: now)
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertFalse(notice.isImportable)
+        XCTAssertNil(notice.importKind)
+        XCTAssertEqual(preview.importablePendingTradeCount, 0)
+        XCTAssertEqual(preview.localConfirmedJDPendingTradeCount, 3)
+        XCTAssertEqual(preview.localPendingTradeCount, 0)
+        if case .localConfirmedJDPending? = notice.syncState {
+            XCTAssertTrue(notice.message.contains("本地已确认"))
+        } else {
+            XCTFail("Expected the confirmed local split batch to represent the JD aggregate")
+        }
+    }
+
+    func testJDFinancePendingBuyWithCoveredAmountAndMissingLedgerIsNotImportable() throws {
+        let now = try chinaDate("2026-07-17 00:31")
+        let code = "026210"
+        let name = "平安科技精选混合发起式A"
+        let remoteOrder = JDFinanceTradeOrderRecord(
+            stableOrderKey: "covered-without-ledger",
+            code: code,
+            codeResolution: .explicit,
+            productName: name,
+            action: .buy,
+            amount: 1_000,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            status: .pending,
+            statusCode: "PAY_SUCC",
+            statusText: "支付成功"
+        )
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: code,
+            name: name,
+            totalAmount: 5_000,
+            holdIncome: -100,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：1笔买入中合计1000.00元",
+                action: .buy,
+                tradeCount: 1,
+                totalAmount: 1_000
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 1_000,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                statusText: "支付成功",
+                matchedTradeRecords: [remoteOrder]
+            )
+        )
+        let localFund = FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: -100,
+            holdingRate: -2,
+            currentAmount: 5_000,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 5_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: -100,
+                totalIncome: nil,
+                products: [product],
+                tradeOrders: [remoteOrder],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: [], now: now)
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertFalse(notice.isImportable)
+        XCTAssertNil(notice.importKind)
+        XCTAssertNil(notice.syncState)
+        XCTAssertTrue(notice.message.contains("持有金额已覆盖"))
+        XCTAssertEqual(preview.positionCoveredMissingLedgerTradeCount, 1)
+    }
+
+    func testJDFinancePendingBuyWithoutLedgerRemainsImportableWhenHoldingExcludesIt() throws {
+        let now = try chinaDate("2026-07-17 00:31")
+        let code = "026210"
+        let name = "平安科技精选混合发起式A"
+        let remoteOrder = JDFinanceTradeOrderRecord(
+            stableOrderKey: "missing-and-not-covered",
+            code: code,
+            codeResolution: .explicit,
+            productName: name,
+            action: .buy,
+            amount: 1_000,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            status: .pending,
+            statusCode: "PAY_SUCC",
+            statusText: "支付成功"
+        )
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: code,
+            name: name,
+            totalAmount: 5_000,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：1笔买入中合计1000.00元",
+                action: .buy,
+                tradeCount: 1,
+                totalAmount: 1_000
+            ),
+            pendingDetail: JDFinancePendingTransactionDetail(
+                action: .buy,
+                amount: 1_000,
+                tradeDate: "2026-07-16",
+                tradeTimeType: .before15,
+                statusText: "支付成功",
+                matchedTradeRecords: [remoteOrder]
+            )
+        )
+        let localFund = FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: 4_000,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 5_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: nil,
+                totalIncome: nil,
+                products: [product],
+                tradeOrders: [remoteOrder],
+                tradeOrderFetchState: .complete
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: [], now: now)
+        )
+
+        let notice = try XCTUnwrap(preview.pendingNotices.first)
+        XCTAssertTrue(notice.isImportable)
+        XCTAssertEqual(preview.importablePendingTradeCount, 1)
+        XCTAssertEqual(preview.positionCoveredMissingLedgerTradeCount, 0)
     }
 
     func testJDFinancePendingProductStillReportsAmountDifference() throws {
@@ -5702,6 +6040,8 @@ final class FundPulseCoreTests: XCTestCase {
         let notice = try XCTUnwrap(preview.pendingNotices.first)
         XCTAssertNil(notice.importKind)
         XCTAssertFalse(notice.isImportable)
+        XCTAssertEqual(preview.localConfirmedJDPendingTradeCount, 2)
+        XCTAssertEqual(preview.localPendingTradeCount, 2)
         let difference = try XCTUnwrap(preview.changedHoldings.first)
         XCTAssertEqual(difference.code, "022184")
         XCTAssertEqual(difference.jdPendingBuyAmount ?? 0, 1_000, accuracy: 0.0001)
