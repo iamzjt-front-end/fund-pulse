@@ -9,6 +9,7 @@ enum PortfolioCalculator {
         let tradeRecords = snapshot.tradeRecords ?? []
         var costTotal = 0.0
         var currentTotal = 0.0
+        var embeddedPendingBuyTotal = 0.0
         var todayIncomeTotal = 0.0
         var todayIncomeBaseTotal = 0.0
         var holdingIncomeTotal = 0.0
@@ -54,12 +55,23 @@ enum PortfolioCalculator {
             let status = effectiveStatus(totalShares: totalShares, hasManualHolding: hasManualHolding)
             let netValue = quote?.netValue ?? cost
             let dailyState = quote.map { dailyQuoteState(for: $0, now: now) } ?? .inactive
-            let dailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, fund: fund, now: now)
+            let allDailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, fund: fund, now: now)
+            let embeddedPendingBuyAmount = syncedPendingBuyAmount(
+                for: fund,
+                tradeRecords: tradeRecords,
+                now: now
+            )
+            let dailyIncomeShares = max(
+                allDailyIncomeShares - (embeddedPendingBuyAmount ?? 0) / max(netValue, 1e-12),
+                0
+            )
+            let displayPendingBuyAmount = max(embeddedPendingBuyAmount ?? 0, 0)
             let manualDailyIncomeAmount = shouldPreserveSyncedManualAmount ? manualAmount : nil
+            let syncedDailyIncome = syncedTodayIncome(for: fund, now: now)
             let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
             let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
             let holdingIncome = calculatedHoldingIncome(lots: lots, quote: quote, netValue: holdingNetValue) + manualProfit
-            let todayIncome = quote.map {
+            let todayIncome = syncedDailyIncome ?? quote.map {
                 calculatedTodayIncome(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
                     + calculatedManualTodayIncome(amount: manualDailyIncomeAmount, quote: $0, dailyState: dailyState)
             } ?? 0
@@ -67,9 +79,13 @@ enum PortfolioCalculator {
                 calculatedTodayIncomeBase(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
                     + calculatedManualTodayIncomeBase(amount: manualDailyIncomeAmount, dailyState: dailyState)
             } ?? 0
-            let confirmedHoldingRate = fundCostTotal > 0 ? confirmedHoldingIncome / fundCostTotal * 100 : nil
-            let holdingRate = fundCostTotal > 0 ? holdingIncome / fundCostTotal * 100 : nil
-            let fundCurrentTotal = currentAmount(lots: lots, quote: quote, netValue: holdingNetValue) + (manualAmount ?? 0)
+            let holdingCostTotal = max(fundCostTotal - displayPendingBuyAmount, 0)
+            let confirmedHoldingRate = holdingCostTotal > 0 ? confirmedHoldingIncome / holdingCostTotal * 100 : nil
+            let holdingRate = holdingCostTotal > 0 ? holdingIncome / holdingCostTotal * 100 : nil
+            let fundCurrentTotal = max(
+                currentAmount(lots: lots, quote: quote, netValue: holdingNetValue) + (manualAmount ?? 0) - displayPendingBuyAmount,
+                0
+            )
             let isIncomeActive = totalShares > 0 || hasManualHolding
 
             let isConversionPlaceholder = pendingConversionTargetCodes.contains(fund.code)
@@ -83,8 +99,9 @@ enum PortfolioCalculator {
             if status == .pending && !isConversionPlaceholder && !isClosedZeroPosition {
                 pendingCount += 1
             }
-            costTotal += fundCostTotal
+            costTotal += holdingCostTotal
             currentTotal += fundCurrentTotal
+            embeddedPendingBuyTotal += displayPendingBuyAmount
             holdingIncomeTotal += holdingIncome
             todayIncomeTotal += todayIncome
             todayIncomeBaseTotal += todayIncomeBase
@@ -114,9 +131,17 @@ enum PortfolioCalculator {
         let todayIncomeRate = todayIncomeBaseTotal > 0 ? todayIncomeTotal / todayIncomeBaseTotal * 100 : 0
         let holdingIncomeRate = costTotal > 0 ? holdingIncomeTotal / costTotal * 100 : 0
 
+        let displayedTotalAmount: Double
+        if embeddedPendingBuyTotal > 0,
+           snapshot.syncedAccountTotal?.source == .jdFinance {
+            displayedTotalAmount = currentTotal
+        } else {
+            displayedTotalAmount = snapshot.syncedAccountTotal?.amount ?? currentTotal
+        }
+
         return PortfolioSnapshot(
             updateTime: now,
-            totalAmount: snapshot.syncedAccountTotal?.amount ?? currentTotal,
+            totalAmount: displayedTotalAmount,
             holdingIncome: holdingIncomeTotal,
             holdingIncomeRate: holdingIncomeRate,
             todayIncome: todayIncomeTotal,
@@ -218,6 +243,54 @@ enum PortfolioCalculator {
             }
             return lot.incomeStartDate < today ? total + lot.shares : total
         }
+    }
+
+    private static func syncedPendingBuyAmount(
+        for fund: FundPosition,
+        tradeRecords: [FundTradeRecord],
+        now: Date
+    ) -> Double? {
+        let today = DateOnlyFormatter.string(from: now)
+        if fund.syncedPendingBuyDate == today,
+           let amount = fund.syncedPendingBuyAmount,
+           amount > 0 {
+            return amount
+        }
+
+        let hasSameDayJDBaseline = tradeRecords.contains { record in
+            record.code == fund.code
+                && record.kind == .newFund
+                && record.status == .confirmed
+                && record.mode == .amount
+                && record.tradeDate == today
+                && record.syncSource == .jdFinance
+                && record.isReconciliationBaseline == true
+        }
+        guard hasSameDayJDBaseline else { return nil }
+
+        let amount = tradeRecords
+            .filter { record in
+                record.code == fund.code
+                    && record.kind == .buy
+                    && record.status == .pending
+                    && record.mode == .amount
+                    && record.tradeDate == today
+                    && record.syncSource == .jdFinance
+            }
+            .compactMap(\.amount)
+            .filter { $0 > 0 }
+            .reduce(0, +)
+        return amount > 0 ? amount : nil
+    }
+
+    private static func syncedTodayIncome(for fund: FundPosition, now: Date) -> Double? {
+        guard fund.syncedTodayIncomeDate == DateOnlyFormatter.string(from: now),
+              let income = fund.syncedTodayIncome,
+              income.isFinite
+        else {
+            return nil
+        }
+        return income
     }
 
     private static func shortDateText(quote: FundQuote, fallback: String, now: Date) -> String {

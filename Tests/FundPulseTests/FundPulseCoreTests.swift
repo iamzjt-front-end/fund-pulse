@@ -3527,7 +3527,52 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(preview.changedHoldings.map(\.code), ["022485"])
         XCTAssertEqual(difference.jdAmount, 118_674.41, accuracy: 0.0001)
         XCTAssertEqual(try XCTUnwrap(difference.localAmount), 243_122.42, accuracy: 0.0001)
+        XCTAssertEqual(difference.jdPendingBuyAmount ?? 0, 31_112, accuracy: 0.0001)
         XCTAssertEqual(preview.pendingNotices.map(\.code), ["022485"])
+    }
+
+    func testJDFinanceHoldingProductExposesPendingBuyAggregateWithoutAmountDifference() throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let product = JDFinanceHoldingProduct(
+            skuID: "1026210",
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            totalAmount: 10_000,
+            holdIncome: 0,
+            transactionTip: JDFinanceTransactionTip(
+                text: "交易：2笔买入中合计2000.00元",
+                action: .buy,
+                tradeCount: 2,
+                totalAmount: 2_000
+            )
+        )
+        let localFund = FundPosition(
+            code: product.code,
+            name: product.name,
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: 10_000,
+            status: .holding,
+            isUpdated: true
+        )
+
+        let preview = JDFinanceHoldingsSyncPlanner.preview(
+            remoteSnapshot: JDFinanceHoldingsSnapshot(
+                totalAssets: 10_000,
+                yesterdayIncome: nil,
+                todayIncome: nil,
+                holdIncome: 0,
+                totalIncome: nil,
+                products: [product]
+            ),
+            localSnapshot: jdPortfolio(funds: [localFund], records: [], now: now)
+        )
+
+        XCTAssertTrue(preview.changedHoldings.isEmpty)
+        XCTAssertEqual(product.syncedPendingBuyAmount ?? 0, 2_000, accuracy: 0.0001)
     }
 
     func testJDFinanceSyncPreviewBuildsPendingTradeWhenDetailIsComplete() throws {
@@ -12603,6 +12648,380 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.funds[0].todayRate, 3.9439, accuracy: 0.0001)
         XCTAssertTrue(result.funds[0].isUpdated)
         XCTAssertEqual(result.funds[0].dateText, "06-18 15:00")
+    }
+
+    func testPortfolioCalculatorExcludesSameDayJDPendingBuyEmbeddedInSyncedAmount() throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let amount = 10_000.0
+        let pendingBuyAmount = 2_000.0
+        let netValue = 0.9
+        let shares = amount / netValue
+        let fund = FundPosition(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: amount,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: shares,
+            migratedCost: 1,
+            migratedPrincipal: amount,
+            incomeStartDate: "2026-07-15",
+            positionMode: .amount,
+            positionDate: "2026-07-15",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "026210-jd-sync",
+                    shares: shares,
+                    cost: 1,
+                    principal: amount,
+                    incomeStartDate: "2026-07-15",
+                    positionDate: "2026-07-15",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let baseline = FundTradeRecord(
+            id: "jd-baseline-026210",
+            kind: .newFund,
+            status: .confirmed,
+            code: fund.code,
+            name: fund.name,
+            mode: .amount,
+            amount: amount,
+            shares: nil,
+            confirmedShares: shares,
+            price: netValue,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: now,
+            confirmedAt: now,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            externalStatus: .externalConfirmed,
+            waitsForExternalConfirmation: false,
+            isReconciliationBaseline: true
+        )
+        let pending = FundTradeRecord(
+            id: "jd-pending-026210",
+            kind: .buy,
+            status: .pending,
+            code: fund.code,
+            name: fund.name,
+            mode: .amount,
+            amount: pendingBuyAmount,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: now,
+            confirmedAt: nil,
+            failureReason: nil,
+            syncSource: .jdFinance,
+            externalStatus: .waitingExternalConfirmation,
+            waitsForExternalConfirmation: true
+        )
+        let snapshot = jdPortfolio(
+            funds: [fund],
+            records: [baseline, pending],
+            now: now
+        )
+        let quote = FundQuote(
+            code: fund.code,
+            name: fund.name,
+            netValue: netValue,
+            estimatedNetValue: netValue,
+            growthRate: -10,
+            estimateTime: "2026-07-16 15:00",
+            netValueDate: "2026-07-16"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: [fund.code: quote],
+            now: now
+        )
+
+        let expectedTodayIncome = (amount - pendingBuyAmount) * quote.growthRate / (100 + quote.growthRate)
+        XCTAssertEqual(result.funds[0].currentAmount ?? 0, amount - pendingBuyAmount, accuracy: 0.0001)
+        XCTAssertEqual(result.totalAmount, amount - pendingBuyAmount, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, quote.growthRate, accuracy: 0.0001)
+    }
+
+    func testPortfolioCalculatorUsesSameDayJDFinanceTodayIncomeWhenAvailable() throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let amount = 10_000.0
+        let netValue = 0.9
+        let shares = amount / netValue
+        let fund = FundPosition(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: amount,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: shares,
+            migratedCost: 1,
+            migratedPrincipal: amount,
+            incomeStartDate: "2026-07-15",
+            positionMode: .amount,
+            positionDate: "2026-07-15",
+            positionTimeType: .before15,
+            syncedTodayIncome: -647.32,
+            syncedTodayIncomeDate: "2026-07-16",
+            lots: [
+                FundPositionLot(
+                    id: "026210-jd-sync",
+                    shares: shares,
+                    cost: 1,
+                    principal: amount,
+                    incomeStartDate: "2026-07-15",
+                    positionDate: "2026-07-15",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: amount,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [fund],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: fund.code,
+            name: fund.name,
+            netValue: netValue,
+            estimatedNetValue: netValue,
+            growthRate: -10,
+            estimateTime: "2026-07-16 15:00",
+            netValueDate: "2026-07-16"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: [fund.code: quote],
+            now: now
+        )
+
+        XCTAssertEqual(result.funds[0].todayIncome, -647.32, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, -647.32, accuracy: 0.0001)
+    }
+
+    func testPortfolioCalculatorKeepsOrdinaryPendingBuyInTodayIncome() throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let amount = 10_000.0
+        let netValue = 0.9
+        let shares = amount / netValue
+        let fund = FundPosition(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: amount,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: shares,
+            migratedCost: 1,
+            migratedPrincipal: amount,
+            incomeStartDate: "2026-07-15",
+            positionMode: .amount,
+            positionDate: "2026-07-15",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "ordinary-sync",
+                    shares: shares,
+                    cost: 1,
+                    principal: amount,
+                    incomeStartDate: "2026-07-15",
+                    positionDate: "2026-07-15",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let pending = FundTradeRecord(
+            id: "manual-pending-026210",
+            kind: .buy,
+            status: .pending,
+            code: fund.code,
+            name: fund.name,
+            mode: .amount,
+            amount: 2_000,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: now,
+            confirmedAt: nil,
+            failureReason: nil
+        )
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: amount,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 1,
+            funds: [fund],
+            migration: nil,
+            tradeRecords: [pending]
+        )
+        let quote = FundQuote(
+            code: fund.code,
+            name: fund.name,
+            netValue: netValue,
+            estimatedNetValue: netValue,
+            growthRate: -10,
+            estimateTime: "2026-07-16 15:00",
+            netValueDate: "2026-07-16"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: [fund.code: quote],
+            now: now
+        )
+
+        let expectedTodayIncome = amount * quote.growthRate / (100 + quote.growthRate)
+        XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPortfolioStorePersistsJDFinancePendingBuyAmountOnAmountSync() async throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let amount = 10_000.0
+        let netValue = 0.9
+        let fund = FundPosition(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            dateText: "07-15 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: 0,
+            currentAmount: amount,
+            status: .holding,
+            isUpdated: false,
+            isIncomeActive: true,
+            migratedShares: amount / netValue,
+            migratedCost: 1,
+            migratedPrincipal: amount,
+            incomeStartDate: "2026-07-15",
+            positionMode: .amount,
+            positionDate: "2026-07-15",
+            positionTimeType: .before15
+        )
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: jdPortfolio(
+                funds: [fund],
+                records: [],
+                now: now
+            )),
+            quoteService: multiTradeQuoteService([
+                "026210": (
+                    name: fund.name,
+                    date: "2026-07-16",
+                    netValue: netValue
+                )
+            ]),
+            now: { now }
+        )
+        store.load()
+
+        try await store.applyAmountPositionSyncUpdates([
+            FundAmountPositionSyncUpdate(
+                code: fund.code,
+                amount: amount,
+                holdingIncome: 0,
+                syncedPendingBuyAmount: 2_000,
+                syncedAt: now
+            )
+        ])
+
+        let syncedFund = try XCTUnwrap(store.snapshot.funds.first)
+        XCTAssertEqual(syncedFund.syncedPendingBuyAmount ?? 0, 2_000, accuracy: 0.0001)
+        XCTAssertEqual(syncedFund.syncedPendingBuyDate, "2026-07-16")
+        XCTAssertEqual(syncedFund.currentAmount ?? 0, amount - 2_000, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPortfolioStorePersistsPendingBuyMetadataDuringJDFinanceSync() throws {
+        let now = try chinaDate("2026-07-16 16:00")
+        let fund = FundPosition(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            dateText: "07-16 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: 0,
+            currentAmount: 10_000,
+            status: .holding,
+            isUpdated: true
+        )
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: jdPortfolio(
+                funds: [fund],
+                records: [],
+                now: now
+            )),
+            now: { now }
+        )
+        store.load()
+
+        try store.applyJDFinanceSyncMetadata(
+            accountTotal: 10_000,
+            confirmations: [],
+            syncedAt: now,
+            syncedPendingBuyAmounts: [fund.code: 2_000],
+            syncedTodayIncomes: [fund.code: -647.32]
+        )
+
+        XCTAssertEqual(store.snapshot.funds[0].syncedPendingBuyAmount ?? 0, 2_000, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.funds[0].syncedPendingBuyDate, "2026-07-16")
+        XCTAssertEqual(store.snapshot.funds[0].syncedTodayIncome ?? 0, -647.32, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.funds[0].syncedTodayIncomeDate, "2026-07-16")
+        XCTAssertEqual(store.snapshot.funds[0].currentAmount ?? 0, 10_000, accuracy: 0.0001)
+
+        try store.applyJDFinanceSyncMetadata(
+            accountTotal: 10_000,
+            confirmations: [],
+            syncedAt: now,
+            syncedPendingBuyAmounts: [fund.code: nil],
+            syncedTodayIncomes: [fund.code: nil]
+        )
+
+        XCTAssertNil(store.snapshot.funds[0].syncedPendingBuyAmount)
+        XCTAssertNil(store.snapshot.funds[0].syncedPendingBuyDate)
+        XCTAssertNil(store.snapshot.funds[0].syncedTodayIncome)
+        XCTAssertNil(store.snapshot.funds[0].syncedTodayIncomeDate)
     }
 
     func testPortfolioCalculatorExcludesSameDayLotFromTodayIncomeAfterNavUpdated() throws {

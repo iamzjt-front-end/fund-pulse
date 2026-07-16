@@ -1050,7 +1050,7 @@ final class StatusBarController: NSObject {
                     self?.showJDFinanceNetworkProbePanel(networkProbe: networkProbe)
                 },
                 onMainPanelRefreshNeeded: { [weak self] in
-                    self?.handleStoreSnapshotChanged()
+                    self?.refreshQuotesAndStatusTitle()
                 },
                 onClose: { [weak self] in
                     self?.hideChildPanel()
