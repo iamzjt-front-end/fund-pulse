@@ -526,6 +526,152 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertTrue(detail.candidateTradeRecords.isEmpty)
     }
 
+    func testJDFinanceHoldingsServicePrefersPendingPaymentBatchOverAmbiguousCompletedHistory() async throws {
+        let holdingsResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "headAssetsData": {
+                "totalAssets": { "text": "20,000.00" },
+                "holdIncome": { "text": "0.00" }
+              },
+              "fundData": {
+                "fundList": [
+                  {
+                    "productList": [
+                      {
+                        "skuId": "1022184",
+                        "fundCode": "022184",
+                        "productName": "富国全球科技互联网股票(QDII)C",
+                        "totalAmount": { "text": "20,000.00" },
+                        "transactionTip": { "text": "交易：4笔买入中合计2000.00元" },
+                        "jumpData": {
+                          "param": {
+                            "extJson": "{\\"source\\":\\"pending-detail\\"}"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
+        let detailResponse = """
+        {
+          "success": true,
+          "resultCode": 0,
+          "resultMsg": "success",
+          "resultData": {
+            "resultData": {
+              "detail": {
+                "tradeType": "买入",
+                "tradeAmount": "2000.00",
+                "tradeStatus": "支付成功"
+              }
+            }
+          }
+        }
+        """
+        let tradeOrderResponse = """
+        {
+          "resultCode": 0,
+          "resultData": {
+            "data": {
+              "tradeOrderVoList": [
+                {
+                  "orderId": "pending-17-900",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "900.00",
+                  "bizTime": "2026-07-17 10:05:00",
+                  "statusCode": "PAY_SUCC",
+                  "statusName": "支付成功"
+                },
+                {
+                  "orderId": "pending-17-100",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "100.00",
+                  "bizTime": "2026-07-17 10:06:00",
+                  "statusCode": "PAY_SUCC",
+                  "statusName": "支付成功"
+                },
+                {
+                  "orderId": "pending-16-900",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "900.00",
+                  "bizTime": "2026-07-16 10:05:00",
+                  "statusCode": "PAY_SUCC",
+                  "statusName": "支付成功"
+                },
+                {
+                  "orderId": "pending-16-100",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "100.00",
+                  "bizTime": "2026-07-16 10:06:00",
+                  "statusCode": "PAY_SUCC",
+                  "statusName": "支付成功"
+                },
+                {
+                  "orderId": "completed-15-900",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "900.00",
+                  "bizTime": "2026-07-15 10:05:00",
+                  "statusCode": "COMPLETE",
+                  "statusName": "订单完成"
+                },
+                {
+                  "orderId": "completed-15-100",
+                  "productId": "1022184",
+                  "productName": "富国全球科技互联网股票(QDII)C",
+                  "tradeTypeCode": "TRANSFER_IN",
+                  "allAmount": "100.00",
+                  "bizTime": "2026-07-15 10:06:00",
+                  "statusCode": "COMPLETE",
+                  "statusName": "订单完成"
+                }
+              ]
+            }
+          }
+        }
+        """
+        let service = jdFinanceServiceWithMockResponses([
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.detailEndpoint.absoluteString: detailResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse
+        ])
+
+        let snapshot = try await service.fetchSnapshot(cookieHeader: "pt_key=abc; pt_pin=test")
+        let detail = try XCTUnwrap(snapshot.products.first?.pendingDetail)
+
+        XCTAssertNil(detail.tradeDate)
+        XCTAssertEqual(detail.tradeTimeType, .before15)
+        XCTAssertEqual(detail.matchedTradeRecords.count, 4)
+        XCTAssertEqual(detail.matchedTradeRecords.map(\.tradeDate), [
+            "2026-07-17",
+            "2026-07-17",
+            "2026-07-16",
+            "2026-07-16"
+        ])
+        XCTAssertTrue(detail.matchedTradeRecords.allSatisfy { $0.effectiveStatus == .pending })
+        XCTAssertEqual(detail.matchedTradeRecords.compactMap(\.amount).reduce(0, +), 2_000, accuracy: 0.0001)
+        XCTAssertTrue(detail.candidateTradeRecords.isEmpty)
+    }
+
     func testJDFinanceTradeOrderParserDoesNotTreatProductIDAsFundCode() throws {
         let response = """
         {

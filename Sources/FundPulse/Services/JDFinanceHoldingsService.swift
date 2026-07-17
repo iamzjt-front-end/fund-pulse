@@ -558,6 +558,18 @@ struct JDFinanceHoldingsService: Sendable {
         if let expectedCount = product.transactionTip?.tradeCount,
            expectedCount > 1,
            let expectedAmount = product.transactionTip?.totalAmount,
+           let pendingRecords = matchingAmountSubset(
+                in: candidates.filter { $0.effectiveStatus == .pending },
+                expectedAmount: expectedAmount,
+                expectedCount: expectedCount
+           )
+        {
+            return pendingRecords
+        }
+
+        if let expectedCount = product.transactionTip?.tradeCount,
+           expectedCount > 1,
+           let expectedAmount = product.transactionTip?.totalAmount,
            let groupedRecords = matchingTradeOrderRecordGroup(
                 in: candidates,
                 expectedAmount: expectedAmount,
