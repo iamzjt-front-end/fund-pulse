@@ -224,6 +224,8 @@ struct PopoverContentView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(AppPreferenceKey.hideHeaderAmounts) private var hidesHeaderAmounts = false
+    @AppStorage(AppPreferenceKey.dismissedPendingActivityNoticeIDs)
+    private var dismissedPendingActivityNoticeIDsRawValue = ""
     @State private var isRefreshing = false
     @State private var isRefreshStatusPulsing = false
     @State private var filter: FundListFilter = .holding
@@ -260,6 +262,12 @@ struct PopoverContentView: View {
             }
         } message: { activity in
             Text(deletePendingActivityConfirmationMessage(for: activity))
+        }
+        .onAppear {
+            normalizePendingActivityNoticeDismissal()
+        }
+        .onChange(of: pendingActivityIDs) { _, _ in
+            normalizePendingActivityNoticeDismissal()
         }
     }
 
@@ -925,8 +933,10 @@ struct PopoverContentView: View {
                 .frame(height: 300)
         } else {
             VStack(spacing: 0) {
-                PendingActivityNotice()
-                Divider()
+                if showsPendingActivityNotice {
+                    PendingActivityNotice(onDismiss: dismissPendingActivityNotice)
+                    Divider()
+                }
                 ForEach(pendingActivities) { activity in
                     PendingTradeActivityRow(
                         activity: activity,
@@ -2133,6 +2143,40 @@ struct PopoverContentView: View {
         PendingTradeActivityBuilder.make(from: store.snapshot)
     }
 
+    private var pendingActivityIDs: [String] {
+        pendingActivities.map(\.id)
+    }
+
+    private var dismissedPendingActivityNoticeIDs: Set<String> {
+        PendingActivityNoticePolicy.decodeDismissedActivityIDs(
+            from: dismissedPendingActivityNoticeIDsRawValue
+        )
+    }
+
+    private var showsPendingActivityNotice: Bool {
+        PendingActivityNoticePolicy.shouldShow(
+            activityIDs: pendingActivityIDs,
+            dismissedActivityIDs: dismissedPendingActivityNoticeIDs
+        )
+    }
+
+    private func dismissPendingActivityNotice() {
+        dismissedPendingActivityNoticeIDsRawValue = PendingActivityNoticePolicy.encodeDismissedActivityIDs(
+            Set(pendingActivityIDs)
+        )
+    }
+
+    private func normalizePendingActivityNoticeDismissal() {
+        let normalized = PendingActivityNoticePolicy.normalizedDismissedActivityIDs(
+            activityIDs: pendingActivityIDs,
+            dismissedActivityIDs: dismissedPendingActivityNoticeIDs
+        )
+        let rawValue = PendingActivityNoticePolicy.encodeDismissedActivityIDs(normalized)
+        if rawValue != dismissedPendingActivityNoticeIDsRawValue {
+            dismissedPendingActivityNoticeIDsRawValue = rawValue
+        }
+    }
+
     private var deletePendingActivityConfirmationBinding: Binding<Bool> {
         Binding(
             get: { deletingPendingActivity != nil },
@@ -2357,7 +2401,7 @@ struct PendingTradeActivity: Identifiable {
 }
 
 struct PendingActivityPresentation: Equatable {
-    static let noticeText = "系统会持续检查正式净值和外部状态，条件满足后自动确认；QDII 等基金次日仍待确认通常正常。"
+    static let noticeText = "系统会持续检查正式净值和外部状态，条件满足后自动确认；\nQDII 等基金次日仍待确认通常正常。"
 
     var orderText: String
     var waitingText: String
@@ -2398,6 +2442,34 @@ struct PendingActivityPresentation: Equatable {
     private static func shortDateText(_ value: String) -> String {
         guard value.count >= 10 else { return value }
         return String(value.dropFirst(5).prefix(5))
+    }
+}
+
+enum PendingActivityNoticePolicy {
+    static func shouldShow(
+        activityIDs: [String],
+        dismissedActivityIDs: Set<String>
+    ) -> Bool {
+        let currentIDs = Set(activityIDs)
+        guard !currentIDs.isEmpty else { return false }
+        return dismissedActivityIDs.isEmpty || !currentIDs.isSubset(of: dismissedActivityIDs)
+    }
+
+    static func normalizedDismissedActivityIDs(
+        activityIDs: [String],
+        dismissedActivityIDs: Set<String>
+    ) -> Set<String> {
+        let currentIDs = Set(activityIDs)
+        guard !currentIDs.isEmpty, !dismissedActivityIDs.isEmpty else { return [] }
+        return currentIDs.isSubset(of: dismissedActivityIDs) ? dismissedActivityIDs : []
+    }
+
+    static func encodeDismissedActivityIDs(_ activityIDs: Set<String>) -> String {
+        activityIDs.sorted().joined(separator: "\n")
+    }
+
+    static func decodeDismissedActivityIDs(from rawValue: String) -> Set<String> {
+        Set(rawValue.split(separator: "\n").map(String.init))
     }
 }
 
@@ -4318,6 +4390,8 @@ struct TodayIncomeRankingPanelView: View {
 }
 
 private struct PendingActivityNotice: View {
+    let onDismiss: () -> Void
+
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -4333,6 +4407,18 @@ private struct PendingActivityNotice: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(false)
+            .help("关闭提示，出现新的待确认交易时重新显示")
+            .offset(y: -3)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

@@ -10640,8 +10640,45 @@ final class FundPulseCoreTests: XCTestCase {
     func testPendingActivityPresentationNoticeExplainsDelayedQDIIConfirmation() {
         XCTAssertEqual(
             PendingActivityPresentation.noticeText,
-            "系统会持续检查正式净值和外部状态，条件满足后自动确认；QDII 等基金次日仍待确认通常正常。"
+            "系统会持续检查正式净值和外部状态，条件满足后自动确认；\nQDII 等基金次日仍待确认通常正常。"
         )
+    }
+
+    func testPendingActivityNoticeStaysDismissedWhileCurrentActivitiesOnlyRefreshOrResolve() {
+        let dismissedIDs: Set<String> = ["pending-a", "pending-b"]
+
+        XCTAssertFalse(PendingActivityNoticePolicy.shouldShow(
+            activityIDs: ["pending-a", "pending-b"],
+            dismissedActivityIDs: dismissedIDs
+        ))
+        XCTAssertFalse(PendingActivityNoticePolicy.shouldShow(
+            activityIDs: ["pending-a"],
+            dismissedActivityIDs: dismissedIDs
+        ))
+        XCTAssertEqual(
+            PendingActivityNoticePolicy.normalizedDismissedActivityIDs(
+                activityIDs: ["pending-a"],
+                dismissedActivityIDs: dismissedIDs
+            ),
+            dismissedIDs
+        )
+    }
+
+    func testPendingActivityNoticeReappearsForANewActivityAndResetsAfterAllResolve() {
+        let dismissedIDs: Set<String> = ["pending-a", "pending-b"]
+
+        XCTAssertTrue(PendingActivityNoticePolicy.shouldShow(
+            activityIDs: ["pending-a", "pending-c"],
+            dismissedActivityIDs: dismissedIDs
+        ))
+        XCTAssertTrue(PendingActivityNoticePolicy.normalizedDismissedActivityIDs(
+            activityIDs: ["pending-a", "pending-c"],
+            dismissedActivityIDs: dismissedIDs
+        ).isEmpty)
+        XCTAssertTrue(PendingActivityNoticePolicy.normalizedDismissedActivityIDs(
+            activityIDs: [],
+            dismissedActivityIDs: dismissedIDs
+        ).isEmpty)
     }
 
     func testPendingActivityBuilderListsPendingTradesMatchingHeaderCount() throws {
