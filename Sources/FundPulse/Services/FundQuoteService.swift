@@ -105,6 +105,18 @@ struct FundQuoteService {
                 return matchedCode
             }
         }
+
+        // Some JD ETF-link holdings use a longer display name than the fund
+        // search service. Keep this behind every existing lookup and require an
+        // exact, unique fund-name match for the conservative alias.
+        for alias in Self.conservativeETFLinkAliases(for: name) where !searchKeys.contains(alias) {
+            guard let items = try? await searchFunds(key: alias), !items.isEmpty else {
+                continue
+            }
+            if let matchedCode = Self.matchedFundCode(in: items, queryNames: [alias]) {
+                return matchedCode
+            }
+        }
         return nil
     }
 
@@ -508,6 +520,20 @@ struct FundQuoteService {
             .replacingOccurrences(of: "转换-", with: "")
             .replacingOccurrences(of: "转入-", with: "")
             .replacingOccurrences(of: "转出-", with: "")
+    }
+
+    private static func conservativeETFLinkAliases(for value: String) -> [String] {
+        let name = fundSearchNameWithoutTradePrefix(value)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard name.localizedCaseInsensitiveContains("ETF"), name.contains("联接") else {
+            return []
+        }
+
+        let alias = name
+            .replacingOccurrences(of: "中证全指", with: "")
+            .replacingOccurrences(of: "发起式", with: "")
+        guard alias != name, !alias.isEmpty else { return [] }
+        return [alias]
     }
 
     private static func matchedFundCode(in items: [FundSearchItem], queryNames: [String]) -> String? {

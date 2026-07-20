@@ -8328,6 +8328,66 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertNil(code)
     }
 
+    func testLookupFundCodeRetriesConservativeETFLinkAliasAfterExistingLookupsFail() async throws {
+        func suggestPrefix(_ key: String) throws -> String {
+            var components = try XCTUnwrap(
+                URLComponents(string: "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx")
+            )
+            components.queryItems = [
+                URLQueryItem(name: "m", value: "1"),
+                URLQueryItem(name: "key", value: key)
+            ]
+            return try XCTUnwrap(components.url).absoluteString + "&callback="
+        }
+
+        let jdName = "广发中证全指电力ETF发起式联接C"
+        let alias = "广发电力ETF联接C"
+        let unrelatedResponse = """
+        FundPulseSuggest_123({"Datas":[{"CODE":"000537","NAME":"绿发电力","CATEGORYDESC":"深市"}]});
+        """
+        let service = quoteServiceWithMockResponses([
+            "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": unrelatedResponse,
+            try suggestPrefix(alias): """
+            FundPulseSuggest_123({"Datas":[{"CODE":"016186","NAME":"广发电力ETF联接C","SHORTNAME":"广发电力ETF联接C","CATEGORYDESC":"基金"}]});
+            """
+        ])
+
+        let code = await service.lookupFundCode(name: jdName)
+        let requestedKeys = MockURLProtocol.responseStore.requests().compactMap { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?
+                .first(where: { $0.name == "key" })?
+                .value
+        }
+
+        XCTAssertEqual(code, "016186")
+        XCTAssertEqual(requestedKeys.last, alias)
+        XCTAssertTrue(requestedKeys.contains(jdName))
+    }
+
+    func testLookupFundCodeRejectsAmbiguousConservativeETFLinkAlias() async throws {
+        let jdName = "广发中证全指电力ETF发起式联接C"
+        let service = quoteServiceWithMockResponses([
+            "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx": """
+            FundPulseSuggest_123({"Datas":[
+              {"CODE":"016186","NAME":"广发电力ETF联接C","CATEGORYDESC":"基金"},
+              {"CODE":"999999","NAME":"广发电力ETF联接C","CATEGORYDESC":"基金"}
+            ]});
+            """
+        ])
+
+        let code = await service.lookupFundCode(name: jdName)
+        let requestedKeys = MockURLProtocol.responseStore.requests().compactMap { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?
+                .first(where: { $0.name == "key" })?
+                .value
+        }
+
+        XCTAssertNil(code)
+        XCTAssertTrue(requestedKeys.contains("广发电力ETF联接C"))
+    }
+
     func testFundDetailSupplementUsesFundBabyTrendAndTopHoldingsSources() async throws {
         let service = quoteServiceWithMockResponses([
             "https://fund.eastmoney.com/pingzhongdata/588760.js": """
