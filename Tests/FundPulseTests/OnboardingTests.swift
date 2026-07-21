@@ -48,9 +48,9 @@ final class OnboardingTests: XCTestCase {
         XCTAssertEqual(PopoverLayout.standardChildPanelHeight, 660)
 
         let standardSizes = [
-            PopoverLayout.settingsSize,
             PopoverLayout.fundDetailSize,
             PopoverLayout.tradeEditorSize,
+            PopoverLayout.tradeRecordsSize,
             PopoverLayout.onboardingSize,
             PopoverLayout.privacyDisclaimerSize,
             PopoverLayout.sampleExperienceSize,
@@ -63,8 +63,9 @@ final class OnboardingTests: XCTestCase {
             standardSizes.allSatisfy { $0.height == PopoverLayout.standardChildPanelHeight }
         )
 
+        XCTAssertEqual(PopoverLayout.settingsHeight, 750)
+        XCTAssertEqual(PopoverLayout.settingsSize.height, PopoverLayout.settingsHeight)
         XCTAssertEqual(PopoverLayout.editorSize.height, 600)
-        XCTAssertEqual(PopoverLayout.tradeRecordsSize.height, 520)
         XCTAssertEqual(PopoverLayout.fundDailyIncomeSize.height, 600)
     }
 
