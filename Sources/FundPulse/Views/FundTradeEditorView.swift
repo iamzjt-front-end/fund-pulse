@@ -430,12 +430,12 @@ struct FundTradeEditorView: View {
         section("持仓变化预览") {
             VStack(spacing: 8) {
                 previewTile(
-                    title: "持有份额",
+                    title: "持仓份额",
                     before: numberText(fund.migratedShares ?? 0, places: 2),
                     after: previewShares.map { numberText($0, places: 2) } ?? "待确认"
                 )
                 previewTile(
-                    title: "持有市值（估）",
+                    title: "持仓市值（估）",
                     before: {
                         previewCurrentValueBeforeDisplayValue
                     },

@@ -296,7 +296,7 @@ struct PopoverContentView: View {
             HStack(spacing: 6) {
                 Button(action: onOpenPortfolioBreakdown) {
                     metricCard(
-                        "总金额",
+                        "持仓金额",
                         headerMoneyText(store.snapshot.totalAmount),
                         isTotal: true
                     )
@@ -307,7 +307,7 @@ struct PopoverContentView: View {
                 .help("查看持仓占比")
                 Button(action: onOpenHoldingIncomeRanking) {
                     metricCard(
-                        "持有收益",
+                        "持仓收益",
                         headerSignedMoneyText(store.snapshot.holdingIncome),
                         tone: headerMetricTone(store.snapshot.holdingIncome)
                     )
@@ -315,11 +315,11 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("打开持有收益（按金额）")
+                .help("打开持仓收益（按金额）")
 
                 Button(action: onOpenHoldingRateRanking) {
                     metricCard(
-                        "持有收益率",
+                        "持仓收益率",
                         headerPercentText(store.snapshot.holdingIncomeRate),
                         tone: store.snapshot.holdingIncomeRate
                     )
@@ -327,7 +327,7 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("打开持有收益（按收益率）")
+                .help("打开持仓收益（按收益率）")
             }
 
             if let pendingHeaderImpact {
@@ -1016,7 +1016,8 @@ struct PopoverContentView: View {
                             .monospacedDigit()
                             .foregroundStyle(toneColor(for: quote.changeRate))
                             .lineLimit(1)
-                            .frame(width: 48, alignment: .trailing)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .layoutPriority(1)
                     } else {
                         Text(settingsStore.settings.defaultMarketIndexID.title)
                             .font(.system(size: 11, weight: .semibold))
@@ -2295,15 +2296,15 @@ enum FundSortMode: String, CaseIterable, Identifiable {
         case .todayRate:
             "今日涨幅"
         case .costAmount:
-            "持有成本"
+            "持仓成本"
         case .todayIncome:
             "今日收益"
         case .todayTotal:
             "今日总值"
         case .holdingIncome:
-            "持有收益"
+            "持仓收益"
         case .holdingRate:
-            "持有收益率"
+            "持仓收益率"
         case .name:
             "名称(A-Z)"
         }
@@ -3291,12 +3292,12 @@ private struct PortfolioTreemapTooltipWindowContent: View {
                 tooltipMetric("今日涨幅", MoneyFormatter.percent(item.fund.todayRate, signed: true), color: toneColor(for: item.fund.todayRate))
                 tooltipMetric("今日收益", MoneyFormatter.money(item.fund.todayIncome, signed: true), color: toneColor(for: item.fund.todayIncome))
                 tooltipMetric(
-                    "持有收益",
+                    "持仓收益",
                     MoneyFormatter.money(PortfolioPanelDisplay.holdingIncome(for: item.fund), signed: true),
                     color: toneColor(for: PortfolioPanelDisplay.holdingIncome(for: item.fund))
                 )
                 tooltipMetric(
-                    "持有收益率",
+                    "持仓收益率",
                     item.fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "--",
                     color: item.fund.holdingRate.map(toneColor(for:)) ?? .secondary
                 )
@@ -3427,7 +3428,7 @@ struct PortfolioAllocationPanelView: View {
 
     private var allocationSummary: some View {
         HStack(spacing: 0) {
-            allocationSummaryMetric("持仓总额", MoneyFormatter.plainMoney(allocationTotal), color: .primary)
+            allocationSummaryMetric("持仓金额", MoneyFormatter.plainMoney(allocationTotal), color: .primary)
             summaryDivider
             allocationSummaryMetric("基金数量", "\(allocationItems.count)只", color: .primary)
             summaryDivider
@@ -3616,9 +3617,9 @@ enum IncomeRankingKind: Equatable {
         case .today:
             return "实时收益率排行"
         case .holding where metric == .amount:
-            return "持有收益排行"
+            return "持仓收益排行"
         case .holding:
-            return "持有收益率排行"
+            return "持仓收益率排行"
         }
     }
 
@@ -3627,7 +3628,7 @@ enum IncomeRankingKind: Equatable {
         case .today:
             "暂无实时收益"
         case .holding:
-            "暂无持有收益"
+            "暂无持仓收益"
         }
     }
 
@@ -5603,12 +5604,12 @@ struct FundDetailView: View {
             alignment: .leading,
             spacing: 14
         ) {
-            metric("持有金额", numberText(currentTotal, places: 2))
+            metric("持仓金额", numberText(currentTotal, places: 2))
             metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
             metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
-            dailyIncomeMetricButton("持有收益", signedNumberText(holdingIncome), tone: holdingIncome)
-            metric("持有收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
-            metric("持有天数", holdingDaysText)
+            dailyIncomeMetricButton("持仓收益", signedNumberText(holdingIncome), tone: holdingIncome)
+            metric("持仓收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
+            metric("持仓天数", holdingDaysText)
         }
         .padding(12)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -6544,7 +6545,7 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func deleteTradeRecordConfirmationMessage(for record: FundTradeRecord) -> String {
-        "确定删除 \(tradeDateTimeText(record)) 的\(record.kind.title)记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持有金额、持有份额和成本，且无法撤销。"
+        "确定删除 \(tradeDateTimeText(record)) 的\(record.kind.title)记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持仓金额、持仓份额和成本，且无法撤销。"
     }
 
     private func tradeRecordRow(_ record: FundTradeRecord) -> some View {

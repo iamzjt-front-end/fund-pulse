@@ -188,7 +188,7 @@ enum JDFinanceHoldingsSyncPlanner {
                 nil
             }
             let positionCoveredMessage: String? = if isPositionCoveredWithoutLedger {
-                "本地持有金额已覆盖这笔买入，但缺少可唯一匹配的交易流水；仅提示，不会重复写入持仓。"
+                "本地持仓金额已覆盖这笔买入，但缺少可唯一匹配的交易流水；仅提示，不会重复写入持仓。"
             } else {
                 nil
             }

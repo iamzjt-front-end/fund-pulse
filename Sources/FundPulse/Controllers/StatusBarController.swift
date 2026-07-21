@@ -978,6 +978,7 @@ final class StatusBarController: NSObject {
                 initialRankingMetric: holdingPerformanceMetric,
                 initialRange: holdingPerformanceRange,
                 initialDisplayedMonth: holdingPerformanceMonth,
+                betaFeaturesEnabled: settingsStore.settings.betaFeaturesEnabled,
                 onOpenJDFinanceSync: { [weak self] in
                     self?.showChildPanel(.jdFinancePerformanceSync)
                 },

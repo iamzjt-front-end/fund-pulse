@@ -119,14 +119,14 @@ struct FundPositionEditorView: View {
                         )
 
                         if positionMode == .amount {
-                            field("持有金额") {
-                                PanelTextInput("请输入持有总金额", text: $positionAmount, suffix: "元")
+                            field("持仓金额") {
+                                PanelTextInput("请输入持仓金额", text: $positionAmount, suffix: "元")
                             }
-                            field("持有收益") {
+                            field("持仓收益") {
                                 PanelTextInput("可为负，默认为 0", text: $positionProfit, suffix: "元")
                             }
                         } else {
-                            field("持有份额") {
+                            field("持仓份额") {
                                 PanelTextInput("可精确 2 位小数", text: $shares, suffix: "份")
                             }
                             field("持仓成本价") {
@@ -301,7 +301,7 @@ struct FundPositionEditorView: View {
                     .labelsHidden()
             }
 
-            Text(isSameDayNewFund ? "开启后表示今天刚买入，需选择 15:00 前后；净值未确认前进入待确认。" : "关闭时按已有历史持仓补录，使用最新确认净值入持有，不进入待确认。")
+            Text(isSameDayNewFund ? "开启后表示今天刚买入，需选择 15:00 前后；净值未确认前进入待确认。" : "关闭时按已有历史持仓补录，使用最新确认净值进入持仓，不进入待确认。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

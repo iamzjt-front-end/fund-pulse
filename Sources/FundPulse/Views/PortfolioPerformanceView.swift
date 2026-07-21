@@ -3,6 +3,7 @@ import SwiftUI
 struct PortfolioPerformanceView: View {
     let portfolioStore: PortfolioStore
     let store: PortfolioPerformanceStore
+    let betaFeaturesEnabled: Bool
     let onOpenJDFinanceSync: () -> Void
     let onNavigationChange: (
         HoldingPerformancePage,
@@ -25,6 +26,7 @@ struct PortfolioPerformanceView: View {
         initialRankingMetric: IncomeRankingMetric = .amount,
         initialRange: PortfolioPerformanceRange = .threeMonths,
         initialDisplayedMonth: Date? = nil,
+        betaFeaturesEnabled: Bool,
         onOpenJDFinanceSync: @escaping () -> Void,
         onNavigationChange: @escaping (
             HoldingPerformancePage,
@@ -36,6 +38,7 @@ struct PortfolioPerformanceView: View {
     ) {
         self.portfolioStore = portfolioStore
         self.store = store
+        self.betaFeaturesEnabled = betaFeaturesEnabled
         self.onOpenJDFinanceSync = onOpenJDFinanceSync
         self.onNavigationChange = onNavigationChange
         self.onBack = onBack
@@ -54,15 +57,15 @@ struct PortfolioPerformanceView: View {
         VStack(spacing: 0) {
             PanelHeader(
                 systemImage: "chart.line.uptrend.xyaxis",
-                title: "持有收益",
+                title: "持仓收益",
                 subtitle: headerSubtitle,
                 accessoryText: hasVisibleEstimate ? "含估值" : nil,
                 accessoryColor: .orange,
-                actionSystemImage: page == .ranking ? nil : "arrow.down.circle",
-                actionTitle: page == .ranking ? nil : "京东补全",
+                actionSystemImage: showsJDFinanceCompletionAction ? "arrow.down.circle" : nil,
+                actionTitle: showsJDFinanceCompletionAction ? "京东补全" : nil,
                 actionTint: .blue,
-                actionHelp: "从京东金融补全历史收益",
-                onAction: page == .ranking ? nil : onOpenJDFinanceSync,
+                actionHelp: showsJDFinanceCompletionAction ? "从京东金融补全历史收益" : nil,
+                onAction: showsJDFinanceCompletionAction ? onOpenJDFinanceSync : nil,
                 onClose: onBack
             )
 
@@ -73,7 +76,7 @@ struct PortfolioPerformanceView: View {
                     values: HoldingPerformancePage.allCases,
                     selection: $page,
                     title: { $0.title },
-                    accessibilityLabelText: "持有收益模块"
+                    accessibilityLabelText: "持仓收益模块"
                 )
                 pageContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -95,6 +98,13 @@ struct PortfolioPerformanceView: View {
         .onChange(of: displayedMonth) { _, newValue in
             onNavigationChange(page, rankingMetric, range, newValue)
         }
+    }
+
+    private var showsJDFinanceCompletionAction: Bool {
+        HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+            page: page,
+            betaFeaturesEnabled: betaFeaturesEnabled
+        )
     }
 
     private var headerSubtitle: String {
@@ -406,6 +416,13 @@ struct PortfolioPerformanceView: View {
 }
 
 enum HoldingPerformancePresentation {
+    static func showsJDFinanceCompletionAction(
+        page: HoldingPerformancePage,
+        betaFeaturesEnabled: Bool
+    ) -> Bool {
+        betaFeaturesEnabled && page != .ranking
+    }
+
     static func rankingSubtitle(
         holdingCount: Int,
         holdingIncome: Double,
@@ -453,7 +470,7 @@ enum HoldingPerformancePage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .ranking:
-            "持有收益排行"
+            "持仓收益排行"
         case .curve:
             "收益曲线"
         case .calendar:

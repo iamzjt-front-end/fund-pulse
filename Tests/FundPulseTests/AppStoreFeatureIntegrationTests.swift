@@ -201,11 +201,45 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
     func testHoldingPerformanceUsesExactlyTheRequestedThreeModules() {
         XCTAssertEqual(
             HoldingPerformancePage.allCases.map(\.title),
-            ["持有收益排行", "收益曲线", "收益日历"]
+            ["持仓收益排行", "收益曲线", "收益日历"]
         )
         XCTAssertEqual(
             IncomeRankingMetric.allCases.map(\.holdingPickerTitle),
             ["按金额", "按收益率"]
+        )
+    }
+
+    func testFundListHoldingStatusKeepsPossessionLabel() {
+        XCTAssertEqual(FundHoldingStatus.holding.title, "持有")
+    }
+
+    func testJDFinanceCompletionActionRequiresBetaAndANonRankingPage() {
+        for page in HoldingPerformancePage.allCases {
+            XCTAssertFalse(
+                HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+                    page: page,
+                    betaFeaturesEnabled: false
+                )
+            )
+        }
+
+        XCTAssertFalse(
+            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+                page: .ranking,
+                betaFeaturesEnabled: true
+            )
+        )
+        XCTAssertTrue(
+            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+                page: .curve,
+                betaFeaturesEnabled: true
+            )
+        )
+        XCTAssertTrue(
+            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+                page: .calendar,
+                betaFeaturesEnabled: true
+            )
         )
     }
 

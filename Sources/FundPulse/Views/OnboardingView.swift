@@ -117,14 +117,14 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text("把持仓变化看清楚")
                     .font(.system(size: 22, weight: .bold))
-                Text("记录基金持仓、查看实时估值，并在持有收益中通过排行、曲线和日历回顾表现。")
+                Text("记录基金持仓、查看实时估值，并在持仓收益中通过排行、曲线和日历回顾表现。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(spacing: 9) {
-                featureRow(icon: "chart.line.uptrend.xyaxis", title: "持有收益", detail: "通过收益排行、曲线和日历查看持有表现")
+                featureRow(icon: "chart.line.uptrend.xyaxis", title: "持仓收益", detail: "通过收益排行、曲线和日历查看持仓表现")
                 featureRow(icon: "calendar", title: "每日盈亏", detail: "按日期查看变化，不再依赖零散截图")
                 featureRow(icon: "bell.badge", title: "自定义提醒", detail: "在你设定的时间和阈值触发系统通知")
             }

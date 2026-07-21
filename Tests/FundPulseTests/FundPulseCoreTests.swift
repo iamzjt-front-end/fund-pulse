@@ -1853,7 +1853,7 @@ final class FundPulseCoreTests: XCTestCase {
         let joined = entry.fieldSummaries.joined(separator: " ")
         XCTAssertTrue(joined.contains("账户总金额"))
         XCTAssertTrue(joined.contains("306,651.24"))
-        XCTAssertTrue(joined.contains("账户持有收益"))
+        XCTAssertTrue(joined.contains("账户持仓收益"))
         XCTAssertTrue(joined.contains("账户今日收益"))
     }
 
@@ -4925,7 +4925,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertFalse(notice.isImportable)
         XCTAssertNil(notice.importKind)
         XCTAssertNil(notice.syncState)
-        XCTAssertTrue(notice.message.contains("持有金额已覆盖"))
+        XCTAssertTrue(notice.message.contains("持仓金额已覆盖"))
         XCTAssertEqual(preview.positionCoveredMissingLedgerTradeCount, 1)
     }
 
@@ -13158,7 +13158,7 @@ final class FundPulseCoreTests: XCTestCase {
                     OperationReminderNotificationCandidate(
                         identifier: "legacy.daily-reminder",
                         title: "基金操作提醒",
-                        body: "现在可以检查基金估值，按计划处理加仓、减仓或继续持有。"
+                        body: "现在可以检查基金估值，按计划处理加仓、减仓或继续持仓。"
                     ),
                     OperationReminderNotificationCandidate(
                         identifier: "fund-pulse.test-reminder.1",

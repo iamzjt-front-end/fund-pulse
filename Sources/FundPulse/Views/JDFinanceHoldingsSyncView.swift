@@ -462,7 +462,7 @@ struct JDFinanceHoldingsSyncView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .trailing, spacing: 5) {
-                    overviewMetric("持有收益", signedMoneyOrDash(preview.remoteSnapshot.holdIncome), tone: toneColor(preview.remoteSnapshot.holdIncome))
+                    overviewMetric("持仓收益", signedMoneyOrDash(preview.remoteSnapshot.holdIncome), tone: toneColor(preview.remoteSnapshot.holdIncome))
                     overviewMetric("昨日收益", signedMoneyOrDash(preview.remoteSnapshot.yesterdayIncome), tone: toneColor(preview.remoteSnapshot.yesterdayIncome))
                     overviewMetric("产品", "\(preview.remoteSnapshot.products.count)", tone: .secondary)
                     tradeOrderCompletenessLabel(preview.remoteSnapshot.tradeOrderFetchState)
@@ -845,7 +845,7 @@ struct JDFinanceHoldingsSyncView: View {
     private func newHoldingCard(_ candidate: JDFinanceHoldingImportCandidate) -> some View {
         comparisonCardHeader(code: candidate.code, name: candidate.name, badge: "新增", tone: PanelDesign.accent) {
             metricPair("京东金额", MoneyFormatter.plainMoney(candidate.amount), tone: .primary)
-            metricPair("持有收益", MoneyFormatter.money(candidate.holdingIncome, signed: true), tone: toneColor(candidate.holdingIncome))
+            metricPair("持仓收益", MoneyFormatter.money(candidate.holdingIncome, signed: true), tone: toneColor(candidate.holdingIncome))
         }
     }
 
@@ -912,7 +912,7 @@ struct JDFinanceHoldingsSyncView: View {
         comparisonCardHeader(code: holding.skuID, name: holding.name, badge: "待识别", tone: PanelDesign.warningAccent) {
             HStack(spacing: 8) {
                 metricPair("京东金额", MoneyFormatter.plainMoney(holding.amount), tone: .primary)
-                metricPair("持有收益", signedMoneyOrDash(holding.holdingIncome), tone: toneColor(holding.holdingIncome))
+                metricPair("持仓收益", signedMoneyOrDash(holding.holdingIncome), tone: toneColor(holding.holdingIncome))
             }
 
             Text(holding.message)

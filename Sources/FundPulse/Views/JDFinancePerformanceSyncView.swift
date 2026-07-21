@@ -297,7 +297,7 @@ struct JDFinancePerformanceSyncView: View {
 
             Button(action: onClose) {
                 PanelButtonLabel(
-                    title: "返回持有收益",
+                    title: "返回持仓收益",
                     systemImage: "chart.xyaxis.line",
                     style: .primary,
                     tint: .blue
@@ -341,7 +341,7 @@ struct JDFinancePerformanceSyncView: View {
                 if syncStore.accountMismatchSource?.involvesHoldingsBaseline == true {
                     Button(action: onClose) {
                         PanelButtonLabel(
-                            title: "返回持有收益",
+                            title: "返回持仓收益",
                             systemImage: "arrow.left",
                             style: .primary,
                             tint: .blue

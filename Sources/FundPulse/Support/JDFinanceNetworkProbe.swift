@@ -209,7 +209,7 @@ final class JDFinanceNetworkProbe: @unchecked Sendable {
         let leaves = leafValues(in: object).filter { !isSensitivePath($0.path) }
         let targets: [(path: String, label: String)] = [
             ("headassetsdata.totalassets", "账户总金额"),
-            ("headassetsdata.holdincome", "账户持有收益"),
+            ("headassetsdata.holdincome", "账户持仓收益"),
             ("headassetsdata.todayincome", "账户今日收益"),
             ("headassetsdata.yesterdayincome", "账户昨日收益"),
             ("headassetsdata.totalincome", "账户累计收益")
