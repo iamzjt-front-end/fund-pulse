@@ -15,6 +15,8 @@ final class PortfolioStore {
     private var persistedSnapshot: PortfolioSnapshot?
     private var refreshTask: Task<Void, Never>?
     private var refreshRequestGeneration = 0
+    private var quoteRefreshDeferralCount = 0
+    private var hasDeferredQuoteRefresh = false
 
     enum LoadState: Equatable {
         case loading
@@ -137,6 +139,11 @@ final class PortfolioStore {
     }
 
     func refreshQuotes() async {
+        guard quoteRefreshDeferralCount == 0 else {
+            hasDeferredQuoteRefresh = true
+            return
+        }
+
         refreshRequestGeneration &+= 1
         if let refreshTask {
             await refreshTask.value
@@ -838,40 +845,62 @@ final class PortfolioStore {
     func performJDFinanceAtomicMutation(
         _ mutation: @MainActor (PortfolioStore) async throws -> Void
     ) async throws {
-        let baseSnapshot = snapshot
-        let stagingPerformanceDirectory = FileManager.default.temporaryDirectory
-            .appending(
-                path: "fund-pulse-jd-staging-performance-\(UUID().uuidString)",
-                directoryHint: .isDirectory
+        await beginDeferringQuoteRefresh()
+        do {
+            let baseSnapshot = snapshot
+            let stagingPerformanceDirectory = FileManager.default.temporaryDirectory
+                .appending(
+                    path: "fund-pulse-jd-staging-performance-\(UUID().uuidString)",
+                    directoryHint: .isDirectory
+                )
+            defer {
+                try? FileManager.default.removeItem(at: stagingPerformanceDirectory)
+            }
+            let stagingPerformanceStore = PortfolioPerformanceStore(
+                dataDirectory: stagingPerformanceDirectory
             )
-        defer {
-            try? FileManager.default.removeItem(at: stagingPerformanceDirectory)
-        }
-        let stagingPerformanceStore = PortfolioPerformanceStore(
-            dataDirectory: stagingPerformanceDirectory
-        )
-        try stagingPerformanceStore.replace(performanceStore.snapshot)
-        let stagingRepository = StagedPortfolioRepository(
-            dataDirectory: dataDirectory,
-            snapshot: baseSnapshot
-        )
-        let stagingStore = PortfolioStore(
-            repository: stagingRepository,
-            quoteService: quoteService,
-            performanceStore: stagingPerformanceStore,
-            now: nowProvider
-        )
-        stagingStore.load()
+            try stagingPerformanceStore.replace(performanceStore.snapshot)
+            let stagingRepository = StagedPortfolioRepository(
+                dataDirectory: dataDirectory,
+                snapshot: baseSnapshot
+            )
+            let stagingStore = PortfolioStore(
+                repository: stagingRepository,
+                quoteService: quoteService,
+                performanceStore: stagingPerformanceStore,
+                now: nowProvider
+            )
+            stagingStore.load()
 
-        try await mutation(stagingStore)
+            try await mutation(stagingStore)
 
-        guard snapshot == baseSnapshot else {
-            throw PortfolioStoreError.concurrentModification
+            guard snapshot == baseSnapshot else {
+                throw PortfolioStoreError.concurrentModification
+            }
+            let stagedSnapshot = stagingStore.snapshot
+            try save(stagedSnapshot)
+            snapshot = stagedSnapshot
+            loadState = .loaded
+        } catch {
+            await endDeferringQuoteRefresh()
+            throw error
         }
-        let stagedSnapshot = stagingStore.snapshot
-        try save(stagedSnapshot)
-        snapshot = stagedSnapshot
-        loadState = .loaded
+        await endDeferringQuoteRefresh()
+    }
+
+    private func beginDeferringQuoteRefresh() async {
+        quoteRefreshDeferralCount += 1
+        if let refreshTask {
+            await refreshTask.value
+        }
+    }
+
+    private func endDeferringQuoteRefresh() async {
+        quoteRefreshDeferralCount = max(0, quoteRefreshDeferralCount - 1)
+        guard quoteRefreshDeferralCount == 0, hasDeferredQuoteRefresh else { return }
+
+        hasDeferredQuoteRefresh = false
+        await refreshQuotes()
     }
 
     func applyJDFinanceReconciliation(_ notice: JDFinanceReconciliationNotice) async throws {

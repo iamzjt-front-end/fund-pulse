@@ -6675,6 +6675,90 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinanceAtomicMutationDefersQuoteRefreshUntilAfterCommit() async throws {
+        var now = try chinaDate("2026-07-21 13:11")
+        let refreshedAt = try chinaDate("2026-07-21 13:12")
+        let initial = jdPortfolio(funds: [], records: [], now: now)
+        let repository = RecordingPortfolioRepository(initialSnapshot: initial)
+        let store = PortfolioStore(repository: repository, now: { now })
+        let gate = AsyncTestGate()
+        let committedSyncState = JDFinanceSyncState(
+            baselineEstablishedAt: now,
+            representedOrderKeys: ["staged-order"]
+        )
+        store.load()
+
+        let mutationTask = Task { @MainActor in
+            try await store.performJDFinanceAtomicMutation { stagingStore in
+                try stagingStore.applyJDFinanceSyncMetadata(
+                    accountTotal: nil,
+                    confirmations: [],
+                    syncedAt: now,
+                    syncState: committedSyncState
+                )
+                await gate.wait()
+            }
+        }
+
+        await gate.waitUntilWaiting()
+        now = refreshedAt
+        await store.refreshQuotes()
+        await gate.open()
+        try await mutationTask.value
+
+        XCTAssertEqual(store.snapshot.jdFinanceSyncState, committedSyncState)
+        XCTAssertEqual(store.snapshot.updateTime, refreshedAt)
+        XCTAssertEqual(repository.savedSnapshots.count, 2)
+    }
+
+    @MainActor
+    func testJDFinanceAtomicMutationStillRejectsBusinessModification() async throws {
+        let now = try chinaDate("2026-07-21 13:11")
+        let initial = jdPortfolio(funds: [], records: [], now: now)
+        let repository = RecordingPortfolioRepository(initialSnapshot: initial)
+        let store = PortfolioStore(repository: repository, now: { now })
+        let gate = AsyncTestGate()
+        let stagedSyncState = JDFinanceSyncState(
+            baselineEstablishedAt: now,
+            representedOrderKeys: ["staged-order"]
+        )
+        let concurrentSyncState = JDFinanceSyncState(
+            baselineEstablishedAt: now,
+            representedOrderKeys: ["concurrent-order"]
+        )
+        store.load()
+
+        let mutationTask = Task { @MainActor in
+            try await store.performJDFinanceAtomicMutation { stagingStore in
+                try stagingStore.applyJDFinanceSyncMetadata(
+                    accountTotal: nil,
+                    confirmations: [],
+                    syncedAt: now,
+                    syncState: stagedSyncState
+                )
+                await gate.wait()
+            }
+        }
+
+        await gate.waitUntilWaiting()
+        try store.applyJDFinanceSyncMetadata(
+            accountTotal: nil,
+            confirmations: [],
+            syncedAt: now,
+            syncState: concurrentSyncState
+        )
+        await gate.open()
+
+        do {
+            try await mutationTask.value
+            XCTFail("Expected a real concurrent portfolio modification to be rejected")
+        } catch {
+            XCTAssertEqual(error as? PortfolioStoreError, .concurrentModification)
+        }
+        XCTAssertEqual(store.snapshot.jdFinanceSyncState, concurrentSyncState)
+    }
+
+    @MainActor
     func testJDFinanceAtomicMutationDoesNotWriteRealPerformanceHistoryBeforeCommit() async throws {
         let now = try chinaDate("2026-07-15 14:30")
         let directory = temporaryPortfolioDirectory(prefix: "jd-atomic-performance")
@@ -15823,6 +15907,32 @@ private final class RecordingPortfolioRepository: PortfolioRepository {
 
     func save(_ snapshot: PortfolioSnapshot) throws {
         savedSnapshots.append(snapshot)
+    }
+}
+
+private actor AsyncTestGate {
+    private var isWaiting = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        isWaiting = true
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func waitUntilWaiting() async {
+        while !isWaiting {
+            await Task.yield()
+        }
+    }
+
+    func open() {
+        let pendingContinuations = continuations
+        continuations.removeAll()
+        for continuation in pendingContinuations {
+            continuation.resume()
+        }
     }
 }
 
