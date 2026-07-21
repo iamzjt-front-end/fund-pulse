@@ -1462,8 +1462,13 @@ final class PortfolioStore {
 
         var remaining: [FundPendingConversion] = []
         for pendingConversion in pendingConversions {
-            // 同步来源只提供订单元数据；转换是否确认仍以本地两边正式净值为准。
             let draft = pendingConversion.draft
+            // 转换与加仓、减仓、新增持仓共用同一确认门禁：必须先跨过受理日，
+            // 再由双方正式净值共同决定是否可以确认。同步状态仅保留为订单元数据。
+            guard shouldConfirmPendingTrade(acceptedDate: pendingConversion.acceptedDate) else {
+                remaining.append(pendingConversion)
+                continue
+            }
             guard let fromPrice = await quoteService.fetchConfirmedNetValue(
                 code: draft.fromCode,
                 acceptedDate: pendingConversion.acceptedDate,
@@ -2307,6 +2312,9 @@ final class PortfolioStore {
         if totalShares > 0 {
             fund.pendingAmount = nil
             fund.pendingProfit = nil
+        } else {
+            // 整仓卖出或转换后立即清除旧金额，避免本次刷新仍被误计为待确认。
+            fund.currentAmount = 0
         }
     }
 

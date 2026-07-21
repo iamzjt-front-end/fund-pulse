@@ -2401,7 +2401,7 @@ struct PendingTradeActivity: Identifiable {
 }
 
 struct PendingActivityPresentation: Equatable {
-    static let noticeText = "系统会持续检查正式净值和外部状态，条件满足后自动确认；\nQDII 等基金次日仍待确认通常正常。"
+    static let noticeText = "系统会在受理日次日持续检查正式净值，净值就绪后自动确认；\nQDII 等基金净值发布较晚，继续待确认通常正常。"
 
     var orderText: String
     var waitingText: String
@@ -2409,29 +2409,13 @@ struct PendingActivityPresentation: Equatable {
     init(activity: PendingTradeActivity) {
         let code = FundCodeFormatter.display(activity.code)
         let tradeDate = Self.shortDateText(activity.tradeDate)
-        let acceptedDate = Self.validShortDateText(activity.acceptedDate)
         orderText = "\(code) · \(tradeDate) \(activity.tradeTimeType.title)\(activity.isConversion ? "发起" : "下单")"
 
-        if activity.waitsForExternalConfirmation {
-            waitingText = "等待京东最终确认 · 同步后更新"
-        } else if let failureReason = Self.clean(activity.failureReason) {
+        if let failureReason = Self.clean(activity.failureReason) {
             waitingText = "暂无法确认 · \(failureReason)"
-        } else if activity.isConversion {
-            if let acceptedDate {
-                waitingText = "等待双方 \(acceptedDate) 正式净值 · 齐备后自动确认"
-            } else {
-                waitingText = "等待双方正式净值 · 齐备后自动确认"
-            }
-        } else if let acceptedDate {
-            waitingText = "等待 \(acceptedDate) 正式净值 · 发布后自动确认"
         } else {
-            waitingText = "等待正式净值 · 发布后自动确认"
+            waitingText = "次日检查确认 · 净值就绪后自动更新"
         }
-    }
-
-    private static func validShortDateText(_ value: String) -> String? {
-        guard DateOnlyFormatter.parse(value) != nil else { return nil }
-        return shortDateText(value)
     }
 
     private static func clean(_ value: String?) -> String? {

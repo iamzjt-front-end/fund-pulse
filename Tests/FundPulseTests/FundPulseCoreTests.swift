@@ -10302,8 +10302,8 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testPendingConversionConfirmsAfterBothNetValuesAndAppliesFees() async throws {
-        let now = try chinaDate("2026-06-22 16:00")
+    func testPendingConversionWaitsUntilNextDayThenConfirmsAfterBothNetValuesAndAppliesFees() async throws {
+        var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
             "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
@@ -10348,6 +10348,17 @@ final class FundPulseCoreTests: XCTestCase {
             )
         )
 
+        XCTAssertEqual(store.snapshot.pendingConversions?.count, 1)
+        let sameDayRecords = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertTrue(sameDayRecords.allSatisfy { $0.status == .pending })
+        let sameDaySourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
+        let sameDayTargetFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "290008" })
+        XCTAssertEqual(sameDaySourceFund.migratedShares ?? 0, 200, accuracy: 0.0001)
+        XCTAssertEqual(sameDayTargetFund.migratedShares ?? 0, 50, accuracy: 0.0001)
+
+        now = try chinaDate("2026-06-23 00:01")
+        await store.refreshQuotes()
+
         XCTAssertNil(store.snapshot.pendingConversions)
         let records = try XCTUnwrap(store.snapshot.tradeRecords)
         XCTAssertEqual(records.count, 2)
@@ -10378,8 +10389,8 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testJDFinancePendingConversionUsesLocalConfirmedNetValuesInsteadOfExternalStatus() async throws {
-        let now = try chinaDate("2026-06-22 16:00")
+    func testJDFinancePendingConversionUsesNextDayLocalNetValuesInsteadOfExternalStatus() async throws {
+        var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
             "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
@@ -10431,6 +10442,14 @@ final class FundPulseCoreTests: XCTestCase {
             )
         )
 
+        XCTAssertEqual(store.snapshot.pendingConversions?.count, 1)
+        let sameDayRecords = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertTrue(sameDayRecords.allSatisfy { $0.status == .pending })
+        XCTAssertTrue(sameDayRecords.allSatisfy { $0.waitsForExternalConfirmation == true })
+
+        now = try chinaDate("2026-06-23 00:01")
+        await store.refreshQuotes()
+
         XCTAssertNil(store.snapshot.pendingConversions)
         let records = try XCTUnwrap(store.snapshot.tradeRecords)
         XCTAssertEqual(records.count, 2)
@@ -10445,8 +10464,8 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testPendingConversionDoesNotWaitForNextTradingDayAfterNetValuesConfirmed() async throws {
-        let now = try chinaDate("2026-06-18 16:00")
+    func testPendingConversionWaitsUntilAcceptedDateNextDayEvenWhenNetValuesAreAvailable() async throws {
+        var now = try chinaDate("2026-06-18 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-18", 2.5),
             "290008": ("泰信发展主题混合", "2026-06-18", 1.25)
@@ -10491,6 +10510,17 @@ final class FundPulseCoreTests: XCTestCase {
             )
         )
 
+        XCTAssertEqual(store.snapshot.pendingConversions?.count, 1)
+        let sameDayRecords = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertTrue(sameDayRecords.allSatisfy { $0.status == .pending })
+        let sourceBeforeNextDay = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
+        let targetBeforeNextDay = try XCTUnwrap(store.snapshot.funds.first { $0.code == "290008" })
+        XCTAssertEqual(sourceBeforeNextDay.migratedShares ?? 0, 200, accuracy: 0.0001)
+        XCTAssertEqual(targetBeforeNextDay.migratedShares ?? 0, 50, accuracy: 0.0001)
+
+        now = try chinaDate("2026-06-19 00:01")
+        await store.refreshQuotes()
+
         XCTAssertNil(store.snapshot.pendingConversions)
         let outRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.kind == .conversionOut })
         let inRecord = try XCTUnwrap(store.snapshot.tradeRecords?.first { $0.kind == .conversionIn })
@@ -10504,7 +10534,7 @@ final class FundPulseCoreTests: XCTestCase {
 
     @MainActor
     func testFullConversionOutDoesNotBecomePendingNewFund() async throws {
-        let now = try chinaDate("2026-06-22 16:00")
+        var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
             "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
@@ -10567,6 +10597,9 @@ final class FundPulseCoreTests: XCTestCase {
             )
         )
 
+        now = try chinaDate("2026-06-23 00:01")
+        await store.refreshQuotes()
+
         XCTAssertNil(store.snapshot.pendingConversions)
         XCTAssertEqual(store.snapshot.pendingCount, 0)
         let records = try XCTUnwrap(store.snapshot.tradeRecords)
@@ -10580,7 +10613,7 @@ final class FundPulseCoreTests: XCTestCase {
 
     @MainActor
     func testFullConversionAllowsDisplayedShareRoundingAboveStoredShares() async throws {
-        let now = try chinaDate("2026-06-22 16:00")
+        var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
             "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
@@ -10621,6 +10654,9 @@ final class FundPulseCoreTests: XCTestCase {
                 tradeTimeType: .before15
             )
         )
+
+        now = try chinaDate("2026-06-23 00:01")
+        await store.refreshQuotes()
 
         XCTAssertNil(store.snapshot.pendingConversions)
         let sourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
@@ -10684,8 +10720,8 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
-    func testConversionToNewFundConfirmsIntoHoldingWhenNetValuesAreAvailable() async throws {
-        let now = try chinaDate("2026-06-22 16:00")
+    func testConversionToNewFundWaitsUntilNextDayThenConfirmsIntoHolding() async throws {
+        var now = try chinaDate("2026-06-22 16:00")
         let service = multiTradeQuoteService([
             Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
             "024480": ("永赢先进制造智选混合发起A", "2026-06-22", 1.5)
@@ -10725,6 +10761,14 @@ final class FundPulseCoreTests: XCTestCase {
                 tradeTimeType: .before15
             )
         )
+
+        let pendingTargetFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "024480" })
+        XCTAssertEqual(pendingTargetFund.status, .pending)
+        XCTAssertEqual(pendingTargetFund.migratedShares ?? 0, 0, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingConversions?.count, 1)
+
+        now = try chinaDate("2026-06-23 00:01")
+        await store.refreshQuotes()
 
         let targetFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "024480" })
         XCTAssertEqual(targetFund.status, .holding)
@@ -10838,7 +10882,7 @@ final class FundPulseCoreTests: XCTestCase {
         let presentation = PendingActivityPresentation(activity: activity)
 
         XCTAssertEqual(presentation.orderText, "022184 · 07-14 15:00前下单")
-        XCTAssertEqual(presentation.waitingText, "等待 07-14 正式净值 · 发布后自动确认")
+        XCTAssertEqual(presentation.waitingText, "次日检查确认 · 净值就绪后自动更新")
     }
 
     func testPendingActivityPresentationUsesNextAcceptedDateForAfter15Order() {
@@ -10851,16 +10895,16 @@ final class FundPulseCoreTests: XCTestCase {
         let presentation = PendingActivityPresentation(activity: activity)
 
         XCTAssertEqual(presentation.orderText, "022184 · 07-14 15:00后下单")
-        XCTAssertEqual(presentation.waitingText, "等待 07-15 正式净值 · 发布后自动确认")
+        XCTAssertEqual(presentation.waitingText, "次日检查确认 · 净值就绪后自动更新")
     }
 
-    func testPendingActivityPresentationExplainsExternalConfirmationWait() {
+    func testPendingActivityPresentationDoesNotDistinguishExternalConfirmationWait() {
         var activity = makePendingHeaderActivity(id: "jd-waiting", kind: .buy, displayAmount: 1_000)
         activity.waitsForExternalConfirmation = true
 
         let presentation = PendingActivityPresentation(activity: activity)
 
-        XCTAssertEqual(presentation.waitingText, "等待京东最终确认 · 同步后更新")
+        XCTAssertEqual(presentation.waitingText, "次日检查确认 · 净值就绪后自动更新")
     }
 
     func testPendingActivityPresentationExplainsConversionAndFailureReasons() {
@@ -10874,7 +10918,7 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(
             PendingActivityPresentation(activity: activity).waitingText,
-            "等待双方 07-15 正式净值 · 齐备后自动确认"
+            "次日检查确认 · 净值就绪后自动更新"
         )
 
         activity.failureReason = "可转换份额不足"
@@ -10890,14 +10934,14 @@ final class FundPulseCoreTests: XCTestCase {
 
         XCTAssertEqual(
             PendingActivityPresentation(activity: activity).waitingText,
-            "等待正式净值 · 发布后自动确认"
+            "次日检查确认 · 净值就绪后自动更新"
         )
     }
 
     func testPendingActivityPresentationNoticeExplainsDelayedQDIIConfirmation() {
         XCTAssertEqual(
             PendingActivityPresentation.noticeText,
-            "系统会持续检查正式净值和外部状态，条件满足后自动确认；\nQDII 等基金次日仍待确认通常正常。"
+            "系统会在受理日次日持续检查正式净值，净值就绪后自动确认；\nQDII 等基金净值发布较晚，继续待确认通常正常。"
         )
     }
 
