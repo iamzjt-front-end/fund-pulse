@@ -13,6 +13,8 @@
     "package-all": "npm run swift:package",
     "test:release:unit": "node scripts/run-release-tests.mjs --unit",
     "test:release": "node scripts/run-release-tests.mjs",
+    "test:readme": "node --test scripts/tests/project-growth-card.test.mjs",
+    "readme:growth": "node scripts/generate-project-growth-card.mjs --repo iamzjt-front-end/fund-pulse --output-dir screenshots",
     "release": "./scripts/release.sh --bump patch",
     "release:dry": "./scripts/release.sh --dry-run --bump patch --yes",
     "release-all": "./scripts/release.sh --bump patch",

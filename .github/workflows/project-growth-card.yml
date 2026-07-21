@@ -1,0 +1,43 @@
+name: Project Growth Card
+
+on:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: project-growth-card
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Generate project growth cards
+        run: npm run readme:growth
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Commit changed cards
+        run: |
+          git add screenshots/star-growth-light.svg screenshots/star-growth-dark.svg
+          if git diff --cached --quiet; then
+            echo "Growth cards are already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(readme): refresh project growth card [skip ci]"
+          git push
