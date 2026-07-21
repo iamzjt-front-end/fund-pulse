@@ -8615,6 +8615,111 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinancePendingNewFundUsesLocalConfirmedNetValueInsteadOfExternalStatus() async throws {
+        var now = try chinaDate("2026-07-20 21:30")
+        let createdAt = try chinaDate("2026-07-20 14:30")
+        let code = "016186"
+        let name = "广发中证全指电力ETF发起式联接C"
+        let service = tradeQuoteService(
+            code: code,
+            name: name,
+            date: "2026-07-20",
+            netValue: 1.1175
+        )
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-pending-new-fund-local-confirm-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 1,
+                funds: [
+                    FundPosition(
+                        code: code,
+                        name: name,
+                        dateText: "07-21 09:30",
+                        todayIncome: 0,
+                        todayRate: 0,
+                        holdingIncome: 0,
+                        currentAmount: 0,
+                        status: .pending,
+                        isUpdated: false,
+                        isIncomeActive: false,
+                        migratedShares: 0,
+                        migratedPrincipal: 0,
+                        incomeStartDate: "2026-07-20",
+                        positionMode: .amount,
+                        positionDate: "2026-07-20",
+                        positionTimeType: .before15,
+                        pendingAmount: 10_000,
+                        memo: "京东金融同步待确认"
+                    )
+                ],
+                migration: nil,
+                tradeRecords: [
+                    FundTradeRecord(
+                        id: "jd-pending-new-fund-016186",
+                        kind: .newFund,
+                        status: .pending,
+                        code: code,
+                        name: name,
+                        mode: .amount,
+                        amount: 10_000,
+                        shares: nil,
+                        confirmedShares: nil,
+                        price: nil,
+                        tradeDate: "2026-07-20",
+                        tradeTimeType: .before15,
+                        acceptedDate: "2026-07-20",
+                        createdAt: createdAt,
+                        confirmedAt: nil,
+                        failureReason: nil,
+                        syncSource: .jdFinance,
+                        syncKey: "trade|buy|016186|2026-07-20|before15|10000.00|",
+                        externalStatus: .waitingExternalConfirmation,
+                        externalStatusText: "支付成功",
+                        waitsForExternalConfirmation: true
+                    )
+                ]
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        await store.refreshQuotes()
+
+        XCTAssertEqual(store.snapshot.funds.first?.status, .pending)
+        XCTAssertEqual(store.snapshot.tradeRecords?.first?.status, .pending)
+
+        now = try chinaDate("2026-07-21 09:30")
+        await store.refreshQuotes()
+
+        let fund = try XCTUnwrap(store.snapshot.funds.first { $0.code == code })
+        XCTAssertEqual(fund.status, .holding)
+        XCTAssertNil(fund.pendingAmount)
+        XCTAssertEqual(fund.migratedShares ?? 0, 8948.545861, accuracy: 0.000001)
+        XCTAssertEqual(fund.migratedPrincipal ?? 0, 10_000, accuracy: 0.0001)
+        XCTAssertEqual(fund.currentAmount ?? 0, 10_000, accuracy: 0.0001)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+
+        let record = try XCTUnwrap(store.snapshot.tradeRecords?.first)
+        XCTAssertEqual(record.status, .confirmed)
+        XCTAssertEqual(record.price ?? 0, 1.1175, accuracy: 0.0001)
+        XCTAssertEqual(record.confirmedShares ?? 0, 8948.545861, accuracy: 0.000001)
+        XCTAssertEqual(record.externalStatus, .externalConfirmed)
+        XCTAssertEqual(record.waitsForExternalConfirmation, false)
+    }
+
+    @MainActor
     func testNewFundAddedTodayWithoutConfirmedNetValueStaysPending() async throws {
         let now = try chinaDate("2026-06-24 14:45")
         let service = quoteServiceWithMockResponses([
@@ -10185,6 +10290,73 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(targetFund.migratedShares ?? 0, 247.014925, accuracy: 0.000001)
         XCTAssertEqual(targetFund.migratedPrincipal ?? 0, 297.5, accuracy: 0.01)
         XCTAssertEqual(targetFund.migratedCost ?? 0, 1.2044, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testJDFinancePendingConversionUsesLocalConfirmedNetValuesInsteadOfExternalStatus() async throws {
+        let now = try chinaDate("2026-06-22 16:00")
+        let service = multiTradeQuoteService([
+            Self.tradeTestCode: (Self.tradeTestName, "2026-06-22", 2.5),
+            "290008": ("泰信发展主题混合", "2026-06-22", 1.25)
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-conversion-local-confirm-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(
+            PortfolioSnapshot(
+                updateTime: now,
+                totalAmount: 0,
+                holdingIncome: 0,
+                holdingIncomeRate: 0,
+                todayIncome: 0,
+                todayIncomeRate: 0,
+                pendingCount: 0,
+                funds: [
+                    conversionFund(code: Self.tradeTestCode, name: Self.tradeTestName, shares: 200, cost: 1),
+                    conversionFund(code: "290008", name: "泰信发展主题混合", shares: 50, cost: 1)
+                ],
+                migration: nil
+            ),
+            into: store,
+            directory: tempDirectory
+        )
+
+        try await store.convertFundPosition(
+            FundConversionDraft(
+                fromCode: Self.tradeTestCode,
+                toCode: "290008",
+                toName: "泰信发展主题混合",
+                shares: 100,
+                tradeDate: "2026-06-22",
+                tradeTimeType: .before15,
+                sellFeeMode: .rate,
+                sellFeeValue: 1,
+                buyFeeRate: 0.5
+            ),
+            syncMetadata: FundTradeSyncMetadata(
+                source: .jdFinance,
+                syncKey: "jd-conversion-pending",
+                externalStatus: .waitingExternalConfirmation,
+                externalStatusText: "处理中",
+                waitsForExternalConfirmation: true
+            )
+        )
+
+        XCTAssertNil(store.snapshot.pendingConversions)
+        let records = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertEqual(records.count, 2)
+        XCTAssertTrue(records.allSatisfy { $0.status == .confirmed })
+        XCTAssertTrue(records.allSatisfy { $0.externalStatus == .externalConfirmed })
+        XCTAssertTrue(records.allSatisfy { $0.waitsForExternalConfirmation == false })
+
+        let sourceFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == Self.tradeTestCode })
+        let targetFund = try XCTUnwrap(store.snapshot.funds.first { $0.code == "290008" })
+        XCTAssertEqual(sourceFund.migratedShares ?? 0, 100, accuracy: 0.0001)
+        XCTAssertEqual(targetFund.migratedShares ?? 0, 247.014925, accuracy: 0.000001)
     }
 
     @MainActor

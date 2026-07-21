@@ -1434,11 +1434,7 @@ final class PortfolioStore {
 
         var remaining: [FundPendingConversion] = []
         for pendingConversion in pendingConversions {
-            guard !waitsForExternalConfirmation(pendingConversion) else {
-                remaining.append(pendingConversion)
-                continue
-            }
-
+            // 同步来源只提供订单元数据；转换是否确认仍以本地两边正式净值为准。
             let draft = pendingConversion.draft
             guard let fromPrice = await quoteService.fetchConfirmedNetValue(
                 code: draft.fromCode,
@@ -1648,24 +1644,6 @@ final class PortfolioStore {
         return acceptedDate < DateOnlyFormatter.string(from: nowProvider())
     }
 
-    private func waitsForExternalConfirmation(_ record: FundTradeRecord) -> Bool {
-        record.syncSource == .jdFinance
-            && ((record.waitsForExternalConfirmation ?? false)
-                || record.externalStatus == .waitingExternalConfirmation)
-    }
-
-    private func waitsForExternalConfirmation(_ pendingTrade: FundPendingTrade) -> Bool {
-        pendingTrade.syncSource == .jdFinance
-            && ((pendingTrade.waitsForExternalConfirmation ?? false)
-                || pendingTrade.externalStatus == .waitingExternalConfirmation)
-    }
-
-    private func waitsForExternalConfirmation(_ pendingConversion: FundPendingConversion) -> Bool {
-        pendingConversion.syncSource == .jdFinance
-            && ((pendingConversion.waitsForExternalConfirmation ?? false)
-                || pendingConversion.externalStatus == .waitingExternalConfirmation)
-    }
-
     private func resolvedInitialAcceptedDate(
         draft: FundPositionDraft,
         quote: FundQuote?,
@@ -1802,10 +1780,8 @@ final class PortfolioStore {
             let positionDate = pendingRecord?.tradeDate ?? fund.positionDate ?? DateOnlyFormatter.string(from: .now)
             let positionTimeType = pendingRecord?.tradeTimeType ?? fund.positionTimeType ?? .before15
             let positionMode = pendingRecord?.mode ?? fund.positionMode ?? .amount
-            if let pendingRecord, waitsForExternalConfirmation(pendingRecord) {
-                continue
-            }
 
+            // 无论手工录入还是外部同步，新增基金都只走受理日与正式净值门禁。
             let acceptedDate = TradingCalendar.acceptedTradeDate(
                 positionDate: positionDate,
                 timeType: positionTimeType
@@ -2942,6 +2918,10 @@ final class PortfolioStore {
                 record.failureReason = nil
                 record.linkedCode = draft.toCode
                 record.linkedName = toFund.name
+                if record.syncSource == .jdFinance {
+                    record.externalStatus = .externalConfirmed
+                    record.waitsForExternalConfirmation = false
+                }
             }
         ) {
             appendTradeRecord(
@@ -2970,9 +2950,13 @@ final class PortfolioStore {
                     feeAmount: sellFee,
                     syncSource: pendingConversion.syncSource,
                     syncKey: pendingConversion.syncKey,
-                    externalStatus: pendingConversion.externalStatus,
+                    externalStatus: pendingConversion.syncSource == .jdFinance
+                        ? .externalConfirmed
+                        : pendingConversion.externalStatus,
                     externalStatusText: pendingConversion.externalStatusText,
-                    waitsForExternalConfirmation: pendingConversion.waitsForExternalConfirmation
+                    waitsForExternalConfirmation: pendingConversion.syncSource == .jdFinance
+                        ? false
+                        : pendingConversion.waitsForExternalConfirmation
                 )
             )
         }
@@ -2999,6 +2983,10 @@ final class PortfolioStore {
                 record.failureReason = nil
                 record.linkedCode = draft.fromCode
                 record.linkedName = fromFund.name
+                if record.syncSource == .jdFinance {
+                    record.externalStatus = .externalConfirmed
+                    record.waitsForExternalConfirmation = false
+                }
             }
         ) {
             appendTradeRecord(
@@ -3026,9 +3014,13 @@ final class PortfolioStore {
                     feeAmount: buyFee,
                     syncSource: pendingConversion.syncSource,
                     syncKey: pendingConversion.syncKey,
-                    externalStatus: pendingConversion.externalStatus,
+                    externalStatus: pendingConversion.syncSource == .jdFinance
+                        ? .externalConfirmed
+                        : pendingConversion.externalStatus,
                     externalStatusText: pendingConversion.externalStatusText,
-                    waitsForExternalConfirmation: pendingConversion.waitsForExternalConfirmation
+                    waitsForExternalConfirmation: pendingConversion.syncSource == .jdFinance
+                        ? false
+                        : pendingConversion.waitsForExternalConfirmation
                 )
             )
         }
@@ -3069,6 +3061,10 @@ final class PortfolioStore {
                 record.price = price
                 record.confirmedShares = totalShares
                 record.confirmedAt = .now
+                if record.syncSource == .jdFinance {
+                    record.externalStatus = .externalConfirmed
+                    record.waitsForExternalConfirmation = false
+                }
             }
         ) {
             return
