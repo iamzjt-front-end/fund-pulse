@@ -2578,6 +2578,139 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinanceCombinedAmountAndPendingSyncIsStableForMixedLocalConfirmation() async throws {
+        let now = try chinaDate("2026-07-21 16:00")
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-jd-mixed-pending-idempotency-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let code = "022184"
+        let name = "富国全球科技互联网股票(QDII)C"
+        let remoteAmount = 4_961.25
+        let localConfirmedAmount = 4_861.25
+        let netValue = 5.3344
+        let localPrincipal = 5_000.0
+        let localShares = localConfirmedAmount / netValue
+        let holdingsResponse = """
+        {"success":true,"resultCode":0,"resultData":{"success":true,"resultData":{"headAssetsData":{"totalAssets":{"text":"4,961.25"},"holdIncome":{"text":"-138.75"}},"fundData":{"fundList":[{"productList":[{"skuId":"1022184","fundCode":"022184","productName":"\(name)","totalAmount":{"text":"4,961.25"},"holdIncome":{"text":"-138.75"},"transactionTip":{"text":"交易：2笔买入中合计1100.00元"}}]}]}}}}
+        """
+        let tradeOrderResponse = """
+        {"resultCode":0,"resultData":{"data":{"tradeOrderVoList":[
+          {"orderId":"jd-022184-yesterday-1000","fundCode":"022184","productId":"1022184","productName":"\(name)","tradeTypeCode":"TRANSFER_IN","allAmount":"1000.00","bizTime":"2026-07-20 10:00:00","statusCode":"PAY_SUCC","statusName":"支付成功"},
+          {"orderId":"jd-022184-today-100","fundCode":"022184","productId":"1022184","productName":"\(name)","tradeTypeCode":"TRANSFER_IN","allAmount":"100.00","bizTime":"2026-07-21 10:00:00","statusCode":"PAY_SUCC","statusName":"支付成功"}
+        ]}}}
+        """
+        let responses = [
+            JDFinanceHoldingsService.endpoint.absoluteString: holdingsResponse,
+            JDFinanceHoldingsService.tradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            JDFinanceHoldingsService.legacyTradeOrderListEndpoint.absoluteString: tradeOrderResponse,
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: code,
+                name: name,
+                netValueDate: "2026-07-20",
+                netValue: netValue,
+                estimatedNetValue: netValue,
+                growthRate: 0,
+                estimateTime: "2026-07-21 15:00"
+            )
+        ]
+        MockURLProtocol.responseStore.set(responses.mapValues { Data($0.utf8) })
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let quoteService = FundQuoteService(session: session)
+        let syncStore = JDFinanceHoldingsSyncStore(
+            service: JDFinanceHoldingsService(session: session),
+            codeResolver: JDFinanceFundCodeResolver(quoteService: quoteService),
+            now: { now }
+        )
+        let portfolioStore = PortfolioStore(
+            dataDirectory: tempDirectory,
+            quoteService: quoteService,
+            now: { now }
+        )
+        let fund = FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-20 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: -138.75,
+            holdingRate: -2.775,
+            confirmedHoldingIncome: -138.75,
+            confirmedHoldingRate: -2.775,
+            currentAmount: localConfirmedAmount,
+            status: .holding,
+            isUpdated: false,
+            isIncomeActive: true,
+            migratedShares: localShares,
+            migratedCost: localPrincipal / localShares,
+            migratedPrincipal: localPrincipal,
+            incomeStartDate: "2026-07-20",
+            positionMode: .amount,
+            positionDate: "2026-07-20",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "022184-existing-position",
+                    shares: localShares,
+                    cost: localPrincipal / localShares,
+                    principal: localPrincipal,
+                    incomeStartDate: "2026-07-20",
+                    positionDate: "2026-07-20",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        try seedPortfolio(
+            jdPortfolio(funds: [fund], records: [], now: now),
+            into: portfolioStore,
+            directory: tempDirectory
+        )
+
+        await syncStore.synchronize(
+            portfolioStore: portfolioStore,
+            cookieHeader: "pt_key=abc; pt_pin=test"
+        )
+
+        XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), [code])
+        XCTAssertEqual(syncStore.preview?.importablePendingTradeCount, 2)
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: true,
+            importPending: true
+        )
+
+        let firstAppliedSnapshot = portfolioStore.snapshot
+        let syncedFund = try XCTUnwrap(firstAppliedSnapshot.funds.first { $0.code == code })
+        XCTAssertEqual(syncedFund.currentAmount ?? 0, localConfirmedAmount, accuracy: 0.01)
+        XCTAssertEqual(syncedFund.syncedPendingBuyAmount ?? 0, 100, accuracy: 0.01)
+        XCTAssertEqual(firstAppliedSnapshot.pendingTrades?.map(\.amount), [100])
+        XCTAssertEqual(firstAppliedSnapshot.pendingCount, 1)
+        XCTAssertTrue(syncStore.preview?.changedHoldings.isEmpty == true)
+        XCTAssertTrue(syncStore.preview?.importablePendingNotices.isEmpty == true)
+
+        let fundRecords = (firstAppliedSnapshot.tradeRecords ?? []).filter { $0.code == code }
+        XCTAssertEqual(fundRecords.filter { $0.isReconciliationBaseline == true }.count, 1)
+        XCTAssertEqual(fundRecords.filter { $0.status == .pending }.compactMap(\.amount), [100])
+        XCTAssertFalse(fundRecords.contains { $0.status == .confirmed && $0.kind == .buy && $0.amount == 1_000 })
+
+        await syncStore.applySelectedHoldings(
+            to: portfolioStore,
+            importNew: false,
+            updateChanged: true,
+            importPending: true
+        )
+
+        XCTAssertEqual(portfolioStore.snapshot, firstAppliedSnapshot)
+        XCTAssertEqual(portfolioStore.snapshot.funds.first?.currentAmount ?? 0, localConfirmedAmount, accuracy: 0.01)
+        XCTAssertEqual(portfolioStore.snapshot.pendingTrades?.map(\.amount), [100])
+        XCTAssertEqual(remoteAmount - (portfolioStore.snapshot.funds.first?.currentAmount ?? 0), 100, accuracy: 0.01)
+    }
+
+    @MainActor
     func testJDFinanceSyncStoreImportsHoldingTransactionTipAsPendingBuyTrade() async throws {
         let now = try chinaDate("2026-07-03 10:00")
         let tempDirectory = FileManager.default.temporaryDirectory
@@ -6089,8 +6222,8 @@ final class FundPulseCoreTests: XCTestCase {
                 confirmedAt: now,
                 failureReason: nil,
                 syncSource: .jdFinance,
-                externalStatus: .waitingExternalConfirmation,
-                waitsForExternalConfirmation: true
+                externalStatus: .externalConfirmed,
+                waitsForExternalConfirmation: false
             ),
             FundTradeRecord(
                 id: "local-confirmed-022184-0715-balance",
@@ -6110,8 +6243,8 @@ final class FundPulseCoreTests: XCTestCase {
                 confirmedAt: now,
                 failureReason: nil,
                 syncSource: .jdFinance,
-                externalStatus: .waitingExternalConfirmation,
-                waitsForExternalConfirmation: true
+                externalStatus: .externalConfirmed,
+                waitsForExternalConfirmation: false
             ),
             FundTradeRecord(
                 id: "local-pending-022184-0716-card",
@@ -14147,6 +14280,212 @@ final class FundPulseCoreTests: XCTestCase {
         let expectedTodayIncome = amount * quote.growthRate / (100 + quote.growthRate)
         XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
         XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testJDFinanceAmountSyncReplacesFundHistoryWithSingleBaseline() async throws {
+        let firstSyncAt = try chinaDate("2026-07-18 16:00")
+        let secondSyncAt = try chinaDate("2026-07-18 16:30")
+        let code = "026210"
+        let name = "平安科技精选混合发起式A"
+        let unrelatedCode = "008998"
+        let unrelatedName = "同泰竞争优势混合C"
+        let fund = FundPosition(
+            code: code,
+            name: name,
+            dateText: "07-18 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: 0,
+            currentAmount: 25_000,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: 12_500,
+            migratedCost: 2,
+            migratedPrincipal: 25_000,
+            incomeStartDate: "2026-07-16",
+            positionMode: .amount,
+            positionDate: "2026-07-16",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "old-initial",
+                    shares: 12_500,
+                    cost: 2,
+                    principal: 25_000,
+                    incomeStartDate: "2026-07-16",
+                    positionDate: "2026-07-16",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let unrelatedFund = FundPosition(
+            code: unrelatedCode,
+            name: unrelatedName,
+            dateText: "07-18 15:00",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingRate: 0,
+            currentAmount: 3_000,
+            status: .holding,
+            isUpdated: true,
+            isIncomeActive: true,
+            migratedShares: 3_000,
+            migratedCost: 1,
+            migratedPrincipal: 3_000,
+            incomeStartDate: "2026-07-16",
+            positionMode: .amount,
+            positionDate: "2026-07-16",
+            positionTimeType: .before15,
+            lots: [
+                FundPositionLot(
+                    id: "unrelated-initial",
+                    shares: 3_000,
+                    cost: 1,
+                    principal: 3_000,
+                    incomeStartDate: "2026-07-16",
+                    positionDate: "2026-07-16",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let oldInitial = FundTradeRecord(
+            id: "old-initial",
+            kind: .newFund,
+            status: .confirmed,
+            code: code,
+            name: name,
+            mode: .amount,
+            amount: 23_500,
+            shares: nil,
+            confirmedShares: 11_750,
+            price: 2,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: firstSyncAt.addingTimeInterval(-172_800),
+            confirmedAt: firstSyncAt.addingTimeInterval(-172_800),
+            failureReason: nil
+        )
+        let oldBuy = FundTradeRecord(
+            id: "old-buy",
+            kind: .buy,
+            status: .confirmed,
+            code: code,
+            name: name,
+            mode: .amount,
+            amount: 1_000,
+            shares: nil,
+            confirmedShares: 500,
+            price: 2,
+            tradeDate: "2026-07-17",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-17",
+            createdAt: firstSyncAt.addingTimeInterval(-86_400),
+            confirmedAt: firstSyncAt.addingTimeInterval(-86_400),
+            failureReason: nil
+        )
+        let oldPendingBuy = FundTradeRecord(
+            id: "old-pending-buy",
+            kind: .buy,
+            status: .pending,
+            code: code,
+            name: name,
+            mode: .amount,
+            amount: 500,
+            shares: nil,
+            confirmedShares: nil,
+            price: nil,
+            tradeDate: "2026-07-18",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-18",
+            createdAt: firstSyncAt.addingTimeInterval(-3_600),
+            confirmedAt: nil,
+            failureReason: nil
+        )
+        let unrelatedInitial = FundTradeRecord(
+            id: "unrelated-initial",
+            kind: .newFund,
+            status: .confirmed,
+            code: unrelatedCode,
+            name: unrelatedName,
+            mode: .amount,
+            amount: 3_000,
+            shares: nil,
+            confirmedShares: 3_000,
+            price: 1,
+            tradeDate: "2026-07-16",
+            tradeTimeType: .before15,
+            acceptedDate: "2026-07-16",
+            createdAt: firstSyncAt.addingTimeInterval(-172_800),
+            confirmedAt: firstSyncAt.addingTimeInterval(-172_800),
+            failureReason: nil
+        )
+        var snapshot = jdPortfolio(
+            funds: [fund, unrelatedFund],
+            records: [oldInitial, oldBuy, oldPendingBuy, unrelatedInitial],
+            now: firstSyncAt
+        )
+        snapshot.pendingCount = 1
+        snapshot.pendingTrades = [
+            FundPendingTrade(
+                id: "pending-old-buy",
+                recordID: oldPendingBuy.id,
+                action: .buy,
+                code: code,
+                mode: .amount,
+                amount: oldPendingBuy.amount,
+                shares: nil,
+                tradeDate: oldPendingBuy.tradeDate,
+                tradeTimeType: oldPendingBuy.tradeTimeType,
+                createdAt: oldPendingBuy.createdAt
+            )
+        ]
+        let store = PortfolioStore(
+            repository: RecordingPortfolioRepository(initialSnapshot: snapshot),
+            quoteService: multiTradeQuoteService([
+                code: (name: name, date: "2026-07-18", netValue: 1.8363),
+                unrelatedCode: (name: unrelatedName, date: "2026-07-18", netValue: 1)
+            ]),
+            now: { secondSyncAt }
+        )
+        store.load()
+
+        try await store.applyAmountPositionSyncUpdates([
+            FundAmountPositionSyncUpdate(
+                code: code,
+                amount: 26_628.86,
+                holdingIncome: 1_100,
+                syncedPendingBuyAmount: nil,
+                syncedAt: firstSyncAt
+            )
+        ])
+        try await store.applyAmountPositionSyncUpdates([
+            FundAmountPositionSyncUpdate(
+                code: code,
+                amount: 26_628.87,
+                holdingIncome: 1_100.01,
+                syncedPendingBuyAmount: nil,
+                syncedAt: secondSyncAt
+            )
+        ])
+
+        let records = try XCTUnwrap(store.snapshot.tradeRecords)
+        let fundRecords = records.filter { $0.code == code }
+        XCTAssertEqual(fundRecords.count, 1)
+        let baseline = try XCTUnwrap(fundRecords.first)
+        XCTAssertEqual(baseline.kind, .newFund)
+        XCTAssertEqual(baseline.status, .confirmed)
+        XCTAssertEqual(baseline.amount ?? 0, 26_628.87, accuracy: 0.0001)
+        XCTAssertEqual(baseline.profit ?? 0, 1_100.01, accuracy: 0.0001)
+        XCTAssertEqual(baseline.createdAt, secondSyncAt)
+        XCTAssertEqual(baseline.syncSource, .jdFinance)
+        XCTAssertEqual(baseline.isReconciliationBaseline, true)
+        XCTAssertFalse(records.contains { ["old-initial", "old-buy", "old-pending-buy"].contains($0.id) })
+        XCTAssertEqual(records.filter { $0.code == unrelatedCode }.map(\.id), ["unrelated-initial"])
+        XCTAssertNil(store.snapshot.pendingTrades)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
     }
 
     @MainActor

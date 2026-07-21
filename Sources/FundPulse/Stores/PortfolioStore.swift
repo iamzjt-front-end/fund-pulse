@@ -310,7 +310,10 @@ final class PortfolioStore {
         return await quoteService.fetchSmartNetValue(code: code, startDate: acceptedDate)
     }
 
-    func applyAmountPositionSyncUpdates(_ updates: [FundAmountPositionSyncUpdate]) async throws {
+    func applyAmountPositionSyncUpdates(
+        _ updates: [FundAmountPositionSyncUpdate],
+        preservingPendingRecordIDs: Set<String> = []
+    ) async throws {
         guard !updates.isEmpty else { return }
 
         for update in updates {
@@ -367,6 +370,10 @@ final class PortfolioStore {
             fund.syncedPendingBuyDate = syncedPendingBuyAmount > 0 ? tradeDate : nil
 
             snapshot.funds[index] = fund
+            resetTradeHistoryForEditedFund(
+                codes: Set([code]),
+                preservingRecordIDs: preservingPendingRecordIDs
+            )
 
             var records = snapshot.tradeRecords ?? []
             records.append(FundTradeRecord(
@@ -3462,14 +3469,24 @@ final class PortfolioStore {
         return roundedStoredShares(lhs) == roundedStoredShares(rhs)
     }
 
-    private func resetTradeHistoryForEditedFund(codes: Set<String>) {
+    private func resetTradeHistoryForEditedFund(
+        codes: Set<String>,
+        preservingRecordIDs: Set<String> = []
+    ) {
         let normalizedCodes = Set(codes.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
         guard !normalizedCodes.isEmpty else { return }
 
         var removedRecordIDs = Set<String>()
         var removedConversionIDs = Set<String>()
+        let preservedConversionIDs = Set((snapshot.tradeRecords ?? []).compactMap { record in
+            preservingRecordIDs.contains(record.id) ? record.conversionID : nil
+        })
         if var records = snapshot.tradeRecords {
-            for record in records where normalizedCodes.contains(record.code) || record.linkedCode.map(normalizedCodes.contains) == true {
+            for record in records
+            where !preservingRecordIDs.contains(record.id)
+                && record.conversionID.map(preservedConversionIDs.contains) != true
+                && (normalizedCodes.contains(record.code) || record.linkedCode.map(normalizedCodes.contains) == true)
+            {
                 removedRecordIDs.insert(record.id)
                 if let conversionID = record.conversionID {
                     removedConversionIDs.insert(conversionID)
@@ -3477,7 +3494,12 @@ final class PortfolioStore {
             }
 
             records.removeAll { record in
-                normalizedCodes.contains(record.code)
+                if preservingRecordIDs.contains(record.id)
+                    || record.conversionID.map(preservedConversionIDs.contains) == true
+                {
+                    return false
+                }
+                return normalizedCodes.contains(record.code)
                     || record.linkedCode.map(normalizedCodes.contains) == true
                     || record.conversionID.map(removedConversionIDs.contains) == true
             }
@@ -3485,7 +3507,12 @@ final class PortfolioStore {
         }
 
         snapshot.pendingTrades?.removeAll { pendingTrade in
-            normalizedCodes.contains(pendingTrade.code)
+            if preservingRecordIDs.contains(pendingTrade.id)
+                || pendingTrade.recordID.map(preservingRecordIDs.contains) == true
+            {
+                return false
+            }
+            return normalizedCodes.contains(pendingTrade.code)
                 || pendingTrade.recordID.map(removedRecordIDs.contains) == true
         }
         if snapshot.pendingTrades?.isEmpty == true {
@@ -3493,7 +3520,10 @@ final class PortfolioStore {
         }
 
         snapshot.pendingConversions?.removeAll { pendingConversion in
-            normalizedCodes.contains(pendingConversion.fromCode)
+            if preservedConversionIDs.contains(pendingConversion.id) {
+                return false
+            }
+            return normalizedCodes.contains(pendingConversion.fromCode)
                 || normalizedCodes.contains(pendingConversion.toCode)
                 || removedConversionIDs.contains(pendingConversion.id)
         }

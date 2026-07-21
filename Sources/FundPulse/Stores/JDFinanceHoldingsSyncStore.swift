@@ -224,7 +224,37 @@ final class JDFinanceHoldingsSyncStore {
                         )
                     }
                 }
-                try await stagingStore.applyAmountPositionSyncUpdates(updates)
+                let updatedCodes = Set(updates.map { update in
+                    update.code.trimmingCharacters(in: .whitespacesAndNewlines)
+                })
+                let importedPendingCodes = Set(pendingCandidates.map(\.code))
+                let pendingRecordsToPreserve = (stagingStore.snapshot.tradeRecords ?? []).filter { record in
+                    updatedCodes.contains(record.code)
+                        && record.status == .pending
+                        && record.syncSource == .jdFinance
+                }
+                let pendingBuyAmountsByCode = pendingRecordsToPreserve.reduce(into: [String: Double]()) { result, record in
+                    guard record.kind == .buy || record.kind == .newFund,
+                          record.mode == .amount,
+                          let amount = record.amount,
+                          amount > 0
+                    else {
+                        return
+                    }
+                    result[record.code, default: 0] += amount
+                }
+                let reconciledUpdates = updates.map { update in
+                    let code = update.code.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard importedPendingCodes.contains(code) else { return update }
+                    var reconciledUpdate = update
+                    let pendingBuyAmount = pendingBuyAmountsByCode[code] ?? 0
+                    reconciledUpdate.syncedPendingBuyAmount = pendingBuyAmount > 0 ? pendingBuyAmount : nil
+                    return reconciledUpdate
+                }
+                try await stagingStore.applyAmountPositionSyncUpdates(
+                    reconciledUpdates,
+                    preservingPendingRecordIDs: Set(pendingRecordsToPreserve.map(\.id))
+                )
                 for candidate in unrecordedCandidates {
                     try await self.importUnrecordedOrder(candidate, to: stagingStore)
                     try stagingStore.markJDFinanceOrderRepresented(
