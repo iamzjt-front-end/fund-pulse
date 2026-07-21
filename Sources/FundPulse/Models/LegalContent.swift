@@ -22,15 +22,8 @@ enum LegalContent {
 
     static let title = "隐私与免责声明"
     static let subtitle = "数据使用、第三方服务与风险说明"
-    static let updatedAtText = "更新日期：2026 年 7 月 15 日"
+    static let updatedAtText = "更新日期：2026 年 7 月 21 日"
     static let introduction = "Fund Pulse 是一款本地优先的基金持仓与行情查看工具。请在使用前阅读并理解以下说明。"
-
-    static let privacyPolicyURL = URL(
-        string: "https://github.com/iamzjt-front-end/fund-pulse/blob/main/PRIVACY.md"
-    )!
-    static let supportURL = URL(
-        string: "https://github.com/iamzjt-front-end/fund-pulse/issues"
-    )!
 
     static let sections: [Section] = [
         Section(
@@ -74,6 +67,18 @@ enum LegalContent {
             ]
         ),
         Section(
+            id: "voluntary-support",
+            title: "自愿支持作者",
+            paragraphs: [
+                "“设置 > 支持”会切换展示完整的微信与支付宝收款海报；海报及其中的二维码是随应用分发的本地静态资源。Fund Pulse 不会因为你查看该区域或扫码而向自有服务器发送信息。",
+                "“设置 > 关于 > 联系作者”展示的微信个人二维码同样是本地静态资源，查看本身不会触发网络请求；扫码和添加好友由微信处理。"
+            ],
+            bullets: [
+                "支持完全自愿，不会解锁额外功能，也不提供赞助者权益。",
+                "支付由微信或支付宝处理；Fund Pulse 不读取、上传或保存支付信息。"
+            ]
+        ),
+        Section(
             id: "collection-boundaries",
             title: "我们不收集什么",
             bullets: [
@@ -102,7 +107,7 @@ enum LegalContent {
             id: "third-party-independence",
             title: "第三方独立性",
             paragraphs: [
-                "Fund Pulse 是独立开发的第三方工具，与东方财富、腾讯、同花顺、京东、GitHub、基金公司及销售机构不存在隶属、代理、认可或合作关系。第三方名称和商标归各自权利人所有。"
+                "Fund Pulse 是独立开发的第三方工具，与东方财富、腾讯、同花顺、京东、GitHub、微信、支付宝、基金公司及销售机构不存在隶属、代理、认可或合作关系。第三方名称和商标归各自权利人所有。"
             ]
         )
     ]

@@ -240,6 +240,55 @@ struct PanelSection<Content: View>: View {
     }
 }
 
+struct PanelLinkButton: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    var tint: Color = PanelDesign.accent
+    var trailingSystemImage = "arrow.up.right"
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: trailingSystemImage)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .frame(minHeight: 42)
+            .background(
+                PanelDesign.inputBackground,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay(PanelDesign.border(cornerRadius: 8))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .focusEffectDisabled()
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityHint(subtitle)
+    }
+}
+
 struct PanelSegmentedPicker<Value: Hashable & Identifiable>: View {
     let values: [Value]
     @Binding var selection: Value

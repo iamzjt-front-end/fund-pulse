@@ -18,6 +18,7 @@ APP_BINARY="$APP_MACOS/$EXECUTABLE_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_VERSION="$(node -p "require('./package.json').version")"
 APP_ICON="$ROOT_DIR/build/icon.icns"
+RESOURCE_BUNDLE_NAME="FundPulse_FundPulse.bundle"
 
 cd "$ROOT_DIR"
 
@@ -36,16 +37,24 @@ pkill -x "$EXECUTABLE_NAME" >/dev/null 2>&1 || true
 
 if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
   swift build -c release
-  BUILD_BINARY="$(swift build -c release --show-bin-path)/$EXECUTABLE_NAME"
+  BUILD_BIN_DIR="$(swift build -c release --show-bin-path)"
 else
   swift build
-  BUILD_BINARY="$(swift build --show-bin-path)/$EXECUTABLE_NAME"
+  BUILD_BIN_DIR="$(swift build --show-bin-path)"
+fi
+BUILD_BINARY="$BUILD_BIN_DIR/$EXECUTABLE_NAME"
+RESOURCE_BUNDLE="$BUILD_BIN_DIR/$RESOURCE_BUNDLE_NAME"
+
+if [[ ! -d "$RESOURCE_BUNDLE" ]]; then
+  echo "error: SwiftPM resource bundle not found: $RESOURCE_BUNDLE" >&2
+  exit 1
 fi
 
 rm -rf "$DIST_DIR/FundPulse.app"
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp -R "$RESOURCE_BUNDLE" "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME"
 chmod +x "$APP_BINARY"
 if [[ -f "$APP_ICON" ]]; then
   cp "$APP_ICON" "$APP_RESOURCES/FundPulse.icns"
@@ -119,6 +128,12 @@ case "$MODE" in
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
+    for resource in alipay-support.png wechat-support.png; do
+      if ! find "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME" -type f -name "$resource" -print -quit | grep -q .; then
+        echo "error: bundled support resource not found: $resource" >&2
+        exit 1
+      fi
+    done
     open_app
     sleep 1
     pgrep -x "$EXECUTABLE_NAME" >/dev/null

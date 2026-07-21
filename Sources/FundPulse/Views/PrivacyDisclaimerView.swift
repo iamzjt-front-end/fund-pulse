@@ -59,62 +59,24 @@ struct PrivacyDisclaimerView: View {
     private var linksSection: some View {
         PanelSection(title: "相关链接") {
             VStack(spacing: 7) {
-                linkButton(
+                PanelLinkButton(
                     title: "在线隐私政策",
                     subtitle: "查看仓库中的最新版本",
                     systemImage: "doc.text",
-                    url: LegalContent.privacyPolicyURL
+                    action: {
+                        onOpenURL(AppExternalLinks.privacyPolicyURL)
+                    }
                 )
-                linkButton(
-                    title: "支持与问题反馈",
-                    subtitle: "前往 GitHub Issues",
+                PanelLinkButton(
+                    title: "问题反馈",
+                    subtitle: "选择 GitHub Issue 模板",
                     systemImage: "questionmark.circle",
-                    url: LegalContent.supportURL
+                    action: {
+                        onOpenURL(AppExternalLinks.issueChooserURL)
+                    }
                 )
             }
         }
-    }
-
-    private func linkButton(
-        title: String,
-        subtitle: String,
-        systemImage: String,
-        url: URL
-    ) -> some View {
-        Button {
-            onOpenURL(url)
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(PanelDesign.accent)
-                    .frame(width: 20)
-
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 9)
-            .frame(minHeight: 42)
-            .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(PanelDesign.border(cornerRadius: 8))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .focusEffectDisabled()
-        .help(title)
-        .accessibilityLabel(title)
     }
 }
 

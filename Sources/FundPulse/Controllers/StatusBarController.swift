@@ -500,6 +500,9 @@ final class StatusBarController: NSObject {
             route = .sampleExperience(origin: .settings)
         case "privacy":
             route = .privacyDisclaimer(origin: .settings)
+        case "support":
+            settingsSectionSession.select(.support)
+            route = .settings
         case "performance":
             holdingPerformancePage = .ranking
             route = .portfolioPerformance
@@ -1030,6 +1033,9 @@ final class StatusBarController: NSObject {
                 },
                 onOpenOnboarding: { [weak self] in
                     self?.showChildPanel(.onboarding(origin: .settings))
+                },
+                onOpenExternalURL: { url in
+                    NSWorkspace.shared.open(url)
                 },
                 initialSection: settingsSectionSession.selectedSection,
                 onSectionChanged: { [weak self] section in

@@ -13,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "FundPulse",
-            path: "Sources/FundPulse"
+            path: "Sources/FundPulse",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "FundPulseTests",

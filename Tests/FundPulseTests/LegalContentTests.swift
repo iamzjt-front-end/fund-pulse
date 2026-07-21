@@ -5,12 +5,12 @@ import XCTest
 final class LegalContentTests: XCTestCase {
     func testPublicLinksUseRepositoryPrivacyAndIssuePages() {
         XCTAssertEqual(
-            LegalContent.privacyPolicyURL.absoluteString,
+            AppExternalLinks.privacyPolicyURL.absoluteString,
             "https://github.com/iamzjt-front-end/fund-pulse/blob/main/PRIVACY.md"
         )
         XCTAssertEqual(
-            LegalContent.supportURL.absoluteString,
-            "https://github.com/iamzjt-front-end/fund-pulse/issues"
+            AppExternalLinks.issueChooserURL.absoluteString,
+            "https://github.com/iamzjt-front-end/fund-pulse/issues/new/choose"
         )
     }
 
@@ -36,6 +36,13 @@ final class LegalContentTests: XCTestCase {
         XCTAssertTrue(text.contains("自有账号"))
         XCTAssertTrue(text.contains("广告"))
         XCTAssertTrue(text.contains("分析 SDK"))
+        XCTAssertTrue(text.contains("二维码"))
+        XCTAssertTrue(text.contains("本地静态资源"))
+        XCTAssertTrue(text.contains("微信个人二维码"))
+        XCTAssertTrue(text.contains("查看本身不会触发网络请求"))
+        XCTAssertTrue(text.contains("支持完全自愿"))
+        XCTAssertTrue(text.contains("不会解锁额外功能"))
+        XCTAssertTrue(text.contains("不读取、上传或保存支付信息"))
     }
 
     func testJDFinanceDisclosureIncludesOptionalHistoricalIncomeSync() throws {

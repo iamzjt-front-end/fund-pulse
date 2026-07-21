@@ -45,6 +45,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case display
     case refreshAndReminders
     case data
+    case support
     case about
 
     var id: String { rawValue }
@@ -57,6 +58,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             "提醒"
         case .data:
             "数据"
+        case .support:
+            "支持"
         case .about:
             "关于"
         }
@@ -86,6 +89,7 @@ struct SettingsView: View {
     let onOpenJDFinanceSync: (() -> Void)?
     let onOpenPrivacyDisclaimer: (() -> Void)?
     let onOpenOnboarding: (() -> Void)?
+    let onOpenExternalURL: ((URL) -> Bool)?
     let onSectionChanged: ((SettingsSection) -> Void)?
     let onClose: (() -> Void)?
 
@@ -107,6 +111,7 @@ struct SettingsView: View {
     @State private var clearHoldingsStatusMessage: String?
     @State private var isClearingJDFinanceSession = false
     @State private var jdFinanceSessionStatusMessage: String?
+    @State private var feedbackStatusMessage: String?
     @Namespace private var appearanceModeSelectionNamespace
     @Namespace private var menuBarContentModeSelectionNamespace
     @Namespace private var menuBarDisplayModeSelectionNamespace
@@ -122,6 +127,7 @@ struct SettingsView: View {
         onOpenJDFinanceSync: (() -> Void)? = nil,
         onOpenPrivacyDisclaimer: (() -> Void)? = nil,
         onOpenOnboarding: (() -> Void)? = nil,
+        onOpenExternalURL: ((URL) -> Bool)? = nil,
         initialSection: SettingsSection = .display,
         onSectionChanged: ((SettingsSection) -> Void)? = nil,
         onClose: (() -> Void)? = nil
@@ -136,6 +142,7 @@ struct SettingsView: View {
         self.onOpenJDFinanceSync = onOpenJDFinanceSync
         self.onOpenPrivacyDisclaimer = onOpenPrivacyDisclaimer
         self.onOpenOnboarding = onOpenOnboarding
+        self.onOpenExternalURL = onOpenExternalURL
         self.onSectionChanged = onSectionChanged
         self.onClose = onClose
         _selectedSection = State(initialValue: initialSection)
@@ -256,6 +263,8 @@ struct SettingsView: View {
             refreshAndReminderSettingsContent
         case .data:
             dataSettingsContent
+        case .support:
+            supportSettingsContent
         case .about:
             aboutSettingsContent
         }
@@ -316,6 +325,12 @@ struct SettingsView: View {
         }
     }
 
+    private var supportSettingsContent: some View {
+        PanelSection(title: "支持作者") {
+            supportAuthorSection
+        }
+    }
+
     private var settingsFooter: some View {
         plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
             NSApp.terminate(nil)
@@ -323,8 +338,18 @@ struct SettingsView: View {
     }
 
     private var aboutSettingsContent: some View {
-        PanelSection(title: "关于与隐私") {
-            aboutAndPrivacySection
+        VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "建议反馈") {
+                feedbackSection
+            }
+
+            PanelSection(title: "联系作者") {
+                contactAuthorSection
+            }
+
+            PanelSection(title: "关于与隐私") {
+                aboutAndPrivacySection
+            }
         }
     }
 
@@ -608,37 +633,85 @@ struct SettingsView: View {
     }
 
     private var aboutAndPrivacySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
+        VStack(alignment: .leading, spacing: 7) {
+            PanelLinkButton(
+                title: "隐私与免责声明",
+                subtitle: "查看本地数据、第三方服务与风险说明",
+                systemImage: "hand.raised",
+                trailingSystemImage: "chevron.right"
+            ) {
                 onOpenPrivacyDisclaimer?()
-            } label: {
-                PanelButtonLabel(
-                    title: "隐私与免责声明",
-                    systemImage: "hand.raised",
-                    style: .secondary
-                )
             }
-            .buttonStyle(.plain)
-            .focusable(false)
             .disabled(onOpenPrivacyDisclaimer == nil)
 
-            Button {
+            PanelLinkButton(
+                title: "重新查看使用引导",
+                subtitle: "重新浏览首次使用说明",
+                systemImage: "sparkles.rectangle.stack",
+                trailingSystemImage: "chevron.right"
+            ) {
                 onOpenOnboarding?()
-            } label: {
-                PanelButtonLabel(
-                    title: "重新查看使用引导",
-                    systemImage: "sparkles.rectangle.stack",
-                    style: .secondary
-                )
             }
-            .buttonStyle(.plain)
-            .focusable(false)
             .disabled(onOpenOnboarding == nil)
         }
-        .padding(9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var supportAuthorSection: some View {
+        SupportAuthorSection()
+    }
+
+    private var feedbackSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            PanelLinkButton(
+                title: "报告问题",
+                subtitle: "使用 GitHub Bug 模板",
+                systemImage: "ladybug"
+            ) {
+                openExternalLink(
+                    AppExternalLinks.bugReportURL,
+                    fallbackText: AppExternalLinks.bugReportURL.absoluteString,
+                    failureMessage: "无法打开浏览器，链接已复制。"
+                )
+            }
+
+            PanelLinkButton(
+                title: "提出建议",
+                subtitle: "使用 GitHub Feature 模板",
+                systemImage: "lightbulb"
+            ) {
+                openExternalLink(
+                    AppExternalLinks.featureRequestURL,
+                    fallbackText: AppExternalLinks.featureRequestURL.absoluteString,
+                    failureMessage: "无法打开浏览器，链接已复制。"
+                )
+            }
+
+            externalLinkStatusMessage(feedbackStatusMessage)
+        }
+    }
+
+    private var contactAuthorSection: some View {
+        wechatContactQRCode
+    }
+
+    private var wechatContactQRCode: some View {
+        Group {
+            if let url = ContactAuthorResources.wechatQRCodeURL(),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.none)
+                    .scaledToFit()
+            } else {
+                ContentUnavailableView(
+                    "微信联系二维码不可用",
+                    systemImage: "qrcode",
+                    description: Text("请重新安装应用后再试。")
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: 360)
+        .accessibilityLabel("微信联系二维码")
     }
 
     private var canClearHoldings: Bool {
@@ -1472,6 +1545,43 @@ struct SettingsView: View {
         Task {
             await onCheckUpdate?()
         }
+    }
+
+    private func openExternalLink(
+        _ url: URL,
+        fallbackText: String,
+        failureMessage: String
+    ) {
+        let outcome = AppExternalLinkAction.perform(
+            url: url,
+            fallbackText: fallbackText,
+            failureMessage: failureMessage,
+            open: { onOpenExternalURL?($0) ?? false },
+            copy: copyToPasteboard
+        )
+
+        switch outcome {
+        case .opened:
+            feedbackStatusMessage = nil
+        case .copied(let message):
+            feedbackStatusMessage = message
+        }
+    }
+
+    @ViewBuilder
+    private func externalLinkStatusMessage(_ message: String?) -> some View {
+        if let message {
+            Label(message, systemImage: "doc.on.clipboard")
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(message)
+        }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private func clearAllHoldings() {
