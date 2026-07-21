@@ -82,7 +82,7 @@ struct FundPosition: Codable, Identifiable, Equatable {
     // JD's synced holding amount may include today's buy orders before shares are confirmed.
     var syncedPendingBuyAmount: Double? = nil
     var syncedPendingBuyDate: String? = nil
-    // JD's daily income is the authoritative value returned by the holdings endpoint.
+    // JD's reported daily income is retained as sync metadata; realtime income is calculated locally.
     var syncedTodayIncome: Double? = nil
     var syncedTodayIncomeDate: String? = nil
     var zdfRange: Double? = nil

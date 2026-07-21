@@ -588,7 +588,6 @@ final class PortfolioStore {
                 amount: roundedAmount,
                 syncedAt: syncedAt
             )
-            updatedSnapshot.totalAmount = roundedAmount
         }
 
         let syncedPendingBuyDate = DateOnlyFormatter.string(from: syncedAt)

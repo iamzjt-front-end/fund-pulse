@@ -2228,7 +2228,7 @@ final class FundPulseCoreTests: XCTestCase {
         await olderTask.value
         await newerTask.value
 
-        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 200)
+        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 0)
         XCTAssertEqual(portfolioStore.snapshot.syncedAccountTotal?.amount, 200)
         XCTAssertEqual(repository.savedSnapshots.count, 1)
         XCTAssertFalse(syncStore.isSyncing)
@@ -2392,7 +2392,7 @@ final class FundPulseCoreTests: XCTestCase {
             portfolioStore: portfolioStore,
             cookieHeader: "pt_key=abc; pt_pin=test"
         )
-        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 171_461.84, accuracy: 0.0001)
+        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 18_900, accuracy: 0.0001)
         XCTAssertEqual(portfolioStore.snapshot.syncedAccountTotal?.source, .jdFinance)
         XCTAssertEqual(portfolioStore.snapshot.syncedAccountTotal?.amount ?? 0, 171_461.84, accuracy: 0.0001)
         XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), ["024424"])
@@ -2408,7 +2408,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(fund.currentAmount ?? 0, 19_907.79, accuracy: 0.01)
         XCTAssertEqual(fund.holdingIncome ?? 0, -734.13, accuracy: 0.01)
         XCTAssertEqual(fund.migratedPrincipal ?? 0, 20_641.92, accuracy: 0.01)
-        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 171_461.84, accuracy: 0.0001)
+        XCTAssertEqual(portfolioStore.snapshot.totalAmount, 19_907.79, accuracy: 0.01)
         XCTAssertEqual(syncStore.preview?.changedHoldings.map(\.code), [])
         XCTAssertEqual(syncStore.statusMessage, "已同步 1 项数据")
     }
@@ -6671,7 +6671,8 @@ final class FundPulseCoreTests: XCTestCase {
         }
 
         XCTAssertEqual(repository.savedSnapshots.count, 1)
-        XCTAssertEqual(store.snapshot.totalAmount, 456)
+        XCTAssertEqual(store.snapshot.totalAmount, 0)
+        XCTAssertEqual(store.snapshot.syncedAccountTotal?.amount, 456)
     }
 
     @MainActor
@@ -13427,7 +13428,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.totalAmount, shares * quote.netValue, accuracy: 0.0001)
     }
 
-    func testPortfolioCalculatorPreservesSyncedAccountTotalDuringQuoteRefresh() throws {
+    func testPortfolioCalculatorUsesLocalHoldingSumInsteadOfSyncedAccountTotal() throws {
         let now = try chinaDate("2026-07-08 11:52")
         let syncedAt = try chinaDate("2026-07-08 10:30")
         let snapshot = PortfolioSnapshot(
@@ -13452,6 +13453,20 @@ final class FundPulseCoreTests: XCTestCase {
                     migratedCost: 1,
                     migratedPrincipal: 100,
                     incomeStartDate: "2026-07-07"
+                ),
+                FundPosition(
+                    code: "018178",
+                    name: "华夏科创50指数增强C",
+                    dateText: "07-07 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    migratedShares: 200,
+                    migratedCost: 1,
+                    migratedPrincipal: 200,
+                    incomeStartDate: "2026-07-07"
                 )
             ],
             migration: nil,
@@ -13470,15 +13485,25 @@ final class FundPulseCoreTests: XCTestCase {
             estimateTime: "2026-07-08 11:30",
             netValueDate: "2026-07-07"
         )
+        let localQuote = FundQuote(
+            code: "018178",
+            name: "华夏科创50指数增强C",
+            netValue: 1.2,
+            estimatedNetValue: 1.2,
+            growthRate: 0,
+            estimateTime: "2026-07-08 11:30",
+            netValueDate: "2026-07-07"
+        )
 
         let result = PortfolioCalculator.applyingQuotes(
             to: snapshot,
-            quotes: ["022485": quote],
+            quotes: ["022485": quote, "018178": localQuote],
             now: now
         )
 
         XCTAssertEqual(result.funds[0].currentAmount ?? 0, 110, accuracy: 0.0001)
-        XCTAssertEqual(result.totalAmount, 306_651.24, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[1].currentAmount ?? 0, 240, accuracy: 0.0001)
+        XCTAssertEqual(result.totalAmount, 350, accuracy: 0.0001)
         XCTAssertEqual(result.syncedAccountTotal?.source, .jdFinance)
         XCTAssertEqual(result.syncedAccountTotal?.amount ?? 0, 306_651.24, accuracy: 0.0001)
     }
@@ -13853,7 +13878,7 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.todayIncomeRate, quote.growthRate, accuracy: 0.0001)
     }
 
-    func testPortfolioCalculatorUsesSameDayJDFinanceTodayIncomeWhenAvailable() throws {
+    func testPortfolioCalculatorIgnoresSameDayJDFinanceTodayIncomeAndUsesLocalQuote() throws {
         let now = try chinaDate("2026-07-16 16:00")
         let amount = 10_000.0
         let netValue = 0.9
@@ -13918,8 +13943,79 @@ final class FundPulseCoreTests: XCTestCase {
             now: now
         )
 
-        XCTAssertEqual(result.funds[0].todayIncome, -647.32, accuracy: 0.0001)
-        XCTAssertEqual(result.todayIncome, -647.32, accuracy: 0.0001)
+        let expectedTodayIncome = amount * quote.growthRate / (100 + quote.growthRate)
+        XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].syncedTodayIncome ?? 0, -647.32, accuracy: 0.0001)
+    }
+
+    func testPortfolioCalculatorCalculatesRealtimeIncomeForJDSyncedManualAmountWhenSyncedIncomeIsZero() throws {
+        let now = try chinaDate("2026-07-16 14:30")
+        let syncedAmount = 591.01
+        let pendingBuyAmount = 100.0
+        let growthRate = 5.83
+        let fund = FundPosition(
+            code: "022365",
+            name: "永赢科技智选混合发起C",
+            dateText: "07-16 14:20",
+            todayIncome: 0,
+            todayRate: 0,
+            holdingIncome: 0,
+            holdingRate: 0,
+            currentAmount: syncedAmount,
+            status: .holding,
+            isUpdated: false,
+            isIncomeActive: true,
+            migratedShares: 165.23,
+            migratedCost: 3.5769,
+            migratedPrincipal: syncedAmount,
+            incomeStartDate: "2026-07-15",
+            positionMode: .amount,
+            positionDate: "2026-07-15",
+            positionTimeType: .before15,
+            pendingAmount: syncedAmount,
+            syncedPendingBuyAmount: pendingBuyAmount,
+            syncedPendingBuyDate: "2026-07-16",
+            syncedTodayIncome: 0,
+            syncedTodayIncomeDate: "2026-07-16",
+            memo: "京东金融同步导入",
+            lots: [
+                FundPositionLot(
+                    id: "022365-jd-sync",
+                    shares: 165.23,
+                    cost: 3.5769,
+                    principal: syncedAmount,
+                    incomeStartDate: "2026-07-15",
+                    positionDate: "2026-07-15",
+                    positionTimeType: .before15
+                )
+            ]
+        )
+        let snapshot = jdPortfolio(funds: [fund], records: [], now: now)
+        let quote = FundQuote(
+            code: fund.code,
+            name: fund.name,
+            netValue: 3.5769,
+            estimatedNetValue: 3.7854,
+            growthRate: growthRate,
+            estimateTime: "2026-07-16 14:20",
+            netValueDate: "2026-07-15"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: [fund.code: quote],
+            now: now
+        )
+
+        let confirmedAmount = syncedAmount - pendingBuyAmount
+        let expectedTodayIncome = confirmedAmount * growthRate / 100
+        XCTAssertEqual(result.funds[0].currentAmount ?? 0, confirmedAmount, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, growthRate, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].todayRate, growthRate, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].syncedTodayIncome ?? -1, 0, accuracy: 0.0001)
     }
 
     func testPortfolioCalculatorKeepsOrdinaryPendingBuyInTodayIncome() throws {
