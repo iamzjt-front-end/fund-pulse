@@ -23,9 +23,9 @@
   <text x="535" y="94" fill="#9aa5b3" font-size="12" font-weight="500">Stars</text>
   <text x="635" y="72" fill="#ff6a78" font-size="26" font-weight="700">+5</text>
   <text x="635" y="94" fill="#9aa5b3" font-size="12" font-weight="500">最近 7 天</text>
-  <text x="755" y="72" fill="#ff6a78" font-size="26" font-weight="700">+8</text>
+  <text x="755" y="72" fill="#ff6a78" font-size="26" font-weight="700">+7</text>
   <text x="755" y="94" fill="#9aa5b3" font-size="12" font-weight="500">最近 30 天</text>
-  <text x="885" y="72" fill="#f4f7fb" font-size="26" font-weight="700">1</text>
+  <text x="885" y="72" fill="#f4f7fb" font-size="26" font-weight="700">2</text>
   <text x="885" y="94" fill="#9aa5b3" font-size="12" font-weight="500">Forks</text>
   <text x="975" y="72" fill="#f4f7fb" font-size="26" font-weight="700">1</text>
   <text x="975" y="94" fill="#9aa5b3" font-size="12" font-weight="500">Contributors</text>
@@ -35,11 +35,11 @@
   <line x1="60" y1="208" x2="1040" y2="208" stroke="#303947" stroke-width="1" stroke-dasharray="4 6"/>
   <line x1="60" y1="274" x2="1040" y2="274" stroke="#303947" stroke-width="1" stroke-dasharray="4 6"/>
   <line x1="60" y1="340" x2="1040" y2="340" stroke="#303947" stroke-width="1"/>
-  <path d="M60.00,340 L60.00,323.50 L296.55,290.50 L1040.00,208.00 L1040.00,340 Z" fill="url(#area-dark)"/>
-  <path d="M60.00,323.50 L296.55,290.50 L1040.00,208.00" fill="none" stroke="url(#brand-dark)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M60.00,340 L60.00,323.50 L274.38,290.50 L948.13,208.00 L1040.00,208.00 L1040.00,340 Z" fill="url(#area-dark)"/>
+  <path d="M60.00,323.50 L274.38,290.50 L948.13,208.00 L1040.00,208.00" fill="none" stroke="url(#brand-dark)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   <circle cx="1040.00" cy="208.00" r="6" fill="#11151c" stroke="#ff6a78" stroke-width="4"/>
   <text x="60" y="367" fill="#9aa5b3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">2026-06-22</text>
-  <text x="1040" y="367" text-anchor="end" fill="#9aa5b3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">2026-07-21</text>
+  <text x="1040" y="367" text-anchor="end" fill="#9aa5b3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">2026-07-24</text>
   <circle cx="60" cy="389" r="4" fill="#ff6a78"/>
   <circle cx="72" cy="389" r="4" fill="#34c98a"/>
   <text x="84" y="393" fill="#9aa5b3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="11">由仓库 GitHub 数据每日生成 · 无第三方统计服务</text>
