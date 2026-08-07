@@ -202,6 +202,69 @@ struct FundQuoteService {
     }
 
     private func fetchHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        if let value = try? await fetchCurrentHistoricalNetValue(code: code, date: date),
+           value > 0 {
+            return value
+        }
+
+        if let value = try? await fetchTrendHistoricalNetValue(code: code, date: date),
+           value > 0 {
+            return value
+        }
+
+        // Keep the legacy HTML route as a final compatibility fallback. It is
+        // no longer the primary source because the public endpoint currently
+        // returns HTTP 404, but some mirrored environments may still serve it.
+        return try await fetchLegacyHistoricalNetValue(code: code, date: date)
+    }
+
+    private func fetchCurrentHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        var components = URLComponents(string: "https://api.fund.eastmoney.com/f10/lsjz")!
+        components.queryItems = [
+            URLQueryItem(name: "fundCode", value: code),
+            URLQueryItem(name: "pageIndex", value: "1"),
+            URLQueryItem(name: "pageSize", value: "20"),
+            URLQueryItem(name: "startDate", value: date),
+            URLQueryItem(name: "endDate", value: date)
+        ]
+        guard let url = components.url else {
+            throw QuoteError.invalidResponse
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("https://fundf10.eastmoney.com/", forHTTPHeaderField: "Referer")
+        request.setValue(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+            forHTTPHeaderField: "User-Agent"
+        )
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw QuoteError.invalidResponse
+        }
+
+        let payload = try JSONDecoder().decode(EastmoneyHistoricalNetValueResponse.self, from: data)
+        guard payload.errorCode == 0 else {
+            throw QuoteError.invalidResponse
+        }
+        guard let row = payload.data?.rows?.first(where: { $0.date?.nilIfBlank == date }) else {
+            return nil
+        }
+        let value = row.netValue.doubleValue
+        return value > 0 && value.isFinite ? value : nil
+    }
+
+    private func fetchTrendHistoricalNetValue(code: String, date: String) async throws -> Double? {
+        let points = try await fetchNetValueHistory(code: code)
+        return points.first { point in
+            let pointDate = Date(timeIntervalSince1970: TimeInterval(point.timestamp) / 1000)
+            return DateOnlyFormatter.string(from: pointDate) == date
+        }?.value
+    }
+
+    private func fetchLegacyHistoricalNetValue(code: String, date: String) async throws -> Double? {
         let url = URL(string: "https://fundf10.eastmoney.com/F10DataApi.aspx?type=lsjz&code=\(code)&page=1&per=1&sdate=\(date)&edate=\(date)")!
         var request = URLRequest(url: url)
         request.setValue(
@@ -209,7 +272,12 @@ struct FundQuoteService {
             forHTTPHeaderField: "User-Agent"
         )
 
-        let (data, _) = try await session.data(for: request)
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode)
+        else {
+            throw QuoteError.invalidResponse
+        }
         guard let text = decodedText(data) else {
             throw QuoteError.invalidResponse
         }
@@ -815,6 +883,34 @@ struct FundQuoteService {
 private struct EastmoneyCoreQuoteResponse: Decodable {
     var data: [EastmoneyCoreQuotePayload]?
     var success: Bool?
+}
+
+private struct EastmoneyHistoricalNetValueResponse: Decodable {
+    var data: EastmoneyHistoricalNetValueData?
+    var errorCode: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case data = "Data"
+        case errorCode = "ErrCode"
+    }
+}
+
+private struct EastmoneyHistoricalNetValueData: Decodable {
+    var rows: [EastmoneyHistoricalNetValuePayload]?
+
+    private enum CodingKeys: String, CodingKey {
+        case rows = "LSJZList"
+    }
+}
+
+private struct EastmoneyHistoricalNetValuePayload: Decodable {
+    var date: String?
+    var netValue: LossyString?
+
+    private enum CodingKeys: String, CodingKey {
+        case date = "FSRQ"
+        case netValue = "DWJZ"
+    }
 }
 
 private struct EastmoneyCoreQuotePayload: Decodable {

@@ -8938,6 +8938,203 @@ final class FundPulseCoreTests: XCTestCase {
     }
 
     @MainActor
+    func testJDFinanceOlderPendingBuysConfirmFromCurrentJSONHistoryEndpoint() async throws {
+        let now = try chinaDate("2026-08-07 15:30")
+        let createdAt = try chinaDate("2026-08-07 13:11")
+        let code = "022184"
+        let name = "富国全球科技互联网股票(QDII)C"
+        let acceptedDates = ["2026-08-03", "2026-08-04"]
+        let service = quoteServiceWithMockResponses([
+            "https://fundcomapi.eastmoney.com/mm/newCore/FundCoreDiyNew": Self.coreQuoteResponse(
+                code: code,
+                name: name,
+                netValueDate: "2026-08-05",
+                netValue: 5.3627,
+                estimatedNetValue: 5.2593,
+                growthRate: 0.67,
+                estimateTime: "2026-08-07 14:54"
+            ),
+            "https://api.fund.eastmoney.com/f10/lsjz": """
+            {
+              "Data": {
+                "LSJZList": [
+                  {"FSRQ":"2026-08-05","DWJZ":"5.3627"},
+                  {"FSRQ":"2026-08-04","DWJZ":"5.3271"},
+                  {"FSRQ":"2026-08-03","DWJZ":"5.2248"}
+                ]
+              },
+              "ErrCode": 0
+            }
+            """
+        ])
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appending(path: "fund-pulse-json-history-pending-buy-test-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let records = acceptedDates.map { date in
+            FundTradeRecord(
+                id: "jd-buy-\(date)",
+                kind: .buy,
+                status: .pending,
+                code: code,
+                name: name,
+                mode: .amount,
+                amount: 200,
+                shares: nil,
+                confirmedShares: nil,
+                price: nil,
+                tradeDate: date,
+                tradeTimeType: .before15,
+                acceptedDate: date,
+                createdAt: createdAt,
+                confirmedAt: nil,
+                failureReason: nil,
+                syncSource: .jdFinance,
+                syncKey: "jd-order-\(date)",
+                externalStatus: .externalConfirmed,
+                externalStatusText: "订单完成",
+                waitsForExternalConfirmation: false
+            )
+        }
+        let pendingTrades = records.map { record in
+            FundPendingTrade(
+                id: "pending-\(record.id)",
+                recordID: record.id,
+                action: .buy,
+                code: code,
+                mode: .amount,
+                amount: 200,
+                shares: nil,
+                tradeDate: record.tradeDate,
+                tradeTimeType: .before15,
+                createdAt: createdAt,
+                syncSource: .jdFinance,
+                syncKey: record.syncKey,
+                externalStatus: .externalConfirmed,
+                externalStatusText: "订单完成",
+                waitsForExternalConfirmation: false
+            )
+        }
+        var snapshot = jdPortfolio(
+            funds: [conversionFund(code: code, name: name, shares: 1_000, cost: 5)],
+            records: records,
+            now: now
+        )
+        snapshot.pendingTrades = pendingTrades
+        snapshot.pendingCount = pendingTrades.count
+
+        let store = PortfolioStore(dataDirectory: tempDirectory, quoteService: service, now: { now })
+        try seedPortfolio(snapshot, into: store, directory: tempDirectory)
+
+        await store.refreshQuotes()
+
+        XCTAssertNil(store.snapshot.pendingTrades)
+        XCTAssertEqual(store.snapshot.pendingCount, 0)
+        let confirmedRecords = try XCTUnwrap(store.snapshot.tradeRecords)
+        XCTAssertEqual(confirmedRecords.count, 2)
+        XCTAssertTrue(confirmedRecords.allSatisfy { $0.status == .confirmed })
+        XCTAssertEqual(
+            try XCTUnwrap(confirmedRecords.first { $0.acceptedDate == "2026-08-03" }?.price),
+            5.2248,
+            accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(confirmedRecords.first { $0.acceptedDate == "2026-08-04" }?.price),
+            5.3271,
+            accuracy: 0.0001
+        )
+
+        let historyRequests = MockURLProtocol.responseStore.requests().filter {
+            $0.url?.host == "api.fund.eastmoney.com"
+        }
+        XCTAssertEqual(historyRequests.count, 2)
+        XCTAssertEqual(
+            Set(historyRequests.compactMap { request in
+                URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                    .queryItems?
+                    .first { $0.name == "startDate" }?
+                    .value
+            }),
+            Set(acceptedDates)
+        )
+        XCTAssertTrue(historyRequests.allSatisfy {
+            $0.value(forHTTPHeaderField: "Referer") == "https://fundf10.eastmoney.com/"
+        })
+    }
+
+    func testConfirmedNetValueFallsBackToTrendHistoryWhenJSONHistoryFails() async throws {
+        let targetDate = "2026-08-04"
+        let targetTimestamp = try timestamp(targetDate)
+        let service = quoteServiceWithMockResponses([
+            "https://api.fund.eastmoney.com/f10/lsjz": "not-json",
+            "https://fund.eastmoney.com/pingzhongdata/022184.js": """
+            var Data_netWorthTrend = [
+              {"x":\(targetTimestamp),"y":5.3271,"equityReturn":1.96,"unitMoney":""}
+            ];
+            """
+        ])
+        let latestQuote = FundQuote(
+            code: "022184",
+            name: "富国全球科技互联网股票(QDII)C",
+            netValue: 5.3627,
+            estimatedNetValue: 5.2593,
+            growthRate: 0.67,
+            estimateTime: "2026-08-07 14:54",
+            netValueDate: "2026-08-05"
+        )
+
+        let value = await service.fetchConfirmedNetValue(
+            code: "022184",
+            acceptedDate: targetDate,
+            latestQuote: latestQuote
+        )
+
+        XCTAssertEqual(try XCTUnwrap(value), 5.3271, accuracy: 0.0001)
+        XCTAssertEqual(
+            MockURLProtocol.responseStore.requests().compactMap(\.url?.host),
+            ["api.fund.eastmoney.com", "fund.eastmoney.com"]
+        )
+    }
+
+    func testConfirmedNetValueNeverUsesANewerHistoryDateForAnOlderTrade() async throws {
+        let newerTimestamp = try timestamp("2026-08-05")
+        let service = quoteServiceWithMockResponses([
+            "https://api.fund.eastmoney.com/f10/lsjz": """
+            {
+              "Data": {
+                "LSJZList": [
+                  {"FSRQ":"2026-08-05","DWJZ":"5.3627"}
+                ]
+              },
+              "ErrCode": 0
+            }
+            """,
+            "https://fund.eastmoney.com/pingzhongdata/022184.js": """
+            var Data_netWorthTrend = [
+              {"x":\(newerTimestamp),"y":5.3627,"equityReturn":0.67,"unitMoney":""}
+            ];
+            """
+        ])
+
+        let value = await service.fetchConfirmedNetValue(
+            code: "022184",
+            acceptedDate: "2026-08-04"
+        )
+
+        XCTAssertNil(value)
+        let currentRequest = try XCTUnwrap(
+            MockURLProtocol.responseStore.requests().first { $0.url?.host == "api.fund.eastmoney.com" }
+        )
+        let queryItems = try XCTUnwrap(
+            URLComponents(url: currentRequest.url!, resolvingAgainstBaseURL: false)?.queryItems
+        )
+        XCTAssertEqual(queryItems.first { $0.name == "startDate" }?.value, "2026-08-04")
+        XCTAssertEqual(queryItems.first { $0.name == "endDate" }?.value, "2026-08-04")
+    }
+
+    @MainActor
     func testNewFundAddedTodayWithoutConfirmedNetValueStaysPending() async throws {
         let now = try chinaDate("2026-06-24 14:45")
         let service = quoteServiceWithMockResponses([
