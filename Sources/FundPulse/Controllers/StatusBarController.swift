@@ -361,9 +361,9 @@ final class StatusBarController: NSObject {
     private let operationReminderScheduler: OperationReminderNotificationScheduler
     private var settingsSectionSession = SettingsSectionSession()
     private var onboardingResumeStep = 0
-    private var holdingPerformancePage: HoldingPerformancePage = .ranking
+    private var holdingPerformancePage = HoldingPerformancePresentation.defaultPage
     private var holdingPerformanceMetric: IncomeRankingMetric = .amount
-    private var holdingPerformanceRange: PortfolioPerformanceRange = .threeMonths
+    private var holdingPerformanceRange = HoldingPerformancePresentation.defaultRange
     private var holdingPerformanceMonth: Date?
 #if DEBUG
     private var debugPerformanceStore: PortfolioPerformanceStore?
@@ -505,18 +505,18 @@ final class StatusBarController: NSObject {
             settingsSectionSession.select(.support)
             route = .settings
         case "performance":
-            holdingPerformancePage = .ranking
+            holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-sample":
             debugPerformanceStore = makeDebugPerformanceStore()
-            holdingPerformancePage = .curve
+            holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-calendar-sample":
             debugPerformanceStore = makeDebugPerformanceStore()
             holdingPerformancePage = .calendar
             route = .portfolioPerformance
         case "performance-sync":
-            holdingPerformancePage = .curve
+            holdingPerformancePage = .calendar
             route = .jdFinancePerformanceSync
         case "settings":
             route = .settings
@@ -734,15 +734,11 @@ final class StatusBarController: NSObject {
             onOpenTodayRateRanking: { [weak self] in
                 self?.showChildPanel(.todayIncomeRanking(.rate))
             },
-            onOpenHoldingIncomeRanking: { [weak self] in
-                self?.holdingPerformancePage = .ranking
-                self?.holdingPerformanceMetric = .amount
-                self?.showChildPanel(.portfolioPerformance)
+            onOpenHoldingIncome: { [weak self] in
+                self?.openHoldingPerformance(rankingMetric: .amount)
             },
-            onOpenHoldingRateRanking: { [weak self] in
-                self?.holdingPerformancePage = .ranking
-                self?.holdingPerformanceMetric = .rate
-                self?.showChildPanel(.portfolioPerformance)
+            onOpenHoldingRate: { [weak self] in
+                self?.openHoldingPerformance(rankingMetric: .rate)
             },
             onAddFund: { [weak self] in
                 self?.showChildPanel(.addFund)
@@ -778,6 +774,15 @@ final class StatusBarController: NSObject {
                 self?.onOpenUpdate()
             }
         )
+    }
+
+    private func openHoldingPerformance(rankingMetric: IncomeRankingMetric) {
+        let entry = HoldingPerformancePresentation.defaultEntry(rankingMetric: rankingMetric)
+        holdingPerformancePage = entry.page
+        holdingPerformanceMetric = entry.rankingMetric
+        holdingPerformanceRange = entry.range
+        holdingPerformanceMonth = nil
+        showChildPanel(.portfolioPerformance)
     }
 
     private func showChildPanel(_ route: ChildPanelRoute) {

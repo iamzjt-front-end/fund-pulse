@@ -22,9 +22,9 @@ struct PortfolioPerformanceView: View {
     init(
         portfolioStore: PortfolioStore,
         store: PortfolioPerformanceStore,
-        initialPage: HoldingPerformancePage = .ranking,
+        initialPage: HoldingPerformancePage = HoldingPerformancePresentation.defaultPage,
         initialRankingMetric: IncomeRankingMetric = .amount,
-        initialRange: PortfolioPerformanceRange = .threeMonths,
+        initialRange: PortfolioPerformanceRange = HoldingPerformancePresentation.defaultRange,
         initialDisplayedMonth: Date? = nil,
         betaFeaturesEnabled: Bool,
         onOpenJDFinanceSync: @escaping () -> Void,
@@ -127,6 +127,8 @@ struct PortfolioPerformanceView: View {
     @ViewBuilder
     private var pageContent: some View {
         switch page {
+        case .calendar:
+            performancePageContent
         case .ranking:
             TodayIncomeRankingPanelView(
                 store: portfolioStore,
@@ -136,8 +138,6 @@ struct PortfolioPerformanceView: View {
                 isEmbedded: true,
                 metricSelection: $rankingMetric
             )
-        case .curve, .calendar:
-            performancePageContent
         }
     }
 
@@ -164,11 +164,8 @@ struct PortfolioPerformanceView: View {
                     }
                     summaryRow
                     sourceSummary
-                    if page == .curve {
-                        curveContent
-                    } else {
-                        calendarContent
-                    }
+                    curveContent
+                    calendarContent
                 }
                 .padding(.bottom, 12)
             }
@@ -184,13 +181,12 @@ struct PortfolioPerformanceView: View {
         switch page {
         case .ranking:
             false
-        case .curve:
-            visiblePoints.contains { $0.day.status == .estimated }
         case .calendar:
-            PortfolioPerformanceCalendar.summary(
-                in: store.snapshot,
-                monthContaining: displayedMonth
-            ).estimatedDays > 0
+            visiblePoints.contains { $0.day.status == .estimated }
+                || PortfolioPerformanceCalendar.summary(
+                    in: store.snapshot,
+                    monthContaining: displayedMonth
+                ).estimatedDays > 0
         }
     }
 
@@ -203,26 +199,70 @@ struct PortfolioPerformanceView: View {
     }
 
     private var summaryRow: some View {
-        HStack(spacing: 8) {
-            PerformanceMetric(
-                title: "记录期累计收益",
-                value: amountText(allPoints.last?.cumulativeProfit ?? 0),
-                color: PortfolioPerformanceSemanticColor.color(for: allPoints.last?.cumulativeProfit ?? 0)
-            )
-            PerformanceMetric(
-                title: "最近记录日",
-                value: amountText(store.snapshot.days.last?.profit ?? 0),
-                color: PortfolioPerformanceSemanticColor.color(for: store.snapshot.days.last?.profit ?? 0),
-                detail: store.snapshot.days.last?.returnRate.map {
-                    MoneyFormatter.percent($0, signed: true)
-                }
-            )
-            PerformanceMetric(
-                title: "记录天数",
-                value: "\(store.snapshot.days.count)",
-                color: .primary
-            )
+        let summary = HoldingPerformancePresentation.summary(
+            portfolio: portfolioStore.snapshot,
+            performance: store.snapshot
+        )
+        let latestDetail = [
+            summary.latestDate.map(shortDateText),
+            summary.latestReturnRate.map { MoneyFormatter.percent($0, signed: true) }
+        ]
+        .compactMap { $0 }
+        .joined(separator: " · ")
+
+        return VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("当前总金额")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(totalAmountText(summary.totalAmount))
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Text("截至 \(summary.asOfDate)")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(alignment: .top, spacing: 0) {
+                PerformanceSummaryMetric(
+                    title: "最近收益",
+                    value: amountText(summary.latestProfit),
+                    color: PortfolioPerformanceSemanticColor.color(for: summary.latestProfit),
+                    detail: latestDetail.isEmpty ? "--" : latestDetail,
+                    detailColor: summary.latestReturnRate.map {
+                        PortfolioPerformanceSemanticColor.color(for: $0)
+                    }
+                )
+                summaryDivider
+                PerformanceSummaryMetric(
+                    title: "持有收益",
+                    value: amountText(summary.holdingIncome),
+                    color: PortfolioPerformanceSemanticColor.color(for: summary.holdingIncome),
+                    detail: MoneyFormatter.percent(summary.holdingIncomeRate, signed: true),
+                    detailColor: PortfolioPerformanceSemanticColor.color(for: summary.holdingIncomeRate)
+                )
+                summaryDivider
+                PerformanceSummaryMetric(
+                    title: "累计收益",
+                    value: amountText(summary.cumulativeProfit),
+                    color: PortfolioPerformanceSemanticColor.color(for: summary.cumulativeProfit),
+                    detail: summary.trackingStartDate.map { "自 \($0) 起" } ?? "--",
+                    detailColor: .secondary
+                )
+            }
         }
+        .padding(10)
+        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var summaryDivider: some View {
+        Divider()
+            .frame(height: 48)
+            .padding(.horizontal, 7)
     }
 
     @ViewBuilder
@@ -257,8 +297,8 @@ struct PortfolioPerformanceView: View {
     }
 
     private var curveContent: some View {
-        PanelSection(title: "累计收益曲线") {
-            VStack(spacing: 10) {
+        PanelSection(title: "累计收益走势") {
+            VStack(spacing: 8) {
                 PanelSegmentedPicker(
                     values: PortfolioPerformanceRange.allCases,
                     selection: $range,
@@ -268,22 +308,13 @@ struct PortfolioPerformanceView: View {
 
                 if visiblePoints.isEmpty {
                     ContentUnavailableView("该区间暂无记录", systemImage: "chart.xyaxis.line")
-                        .frame(height: 210)
+                        .frame(height: 133)
                 } else {
                     PortfolioCumulativeProfitChart(points: visiblePoints, hidesAmounts: hidesAmounts)
-                        .frame(height: 220)
+                        .frame(height: 133)
 
                     HStack {
                         Text(visiblePoints.first?.day.date ?? "--")
-                        Spacer()
-                        chartLegendItem(
-                            "正收益",
-                            color: PortfolioPerformanceSemanticColor.positive
-                        )
-                        chartLegendItem(
-                            "负收益",
-                            color: PortfolioPerformanceSemanticColor.negative
-                        )
                         Spacer()
                         Text(visiblePoints.last?.day.date ?? "--")
                     }
@@ -292,18 +323,6 @@ struct PortfolioPerformanceView: View {
                 }
             }
         }
-    }
-
-    private func chartLegendItem(_ title: String, color: Color) -> some View {
-        Label {
-            Text(title)
-                .foregroundStyle(.primary)
-        } icon: {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-        }
-        .accessibilityElement(children: .combine)
     }
 
     private var calendarContent: some View {
@@ -413,9 +432,65 @@ struct PortfolioPerformanceView: View {
     private func amountText(_ value: Double) -> String {
         hidesAmounts ? "••••" : MoneyFormatter.money(value, signed: true)
     }
+
+    private func totalAmountText(_ value: Double) -> String {
+        hidesAmounts ? "••••" : MoneyFormatter.money(value)
+    }
+
+    private func shortDateText(_ date: String) -> String {
+        date.count >= 5 ? String(date.suffix(5)) : date
+    }
+}
+
+struct HoldingPerformanceSummary: Equatable {
+    var totalAmount: Double
+    var asOfDate: String
+    var latestDate: String?
+    var latestProfit: Double
+    var latestReturnRate: Double?
+    var holdingIncome: Double
+    var holdingIncomeRate: Double
+    var cumulativeProfit: Double
+    var trackingStartDate: String?
+}
+
+struct HoldingPerformanceEntry: Equatable {
+    var page: HoldingPerformancePage
+    var rankingMetric: IncomeRankingMetric
+    var range: PortfolioPerformanceRange
 }
 
 enum HoldingPerformancePresentation {
+    static let defaultPage: HoldingPerformancePage = .calendar
+    static let defaultRange: PortfolioPerformanceRange = .threeMonths
+
+    static func defaultEntry(rankingMetric: IncomeRankingMetric) -> HoldingPerformanceEntry {
+        HoldingPerformanceEntry(
+            page: defaultPage,
+            rankingMetric: rankingMetric,
+            range: defaultRange
+        )
+    }
+
+    static func summary(
+        portfolio: PortfolioSnapshot,
+        performance: PortfolioPerformanceSnapshot
+    ) -> HoldingPerformanceSummary {
+        let normalized = PortfolioPerformanceRecorder.normalized(performance)
+        let latest = normalized.days.last
+        return HoldingPerformanceSummary(
+            totalAmount: portfolio.totalAmount,
+            asOfDate: DateOnlyFormatter.string(from: portfolio.updateTime),
+            latestDate: latest?.date,
+            latestProfit: latest?.profit ?? 0,
+            latestReturnRate: latest?.returnRate,
+            holdingIncome: portfolio.holdingIncome,
+            holdingIncomeRate: portfolio.holdingIncomeRate,
+            cumulativeProfit: normalized.days.reduce(0) { $0 + $1.profit },
+            trackingStartDate: normalized.trackingStartDate ?? normalized.days.first?.date
+        )
+    }
+
     static func showsJDFinanceCompletionAction(
         page: HoldingPerformancePage,
         betaFeaturesEnabled: Bool
@@ -462,28 +537,26 @@ private enum PortfolioPerformanceSemanticColor {
 }
 
 enum HoldingPerformancePage: String, CaseIterable, Identifiable {
-    case ranking
-    case curve
     case calendar
+    case ranking
 
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .ranking:
-            "持仓收益排行"
-        case .curve:
-            "收益曲线"
         case .calendar:
             "收益日历"
+        case .ranking:
+            "持仓收益排行"
         }
     }
 }
 
-private struct PerformanceMetric: View {
+private struct PerformanceSummaryMetric: View {
     let title: String
     let value: String
     let color: Color
     var detail: String? = nil
+    var detailColor: Color? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -499,117 +572,227 @@ private struct PerformanceMetric: View {
             if let detail {
                 Text(detail)
                     .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(color.opacity(0.84))
+                    .foregroundStyle((detailColor ?? color).opacity(0.84))
                     .monospacedDigit()
             }
         }
-        .padding(9)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-        .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 9))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .combine)
     }
 }
 
 private struct PortfolioCumulativeProfitChart: View {
     let points: [PortfolioPerformancePoint]
     let hidesAmounts: Bool
+    @State private var hoveredIndex: Int?
 
     var body: some View {
         let values = points.map(\.cumulativeProfit)
         let scale = PortfolioPerformanceChartScale(values: values)
         let axisLabels = PortfolioPerformanceChartAxisLabels(values: values, scale: scale)
 
-        ZStack(alignment: .topLeading) {
-            Canvas { context, size in
-                for fraction in [0.0, 0.5, 1.0] {
-                    let y = size.height * fraction
-                    var line = Path()
-                    line.move(to: CGPoint(x: 0, y: y))
-                    line.addLine(to: CGPoint(x: size.width, y: y))
-                    context.stroke(line, with: .color(.secondary.opacity(0.13)), style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
-                }
+        VStack(spacing: 4) {
+            hoverReadout
 
-                let location: (Int, Double) -> CGPoint = { index, value in
-                    let x = points.count == 1 ? size.width / 2 : size.width * CGFloat(index) / CGFloat(points.count - 1)
-                    let y = size.height * CGFloat(scale.normalizedY(for: value))
-                    return CGPoint(x: x, y: y)
-                }
+            ZStack(alignment: .topLeading) {
+                Canvas { context, size in
+                    for fraction in [0.0, 0.5, 1.0] {
+                        let y = size.height * fraction
+                        var line = Path()
+                        line.move(to: CGPoint(x: 0, y: y))
+                        line.addLine(to: CGPoint(x: size.width, y: y))
+                        context.stroke(line, with: .color(.secondary.opacity(0.13)), style: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
+                    }
 
-                let zeroY = size.height * CGFloat(scale.normalizedY(for: 0))
-                var zeroLine = Path()
-                zeroLine.move(to: CGPoint(x: 0, y: zeroY))
-                zeroLine.addLine(to: CGPoint(x: size.width, y: zeroY))
-                context.stroke(
-                    zeroLine,
-                    with: .color(.secondary.opacity(0.48)),
-                    style: StrokeStyle(lineWidth: 1, dash: [5, 3])
-                )
+                    let location: (Int, Double) -> CGPoint = { index, value in
+                        let x = points.count == 1 ? size.width / 2 : size.width * CGFloat(index) / CGFloat(points.count - 1)
+                        let y = size.height * CGFloat(scale.normalizedY(for: value))
+                        return CGPoint(x: x, y: y)
+                    }
 
-                if points.count == 1 {
-                    let center = location(0, points[0].cumulativeProfit)
-                    context.fill(
-                        Path(ellipseIn: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)),
-                        with: .color(PortfolioPerformanceSemanticColor.color(for: points[0].cumulativeProfit))
+                    let zeroY = size.height * CGFloat(scale.normalizedY(for: 0))
+                    var zeroLine = Path()
+                    zeroLine.move(to: CGPoint(x: 0, y: zeroY))
+                    zeroLine.addLine(to: CGPoint(x: size.width, y: zeroY))
+                    context.stroke(
+                        zeroLine,
+                        with: .color(.secondary.opacity(0.48)),
+                        style: StrokeStyle(lineWidth: 1, dash: [5, 3])
                     )
-                } else {
-                    for index in 1..<points.count {
-                        let startValue = points[index - 1].cumulativeProfit
-                        let endValue = points[index].cumulativeProfit
-                        let startPoint = location(index - 1, startValue)
-                        let endPoint = location(index, endValue)
-                        for portion in PortfolioPerformanceChartColor.segmentPortions(
-                            from: startValue,
-                            to: endValue
-                        ) {
-                            var segment = Path()
-                            segment.move(to: interpolatedPoint(
-                                from: startPoint,
-                                to: endPoint,
-                                fraction: portion.startFraction
-                            ))
-                            segment.addLine(to: interpolatedPoint(
-                                from: startPoint,
-                                to: endPoint,
-                                fraction: portion.endFraction
-                            ))
-                            context.stroke(
-                                segment,
-                                with: .color(color(for: portion.tone)),
-                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
-                            )
+
+                    if points.count == 1 {
+                        let center = location(0, points[0].cumulativeProfit)
+                        context.fill(
+                            Path(ellipseIn: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)),
+                            with: .color(PortfolioPerformanceSemanticColor.color(for: points[0].cumulativeProfit))
+                        )
+                    } else {
+                        for index in 1..<points.count {
+                            let startValue = points[index - 1].cumulativeProfit
+                            let endValue = points[index].cumulativeProfit
+                            let startPoint = location(index - 1, startValue)
+                            let endPoint = location(index, endValue)
+                            for portion in PortfolioPerformanceChartColor.segmentPortions(
+                                from: startValue,
+                                to: endValue
+                            ) {
+                                var segment = Path()
+                                segment.move(to: interpolatedPoint(
+                                    from: startPoint,
+                                    to: endPoint,
+                                    fraction: portion.startFraction
+                                ))
+                                segment.addLine(to: interpolatedPoint(
+                                    from: startPoint,
+                                    to: endPoint,
+                                    fraction: portion.endFraction
+                                ))
+                                context.stroke(
+                                    segment,
+                                    with: .color(color(for: portion.tone)),
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                                )
+                            }
                         }
                     }
                 }
-            }
-            .padding(.vertical, 15)
+                .padding(.vertical, 15)
 
-            GeometryReader { geometry in
-                let plotHeight = max(geometry.size.height - 30, 1)
-                let zeroY = 15 + plotHeight * CGFloat(scale.normalizedY(for: 0))
-                Text("¥0")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 3)
-                    .background(PanelDesign.cardBackground.opacity(0.92), in: Capsule())
-                    .position(x: 14, y: min(max(zeroY - 8, 8), geometry.size.height - 8))
-            }
-            .allowsHitTesting(false)
+                GeometryReader { geometry in
+                    let plotHeight = max(geometry.size.height - 30, 1)
+                    let zeroY = 15 + plotHeight * CGFloat(scale.normalizedY(for: 0))
+                    Text("¥0")
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 3)
+                        .background(PanelDesign.cardBackground.opacity(0.92), in: Capsule())
+                        .position(x: 14, y: min(max(zeroY - 8, 8), geometry.size.height - 8))
+                }
+                .allowsHitTesting(false)
 
-            VStack(alignment: .leading) {
-                if let maximum = axisLabels.maximum {
-                    Text(axisText(maximum))
+                VStack(alignment: .leading) {
+                    if let maximum = axisLabels.maximum {
+                        Text(axisText(maximum))
+                    }
+                    Spacer()
+                    if let minimum = axisLabels.minimum {
+                        Text(axisText(minimum))
+                    }
                 }
-                Spacer()
-                if let minimum = axisLabels.minimum {
-                    Text(axisText(minimum))
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+
+                GeometryReader { geometry in
+                    hoverLayer(in: geometry, scale: scale)
                 }
             }
-            .font(.system(size: 9, weight: .medium, design: .rounded))
-            .foregroundStyle(.secondary)
+        }
+        .onChange(of: points.map(\.id)) { _, _ in
+            hoveredIndex = nil
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("累计收益曲线")
         .accessibilityValue(chartAccessibilityValue)
+        .accessibilityHint("将鼠标移动到曲线上可查看日期、收益和收益率")
+    }
+
+    private var hoverReadout: some View {
+        HStack(spacing: 9) {
+            if let hoveredIndex, points.indices.contains(hoveredIndex) {
+                let point = points[hoveredIndex]
+                Text(point.day.date)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 4)
+                Text("收益 \(hoverProfitText(point.day.profit))")
+                    .foregroundStyle(PortfolioPerformanceSemanticColor.color(for: point.day.profit))
+                Text("收益率 \(hoverReturnRateText(point.day.returnRate))")
+                    .foregroundStyle(hoverReturnRateColor(point.day.returnRate))
+            } else {
+                Image(systemName: "cursorarrow")
+                Text("移动鼠标查看单日收益")
+            }
+        }
+        .font(.system(size: 8, weight: .semibold, design: .rounded))
+        .monospacedDigit()
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+        .background(.secondary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 6))
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func hoverLayer(
+        in geometry: GeometryProxy,
+        scale: PortfolioPerformanceChartScale
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+
+            if let hoveredIndex, points.indices.contains(hoveredIndex) {
+                let point = points[hoveredIndex]
+                let pointX = points.count == 1
+                    ? geometry.size.width / 2
+                    : geometry.size.width * CGFloat(hoveredIndex) / CGFloat(points.count - 1)
+                let plotHeight = max(geometry.size.height - 30, 1)
+                let pointY = 15 + plotHeight * CGFloat(scale.normalizedY(for: point.cumulativeProfit))
+
+                ZStack(alignment: .topLeading) {
+                    Path { path in
+                        path.move(to: CGPoint(x: pointX, y: 15))
+                        path.addLine(to: CGPoint(x: pointX, y: geometry.size.height - 15))
+                    }
+                    .stroke(
+                        .secondary.opacity(0.48),
+                        style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+                    )
+
+                    Circle()
+                        .fill(PortfolioPerformanceSemanticColor.color(for: point.cumulativeProfit))
+                        .frame(width: 7, height: 7)
+                        .overlay(Circle().stroke(PanelDesign.cardBackground, lineWidth: 2))
+                        .position(x: pointX, y: pointY)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+            }
+        }
+        .contentShape(Rectangle())
+        .onContinuousHover(coordinateSpace: .local) { phase in
+            switch phase {
+            case .active(let location):
+                let normalizedX = geometry.size.width > 0
+                    ? Double(location.x / geometry.size.width)
+                    : .nan
+                let index = PortfolioPerformanceChartHover.nearestIndex(
+                    pointCount: points.count,
+                    normalizedX: normalizedX
+                )
+                if hoveredIndex != index {
+                    hoveredIndex = index
+                }
+            case .ended:
+                hoveredIndex = nil
+            }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
+    private func hoverProfitText(_ value: Double) -> String {
+        hidesAmounts ? "••••" : MoneyFormatter.money(value, signed: true)
+    }
+
+    private func hoverReturnRateText(_ value: Double?) -> String {
+        value.map { MoneyFormatter.percent($0, signed: true) } ?? "--"
+    }
+
+    private func hoverReturnRateColor(_ value: Double?) -> Color {
+        value.map { PortfolioPerformanceSemanticColor.color(for: $0) } ?? .secondary
     }
 
     private func axisText(_ value: Double) -> String {
@@ -633,6 +816,16 @@ private struct PortfolioCumulativeProfitChart: View {
     }
 
     private var chartAccessibilityValue: String {
+        if let hoveredIndex, points.indices.contains(hoveredIndex) {
+            let point = points[hoveredIndex]
+            let profit = hidesAmounts
+                ? "金额已隐藏"
+                : MoneyFormatter.money(point.day.profit, signed: true)
+            let returnRate = point.day.returnRate.map {
+                MoneyFormatter.percent($0, signed: true)
+            } ?? "暂无数据"
+            return "\(point.day.date)，当日收益 \(profit)，收益率 \(returnRate)"
+        }
         guard let first = points.first, let last = points.last else { return "暂无数据" }
         let amount = hidesAmounts ? "金额已隐藏" : MoneyFormatter.money(last.cumulativeProfit, signed: true)
         return "从 \(first.day.date) 到 \(last.day.date)，累计收益 \(amount)"
@@ -662,13 +855,20 @@ private struct PerformanceCalendarCell: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.62)
                         .foregroundStyle(record.map { PortfolioPerformanceSemanticColor.color(for: $0.profit) } ?? .secondary.opacity(0.6))
+
+                    Text(returnRateText)
+                        .font(.system(size: 7, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.58)
+                        .foregroundStyle(returnRateColor)
                 }
-                .frame(maxWidth: .infinity, minHeight: 42)
+                .frame(maxWidth: .infinity, minHeight: 50)
                 .background(cellColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .overlay(PanelDesign.border(cornerRadius: 7))
                 .accessibilityLabel(accessibilityText(date))
             } else {
-                Color.clear.frame(height: 42)
+                Color.clear.frame(height: 50)
             }
         }
     }
@@ -684,9 +884,22 @@ private struct PerformanceCalendarCell: View {
         return sign + abs(value).formatted(.number.notation(.compactName).precision(.fractionLength(0...1)))
     }
 
+    private var returnRateText: String {
+        guard let record else { return "" }
+        return record.returnRate.map { MoneyFormatter.percent($0, signed: true) } ?? "--"
+    }
+
+    private var returnRateColor: Color {
+        guard let returnRate = record?.returnRate else { return .secondary.opacity(0.6) }
+        return PortfolioPerformanceSemanticColor.color(for: returnRate).opacity(0.84)
+    }
+
     private func accessibilityText(_ date: String) -> String {
         guard let record else { return "\(date)，无记录" }
         let amount = hidesAmounts ? "金额已隐藏" : MoneyFormatter.money(record.profit, signed: true)
-        return "\(date)，\(amount)，\(record.status.title)，\(record.source.title)"
+        let returnRate = record.returnRate.map {
+            "收益率 \(MoneyFormatter.percent($0, signed: true))"
+        } ?? "收益率暂无数据"
+        return "\(date)，\(amount)，\(returnRate)，\(record.status.title)，\(record.source.title)"
     }
 }

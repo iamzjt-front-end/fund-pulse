@@ -459,6 +459,18 @@ final class PortfolioPerformanceTests: XCTestCase {
         XCTAssertEqual(scale.normalizedY(for: scale.minimum), 1, accuracy: 0.000_001)
     }
 
+    func testChartHoverSelectsTheNearestVisiblePointAndClampsEdges() {
+        XCTAssertNil(PortfolioPerformanceChartHover.nearestIndex(pointCount: 0, normalizedX: 0.5))
+        XCTAssertNil(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: .nan))
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 1, normalizedX: 0.75), 0)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: -1), 0)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: 0.12), 0)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: 0.13), 1)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: 0.5), 2)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: 0.9), 4)
+        XCTAssertEqual(PortfolioPerformanceChartHover.nearestIndex(pointCount: 5, normalizedX: 2), 4)
+    }
+
     func testChartAxisLabelsDoNotDuplicateZeroAtAnExtreme() {
         let positiveValues = [10.0, 30.0]
         let positiveScale = PortfolioPerformanceChartScale(values: positiveValues)

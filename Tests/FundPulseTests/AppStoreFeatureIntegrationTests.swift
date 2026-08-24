@@ -198,15 +198,31 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
         XCTAssertFalse(ChildPanelRoute.settings.ownsJDFinanceLoginPanel)
     }
 
-    func testHoldingPerformanceUsesExactlyTheRequestedThreeModules() {
+    func testHoldingPerformanceUsesCalendarFirstAndTwoModules() {
+        XCTAssertEqual(HoldingPerformancePresentation.defaultPage, .calendar)
+        XCTAssertEqual(HoldingPerformancePresentation.defaultRange, .threeMonths)
         XCTAssertEqual(
             HoldingPerformancePage.allCases.map(\.title),
-            ["持仓收益排行", "收益曲线", "收益日历"]
+            ["收益日历", "持仓收益排行"]
         )
         XCTAssertEqual(
             IncomeRankingMetric.allCases.map(\.holdingPickerTitle),
             ["按金额", "按收益率"]
         )
+        XCTAssertEqual(
+            PortfolioPerformanceRange.allCases.map(\.title),
+            ["近1月", "近3月", "近6月", "近1年", "全部"]
+        )
+    }
+
+    func testHoldingPerformanceMainPanelEntriesResetToCalendarAndThreeMonths() {
+        for metric in IncomeRankingMetric.allCases {
+            let entry = HoldingPerformancePresentation.defaultEntry(rankingMetric: metric)
+
+            XCTAssertEqual(entry.page, .calendar)
+            XCTAssertEqual(entry.rankingMetric, metric)
+            XCTAssertEqual(entry.range, .threeMonths)
+        }
     }
 
     func testFundListHoldingStatusKeepsPossessionLabel() {
@@ -231,16 +247,60 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(
             HoldingPerformancePresentation.showsJDFinanceCompletionAction(
-                page: .curve,
-                betaFeaturesEnabled: true
-            )
-        )
-        XCTAssertTrue(
-            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
                 page: .calendar,
                 betaFeaturesEnabled: true
             )
         )
+    }
+
+    func testHoldingPerformanceSummarySeparatesCurrentHoldingAndCumulativeIncome() throws {
+        let updatedAt = try XCTUnwrap(DateOnlyFormatter.parse("2026-08-24"))
+        var portfolio = portfolioSnapshot()
+        portfolio.updateTime = updatedAt
+        portfolio.totalAmount = 290_183.23
+        portfolio.holdingIncome = -35_811.12
+        portfolio.holdingIncomeRate = -10.98
+        portfolio.syncedAccountTotal = PortfolioSyncedAccountTotal(
+            source: .jdFinance,
+            amount: 999_999,
+            syncedAt: updatedAt
+        )
+        let performance = PortfolioPerformanceSnapshot(
+            trackingStartDate: "2026-04-29",
+            days: [
+                PortfolioPerformanceDay(
+                    date: "2026-08-21",
+                    profit: 3_375.94,
+                    returnRate: 1.17,
+                    status: .confirmed,
+                    source: .jdFinance,
+                    updatedAt: updatedAt
+                ),
+                PortfolioPerformanceDay(
+                    date: "2026-04-29",
+                    profit: -37_265.12,
+                    returnRate: -1.25,
+                    status: .confirmed,
+                    source: .jdFinance,
+                    updatedAt: updatedAt
+                )
+            ]
+        )
+
+        let summary = HoldingPerformancePresentation.summary(
+            portfolio: portfolio,
+            performance: performance
+        )
+
+        XCTAssertEqual(summary.totalAmount, 290_183.23, accuracy: 0.001)
+        XCTAssertEqual(summary.asOfDate, "2026-08-24")
+        XCTAssertEqual(summary.latestDate, "2026-08-21")
+        XCTAssertEqual(summary.latestProfit, 3_375.94, accuracy: 0.001)
+        XCTAssertEqual(summary.latestReturnRate, 1.17)
+        XCTAssertEqual(summary.holdingIncome, -35_811.12, accuracy: 0.001)
+        XCTAssertEqual(summary.holdingIncomeRate, -10.98, accuracy: 0.001)
+        XCTAssertEqual(summary.cumulativeProfit, -33_889.18, accuracy: 0.001)
+        XCTAssertEqual(summary.trackingStartDate, "2026-04-29")
     }
 
     func testHoldingPerformanceHeaderMatchesTheSelectedRankingMetric() {

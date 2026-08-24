@@ -14,8 +14,8 @@ struct MainPanelWindowView: View {
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
     let onOpenTodayRateRanking: () -> Void
-    let onOpenHoldingIncomeRanking: () -> Void
-    let onOpenHoldingRateRanking: () -> Void
+    let onOpenHoldingIncome: () -> Void
+    let onOpenHoldingRate: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -52,8 +52,8 @@ struct MainPanelWindowView: View {
                     onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
                     onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
                     onOpenTodayRateRanking: onOpenTodayRateRanking,
-                    onOpenHoldingIncomeRanking: onOpenHoldingIncomeRanking,
-                    onOpenHoldingRateRanking: onOpenHoldingRateRanking,
+                    onOpenHoldingIncome: onOpenHoldingIncome,
+                    onOpenHoldingRate: onOpenHoldingRate,
                     onAddFund: onAddFund,
                     onOpenFundDetail: onOpenFundDetail,
                     onOpenTradeRecords: onOpenTradeRecords,
@@ -208,8 +208,8 @@ struct PopoverContentView: View {
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
     let onOpenTodayRateRanking: () -> Void
-    let onOpenHoldingIncomeRanking: () -> Void
-    let onOpenHoldingRateRanking: () -> Void
+    let onOpenHoldingIncome: () -> Void
+    let onOpenHoldingRate: () -> Void
     let onAddFund: () -> Void
     let onOpenFundDetail: (FundPosition) -> Void
     let onOpenTradeRecords: (FundPosition) -> Void
@@ -305,7 +305,7 @@ struct PopoverContentView: View {
                 .focusable(false)
                 .frame(maxWidth: .infinity)
                 .help("查看持仓占比")
-                Button(action: onOpenHoldingIncomeRanking) {
+                Button(action: onOpenHoldingIncome) {
                     metricCard(
                         "持仓收益",
                         headerSignedMoneyText(store.snapshot.holdingIncome),
@@ -315,9 +315,9 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("打开持仓收益（按金额）")
+                .help("打开持仓收益")
 
-                Button(action: onOpenHoldingRateRanking) {
+                Button(action: onOpenHoldingRate) {
                     metricCard(
                         "持仓收益率",
                         headerPercentText(store.snapshot.holdingIncomeRate),
@@ -327,7 +327,7 @@ struct PopoverContentView: View {
                 .buttonStyle(.plain)
                 .focusable(false)
                 .frame(maxWidth: .infinity)
-                .help("打开持仓收益（按收益率）")
+                .help("打开持仓收益率")
             }
 
             if let pendingHeaderImpact {

@@ -142,6 +142,16 @@ struct PortfolioPerformancePoint: Identifiable, Equatable, Sendable {
     var cumulativeProfit: Double
 }
 
+enum PortfolioPerformanceChartHover {
+    static func nearestIndex(pointCount: Int, normalizedX: Double) -> Int? {
+        guard pointCount > 0, normalizedX.isFinite else { return nil }
+        guard pointCount > 1 else { return 0 }
+
+        let clampedX = min(max(normalizedX, 0), 1)
+        return Int((clampedX * Double(pointCount - 1)).rounded())
+    }
+}
+
 struct PortfolioPerformanceChartScale: Equatable, Sendable {
     let minimum: Double
     let maximum: Double
@@ -247,13 +257,13 @@ enum PortfolioPerformanceRange: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .oneMonth:
-            "1月"
+            "近1月"
         case .threeMonths:
-            "3月"
+            "近3月"
         case .sixMonths:
-            "6月"
+            "近6月"
         case .oneYear:
-            "1年"
+            "近1年"
         case .all:
             "全部"
         }
