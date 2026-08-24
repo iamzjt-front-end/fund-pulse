@@ -163,7 +163,6 @@ struct PortfolioPerformanceView: View {
                         performanceErrorBanner(lastError)
                     }
                     summaryRow
-                    sourceSummary
                     curveContent
                     calendarContent
                 }
@@ -263,37 +262,6 @@ struct PortfolioPerformanceView: View {
         Divider()
             .frame(height: 48)
             .padding(.horizontal, 7)
-    }
-
-    @ViewBuilder
-    private var sourceSummary: some View {
-        let jdCount = store.snapshot.days.count { $0.source == .jdFinance }
-        if jdCount > 0 {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.icloud")
-                Text("京东补全 \(jdCount) 天")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                if store.snapshot.days.count > jdCount {
-                    Text("· 本地记录 \(store.snapshot.days.count - jdCount) 天")
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-                Spacer(minLength: 0)
-                if let through = store.snapshot.jdFinanceSync?.coveredThrough {
-                    Text("截至 \(through)")
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                }
-            }
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(PanelDesign.inputBackground.opacity(0.48), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(PanelDesign.border(cornerRadius: 8))
-            .accessibilityElement(children: .combine)
-        }
     }
 
     private var curveContent: some View {

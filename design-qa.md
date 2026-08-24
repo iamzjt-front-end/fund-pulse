@@ -22,9 +22,9 @@
 
 - No actionable P0, P1, or P2 mismatch remains.
 - Fonts and typography: the implementation uses the product's native system typography and existing weight hierarchy. The hero amount, metric labels, metric values, controls, and calendar copy remain legible without wrapping or truncation.
-- Spacing and layout rhythm: the two-tab navigation, unified summary, source strip, compact curve, and calendar follow the source hierarchy. Card radii, insets, dividers, and vertical gaps are consistent with the existing panel design system.
+- Spacing and layout rhythm: the two-tab navigation, unified summary, compact curve, and calendar follow the source hierarchy. Card radii, insets, dividers, and vertical gaps are consistent with the existing panel design system.
 - Colors and visual tokens: the implementation reuses `PanelDesign` surfaces and borders plus the app's semantic red-for-gain and green-for-loss colors. Selected controls and neutral secondary text preserve the source contrast hierarchy.
-- Image quality and asset fidelity: the target contains no photographic or custom raster assets. The implementation reuses the app's existing header artwork and SF Symbols for source and navigation icons; they remain sharp at native scale.
+- Image quality and asset fidelity: the target contains no photographic or custom raster assets. The implementation reuses the app's existing header artwork and SF Symbols for navigation icons; they remain sharp at native scale.
 - Copy and content: the two tabs are exactly `收益日历` and `持仓收益排行`; the curve is labeled `累计收益走势`; ranges are `近1月 / 近3月 / 近6月 / 近1年 / 全部`, with `近3月` as the requested default. Live total amount and latest synchronization date intentionally differ from the static mock because the implementation renders current portfolio data.
 - Interaction and accessibility: both tabs, every range segment, previous/next month navigation, and the calendar's amount-plus-return-rate accessibility labels were exercised in the running app. The real main-panel `持仓收益` card was pressed through Accessibility and verified to open `收益日历 · 近3月`; moving the pointer across the curve was verified to show the nearest record's date, daily income, and return rate with a crosshair and marker, and moving out clears the selection. A second runtime pass performed 16 high-speed left/right sweeps and sampled 24 video frames; after the pointer entered the chart, the tooltip remained continuously present on its fixed vertical track while its date and values updated. The disabled next-month state was also verified for the latest month.
 
@@ -72,6 +72,12 @@
 - Runtime proof: `/tmp/fund-pulse-performance-chart-readout-no-overlap.png`
 - Date, daily income, and return rate now render in a dedicated 26 pt readout strip above the plot. The plot preserves its previous usable height, while the full red/green path, zero line, crosshair, and selected marker remain visible below the readout with no overlap. Twelve rapid left/right sweeps confirmed the non-hit-testing readout remains stable.
 
+### Pass 8 — passed, user-directed source-strip cleanup
+
+- Removed the redundant JD completion-count and covered-through strip between the asset summary and cumulative curve.
+- The curve now follows the summary directly with the existing 10 pt stack spacing, so no empty placeholder or hidden hit-testing region remains.
+- JD completion data and the header action remain unchanged; only the duplicated informational surface was removed.
+
 ## Follow-up Polish
 
 - [P3] The full six-row month grid requires vertical scrolling in the native 430 × 660 pt panel. This is accepted because the 50 pt day cells preserve readable date, amount, and return-rate lines instead of compressing financial data below a comfortable size.
@@ -87,6 +93,7 @@
 - [x] Preserve daily amount and return-rate display in calendar cells.
 - [x] Keep the chart tooltip stable during rapid pointer movement.
 - [x] Keep hover details outside the plot so the trend line is never covered.
+- [x] Remove the redundant JD completion source strip without affecting synchronization.
 - [x] Verify core interactions, accessibility text, tests, and native rendering.
 
 final result: passed
