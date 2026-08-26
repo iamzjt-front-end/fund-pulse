@@ -179,6 +179,8 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
             .portfolioPerformance,
             .jdFinancePerformanceSync,
             .todayIncomeRanking(.amount),
+            .addAccount,
+            .manageAccounts,
             .onboardingAddFund(origin: .firstLaunch)
         ]
 
@@ -229,6 +231,34 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
         XCTAssertEqual(FundHoldingStatus.holding.title, "持有")
     }
 
+    func testFundUpdateMarkerOnlyRepresentsOfficialOffExchangeNAV() {
+        let fund = FundPosition(
+            code: "000001",
+            name: "测试基金",
+            dateText: "08-25 15:00",
+            todayIncome: 10,
+            todayRate: 1,
+            holdingIncome: 10,
+            holdingRate: 1,
+            currentAmount: 1_010,
+            status: .holding,
+            isUpdated: true
+        )
+
+        XCTAssertTrue(
+            FundUpdatePresentationPolicy.showsOfficialUpdateMarker(
+                for: fund,
+                accountKind: .offExchange
+            )
+        )
+        XCTAssertFalse(
+            FundUpdatePresentationPolicy.showsOfficialUpdateMarker(
+                for: fund,
+                accountKind: .onExchange
+            )
+        )
+    }
+
     func testJDFinanceCompletionActionRequiresBetaAndANonRankingPage() {
         for page in HoldingPerformancePage.allCases {
             XCTAssertFalse(
@@ -249,6 +279,13 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
             HoldingPerformancePresentation.showsJDFinanceCompletionAction(
                 page: .calendar,
                 betaFeaturesEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            HoldingPerformancePresentation.showsJDFinanceCompletionAction(
+                page: .calendar,
+                betaFeaturesEnabled: true,
+                accountKind: .onExchange
             )
         )
     }
@@ -323,6 +360,17 @@ final class AppStoreFeatureIntegrationTests: XCTestCase {
                 hidesAmounts: true
             ),
             "2 只持仓 · ••••"
+        )
+        XCTAssertEqual(
+            HoldingPerformancePresentation.rankingSubtitle(
+                holdingCount: 2,
+                holdingIncome: -120.1254,
+                holdingIncomeRate: -5.75,
+                metric: .amount,
+                hidesAmounts: false,
+                accountKind: .onExchange
+            ),
+            "2 只持仓 · -¥ 120.125"
         )
     }
 

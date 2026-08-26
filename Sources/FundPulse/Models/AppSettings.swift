@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppSettings: Codable, Equatable {
-    static let currentSchemaVersion = 13
+    static let currentSchemaVersion = 15
     static let currentOnboardingVersion = 1
     static let defaultMainPanelHeight = 640
     static let minMainPanelHeight = 560

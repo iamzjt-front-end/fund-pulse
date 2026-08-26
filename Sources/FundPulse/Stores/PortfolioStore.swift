@@ -9,8 +9,10 @@ final class PortfolioStore {
     private(set) var isRefreshingQuotes = false
     private(set) var dataDirectory: URL
     private let quoteService: FundQuoteService
+    private let exchangeQuoteService: ExchangeFundQuoteService
     private let nowProvider: () -> Date
     private let repository: any PortfolioRepository
+    let accountKind: PortfolioAccountKind
     let performanceStore: PortfolioPerformanceStore
     private var persistedSnapshot: PortfolioSnapshot?
     private var refreshTask: Task<Void, Never>?
@@ -28,31 +30,55 @@ final class PortfolioStore {
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         quoteService: FundQuoteService = FundQuoteService(),
+        exchangeQuoteService: ExchangeFundQuoteService = ExchangeFundQuoteService(),
         performanceStore: PortfolioPerformanceStore? = nil,
+        accountKind: PortfolioAccountKind = .offExchange,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = dataDirectory
         self.quoteService = quoteService
+        self.exchangeQuoteService = exchangeQuoteService
         self.nowProvider = now
         self.repository = JSONPortfolioRepository(dataDirectory: dataDirectory)
+        self.accountKind = accountKind
         self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: dataDirectory)
     }
 
     init(
         repository: any PortfolioRepository,
         quoteService: FundQuoteService = FundQuoteService(),
+        exchangeQuoteService: ExchangeFundQuoteService = ExchangeFundQuoteService(),
         performanceStore: PortfolioPerformanceStore? = nil,
+        accountKind: PortfolioAccountKind = .offExchange,
         now: @escaping () -> Date = { .now }
     ) {
         self.dataDirectory = repository.dataDirectory
         self.quoteService = quoteService
+        self.exchangeQuoteService = exchangeQuoteService
         self.nowProvider = now
         self.repository = repository
+        self.accountKind = accountKind
         self.performanceStore = performanceStore ?? PortfolioPerformanceStore(dataDirectory: repository.dataDirectory)
     }
 
     var dataFileURL: URL {
         repository.dataFileURL
+    }
+
+    func exchangeShareAvailability(
+        for code: String,
+        on date: Date? = nil
+    ) -> ExchangeShareAvailability {
+        guard accountKind == .onExchange,
+              let fund = snapshot.funds.first(where: { $0.code == code })
+        else {
+            return .zero
+        }
+
+        return exchangeShareAvailability(
+            for: fund,
+            on: DateOnlyFormatter.string(from: date ?? nowProvider())
+        )
     }
 
     func load() {
@@ -158,6 +184,53 @@ final class PortfolioStore {
         await task.value
     }
 
+    func applyExchangeFirstDayReconciliation(
+        date: String,
+        reportedHoldingIncome: Double,
+        reportedTodayIncome: Double
+    ) throws {
+        guard accountKind == .onExchange else {
+            throw PortfolioStoreError.operationUnavailableForAccount
+        }
+
+        let today = DateOnlyFormatter.string(from: nowProvider())
+        guard DateOnlyFormatter.parse(date) != nil, date <= today else {
+            throw PortfolioStoreError.invalidExchangeReconciliationDate
+        }
+
+        let holdingsMarketValue = snapshot.totalAmount
+        guard !snapshot.funds.isEmpty,
+              holdingsMarketValue.isFinite,
+              holdingsMarketValue > 0,
+              reportedHoldingIncome.isFinite,
+              reportedTodayIncome.isFinite,
+              holdingsMarketValue - reportedHoldingIncome > 0
+        else {
+            throw PortfolioStoreError.invalidExchangeReconciliationValue
+        }
+
+        var updatedSnapshot = snapshot
+        updatedSnapshot.exchangeAccountReconciliation = ExchangeAccountReconciliation(
+            date: date,
+            holdingsMarketValue: holdingsMarketValue,
+            reportedHoldingIncome: reportedHoldingIncome,
+            reportedTodayIncome: reportedTodayIncome
+        )
+        updatedSnapshot.updateTime = nowProvider()
+
+        if date == today {
+            let holdingIncomeBase = holdingsMarketValue - reportedHoldingIncome
+            updatedSnapshot.holdingIncome = reportedHoldingIncome
+            updatedSnapshot.holdingIncomeRate = reportedHoldingIncome / holdingIncomeBase * 100
+            updatedSnapshot.todayIncome = reportedTodayIncome
+            updatedSnapshot.todayIncomeRate = reportedTodayIncome / holdingsMarketValue * 100
+        }
+
+        try save(updatedSnapshot)
+        snapshot = updatedSnapshot
+        loadState = .loaded
+    }
+
     private func drainRefreshRequests() async {
         isRefreshingQuotes = true
         defer {
@@ -192,13 +265,24 @@ final class PortfolioStore {
         }
 
         do {
-            let quotes = await quoteService.fetchQuotes(codes: codes)
-            repairAmountModeSharePrecisionFromTradeRecords()
-            await processPendingTrades(quotes: quotes)
-            await processPendingConversions(quotes: quotes)
-            await processPendingPositions(quotes: quotes)
+            let quotes: [String: FundQuote]
+            switch accountKind {
+            case .offExchange:
+                quotes = await quoteService.fetchQuotes(codes: codes)
+                repairAmountModeSharePrecisionFromTradeRecords()
+                await processPendingTrades(quotes: quotes)
+                await processPendingConversions(quotes: quotes)
+                await processPendingPositions(quotes: quotes)
+            case .onExchange:
+                quotes = await exchangeQuoteService.fetchQuotes(codes: codes)
+            }
             let now = nowProvider()
-            let calculatedSnapshot = PortfolioCalculator.applyingQuotes(to: snapshot, quotes: quotes, now: now)
+            let calculatedSnapshot = PortfolioCalculator.applyingQuotes(
+                to: snapshot,
+                quotes: quotes,
+                now: now,
+                accountKind: accountKind
+            )
             snapshot = FundIntradayRateHistoryRecorder.applyingQuotes(
                 to: calculatedSnapshot,
                 quotes: quotes,
@@ -217,6 +301,10 @@ final class PortfolioStore {
         let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             throw PortfolioStoreError.invalidCode
+        }
+        if accountKind == .onExchange {
+            try await upsertExchangeFund(draft, replacing: existingCode)
+            return
         }
 
         let existingFund = snapshot.funds.first { $0.code == (existingCode ?? code) }
@@ -292,13 +380,30 @@ final class PortfolioStore {
     }
 
     func lookupFundName(code: String) async -> String? {
-        await quoteService.lookupFundName(code: code)
+        switch accountKind {
+        case .offExchange:
+            return await quoteService.lookupFundName(code: code)
+        case .onExchange:
+            if let name = await quoteService.lookupFundName(code: code) {
+                return name
+            }
+            return await exchangeQuoteService.lookupFundName(code: code)
+        }
     }
 
     func fetchLatestQuote(code: String) async -> FundQuote? {
+        try? await fetchLatestQuoteThrowing(code: code)
+    }
+
+    func fetchLatestQuoteThrowing(code: String) async throws -> FundQuote {
         let code = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !code.isEmpty else { return nil }
-        return try? await quoteService.fetchQuote(code: code)
+        guard !code.isEmpty else { throw PortfolioStoreError.invalidCode }
+        switch accountKind {
+        case .offExchange:
+            return try await quoteService.fetchQuote(code: code)
+        case .onExchange:
+            return try await exchangeQuoteService.fetchQuote(code: code)
+        }
     }
 
     func fetchTradeReferenceNetValue(
@@ -306,6 +411,10 @@ final class PortfolioStore {
         tradeDate: String,
         timeType: PositionTimeType
     ) async -> (date: String, value: Double)? {
+        if accountKind == .onExchange {
+            guard let quote = try? await exchangeQuoteService.fetchQuote(code: code) else { return nil }
+            return (quote.netValueDate, quote.netValue)
+        }
         let acceptedDate = TradingCalendar.acceptedTradeDate(positionDate: tradeDate, timeType: timeType)
         return await quoteService.fetchSmartNetValue(code: code, startDate: acceptedDate)
     }
@@ -409,6 +518,14 @@ final class PortfolioStore {
     }
 
     func adjustFundPosition(_ draft: FundTradeDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
+        if accountKind == .onExchange {
+            guard syncMetadata == nil else {
+                throw PortfolioStoreError.operationUnavailableForAccount
+            }
+            try await recordExchangeTrade(draft)
+            return
+        }
+
         let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else {
             throw PortfolioStoreError.invalidCode
@@ -455,6 +572,9 @@ final class PortfolioStore {
     }
 
     func convertFundPosition(_ draft: FundConversionDraft, syncMetadata: FundTradeSyncMetadata? = nil) async throws {
+        guard accountKind == .offExchange else {
+            throw PortfolioStoreError.operationUnavailableForAccount
+        }
         let normalizedDraft = try normalizedConversionDraft(draft)
         guard let fromIndex = snapshot.funds.firstIndex(where: { $0.code == normalizedDraft.fromCode }) else {
             throw PortfolioStoreError.fundNotFound
@@ -1057,6 +1177,11 @@ final class PortfolioStore {
     }
 
     func editTradeRecord(id: String, with draft: FundTradeDraft) async throws {
+        if accountKind == .onExchange {
+            try await editExchangeTradeRecord(id: id, with: draft)
+            return
+        }
+
         guard var records = snapshot.tradeRecords,
               let index = records.firstIndex(where: { $0.id == id })
         else {
@@ -1248,15 +1373,228 @@ final class PortfolioStore {
             && pendingAmount <= 0.0001
     }
 
+    private func upsertExchangeFund(
+        _ draft: FundPositionDraft,
+        replacing existingCode: String?
+    ) async throws {
+        let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ExchangeFundQuoteService.securityID(for: code) != nil else {
+            throw PortfolioStoreError.invalidExchangeCode
+        }
+
+        let existingFund = snapshot.funds.first { $0.code == (existingCode ?? code) }
+        let quote = try? await exchangeQuoteService.fetchQuote(code: code)
+        let confirmedPrice: Double?
+        switch draft.positionMode {
+        case .amount:
+            guard let marketPrice = quote?.netValue, marketPrice > 0 else {
+                throw PortfolioStoreError.missingExchangeMarketPrice
+            }
+            confirmedPrice = marketPrice
+        case .share:
+            confirmedPrice = draft.cost
+        }
+
+        let acceptedDate = draft.positionDate
+        var normalizedDraft = draft
+        normalizedDraft.code = code
+        normalizedDraft.exchangeTurnaroundRule = draft.exchangeTurnaroundRule
+            ?? existingFund?.resolvedExchangeTurnaroundRule
+            ?? .nextTradingDay
+        switch normalizedDraft.positionMode {
+        case .amount:
+            normalizedDraft.shares = nil
+            normalizedDraft.cost = nil
+        case .share:
+            normalizedDraft.positionAmount = nil
+            normalizedDraft.positionProfit = 0
+            let position = try resolvedPosition(draft: normalizedDraft, netValue: confirmedPrice)
+            normalizedDraft.exchangeSellableShares = try validatedExchangeSellableShares(
+                requested: draft.exchangeSellableShares,
+                held: position.shares,
+                rule: normalizedDraft.exchangeTurnaroundRule ?? .nextTradingDay
+            )
+        }
+        normalizedDraft.positionTimeType = .before15
+        normalizedDraft.requiresTradeConfirmation = false
+
+        var fund = try makeFundPosition(
+            from: normalizedDraft,
+            existingFund: existingFund,
+            quote: quote,
+            confirmedNetValue: confirmedPrice,
+            isEditingExistingFund: existingFund != nil,
+            acceptedDateOverride: acceptedDate
+        )
+        if let quote {
+            fund.dateText = dateText(for: quote, fallback: fund.dateText)
+        } else if acceptedDate.count >= 10 {
+            fund.dateText = String(acceptedDate.dropFirst(5).prefix(5))
+        }
+
+        var funds = snapshot.funds.filter { $0.code != (existingCode ?? code) && $0.code != code }
+        if let existingCode,
+           let index = snapshot.funds.firstIndex(where: { $0.code == existingCode }) {
+            funds.insert(fund, at: min(index, funds.count))
+        } else {
+            funds.insert(fund, at: 0)
+        }
+        snapshot.funds = funds
+
+        if existingFund != nil {
+            resetTradeHistoryForEditedFund(codes: Set([existingCode ?? code, code]))
+        }
+        // The new share/sellable baseline replaces the legacy account-level
+        // first-day P&L override. Keep that old field readable for backups,
+        // but never let it shadow a newly entered exchange baseline.
+        snapshot.exchangeAccountReconciliation = nil
+        appendInitialTradeRecord(
+            draft: normalizedDraft,
+            fund: fund,
+            acceptedDate: acceptedDate,
+            confirmedNetValue: confirmedPrice
+        )
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
+    private func recordExchangeTrade(_ draft: FundTradeDraft) async throws {
+        let resolved = try resolvedExchangeTrade(draft)
+        let fund = snapshot.funds[resolved.fundIndex]
+        let record = FundTradeRecord(
+            id: UUID().uuidString,
+            kind: tradeKind(for: draft.action),
+            status: .confirmed,
+            code: resolved.code,
+            name: fund.name,
+            mode: .share,
+            amount: resolved.cashAmount,
+            shares: resolved.shares,
+            confirmedShares: resolved.shares,
+            price: resolved.price,
+            tradeDate: draft.tradeDate,
+            tradeTimeType: .before15,
+            acceptedDate: draft.tradeDate,
+            createdAt: nowProvider(),
+            confirmedAt: nowProvider(),
+            failureReason: nil,
+            feeAmount: resolved.feeAmount
+        )
+        appendTradeRecord(record)
+        try rebuildFundPositionFromTradeRecords(code: resolved.code)
+        try save(snapshot)
+        await refreshQuotes()
+    }
+
+    private func editExchangeTradeRecord(id: String, with draft: FundTradeDraft) async throws {
+        guard var records = snapshot.tradeRecords,
+              let recordIndex = records.firstIndex(where: { $0.id == id })
+        else {
+            throw PortfolioStoreError.tradeRecordNotFound
+        }
+        let originalKind = records[recordIndex].kind
+        guard originalKind == .newFund || originalKind == .buy || originalKind == .sell else {
+            throw PortfolioStoreError.operationUnavailableForAccount
+        }
+
+        var normalizedDraft = draft
+        normalizedDraft.code = records[recordIndex].code
+        if originalKind == .newFund {
+            normalizedDraft.action = .buy
+        }
+        let editableSellShares = originalKind == .sell
+            ? (records[recordIndex].confirmedShares ?? records[recordIndex].shares ?? 0)
+            : 0
+        let resolved = try resolvedExchangeTrade(
+            normalizedDraft,
+            additionalAvailableSellShares: editableSellShares
+        )
+        let previousSnapshot = snapshot
+
+        records[recordIndex].kind = originalKind == .newFund ? .newFund : tradeKind(for: normalizedDraft.action)
+        records[recordIndex].status = .confirmed
+        records[recordIndex].name = snapshot.funds[resolved.fundIndex].name
+        records[recordIndex].mode = .share
+        records[recordIndex].amount = resolved.cashAmount
+        records[recordIndex].shares = resolved.shares
+        records[recordIndex].confirmedShares = resolved.shares
+        records[recordIndex].price = resolved.price
+        records[recordIndex].profit = nil
+        records[recordIndex].tradeDate = normalizedDraft.tradeDate
+        records[recordIndex].tradeTimeType = .before15
+        records[recordIndex].acceptedDate = normalizedDraft.tradeDate
+        records[recordIndex].confirmedAt = nowProvider()
+        records[recordIndex].failureReason = nil
+        records[recordIndex].buyFeeRate = nil
+        records[recordIndex].sellFeeMode = nil
+        records[recordIndex].sellFeeValue = nil
+        records[recordIndex].feeAmount = resolved.feeAmount
+        snapshot.tradeRecords = records
+
+        do {
+            rebuildPendingTradesFromRecords(for: resolved.code)
+            try rebuildFundPositionFromTradeRecords(code: resolved.code)
+            try save(snapshot)
+        } catch {
+            snapshot = previousSnapshot
+            throw error
+        }
+        await refreshQuotes()
+    }
+
+    private func resolvedExchangeTrade(
+        _ draft: FundTradeDraft,
+        additionalAvailableSellShares: Double = 0
+    ) throws -> (code: String, fundIndex: Int, shares: Double, price: Double, feeAmount: Double, cashAmount: Double) {
+        let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ExchangeFundQuoteService.securityID(for: code) != nil else {
+            throw PortfolioStoreError.invalidExchangeCode
+        }
+        guard let fundIndex = snapshot.funds.firstIndex(where: { $0.code == code }) else {
+            throw PortfolioStoreError.fundNotFound
+        }
+        guard draft.mode == .share else {
+            throw PortfolioStoreError.exchangeTradeRequiresShares
+        }
+
+        let shares = roundedDisplayedShares(draft.shares ?? 0)
+        guard shares > 0 else { throw PortfolioStoreError.invalidPosition }
+        let price = roundedCost(draft.price ?? 0)
+        guard price > 0 else { throw PortfolioStoreError.invalidExecutionPrice }
+        let feeAmount = roundedMoney(draft.feeAmount ?? 0)
+        guard feeAmount >= 0 else { throw PortfolioStoreError.invalidTradeFee }
+
+        if draft.action == .sell {
+            let availableShares = exchangeShareAvailability(
+                for: snapshot.funds[fundIndex],
+                on: draft.tradeDate
+            ).sellableShares
+                + max(additionalAvailableSellShares, 0)
+            guard shares <= availableShares + PortfolioPrecision.shareAvailabilityTolerance else {
+                throw PortfolioStoreError.insufficientShares
+            }
+        }
+
+        let grossAmount = roundedMoney(shares * price)
+        if draft.action == .sell, feeAmount > grossAmount {
+            throw PortfolioStoreError.invalidTradeFee
+        }
+        let cashAmount = draft.action == .buy
+            ? roundedMoney(grossAmount + feeAmount)
+            : roundedMoney(grossAmount - feeAmount)
+        return (code, fundIndex, shares, price, feeAmount, cashAmount)
+    }
+
     private func makeFundPosition(
         from draft: FundPositionDraft,
         existingFund: FundPosition?,
         quote: FundQuote?,
         confirmedNetValue: Double?,
-        isEditingExistingFund: Bool
+        isEditingExistingFund: Bool,
+        acceptedDateOverride: String? = nil
     ) throws -> FundPosition {
         let code = draft.code.trimmingCharacters(in: .whitespacesAndNewlines)
-        let acceptedDate = TradingCalendar.acceptedTradeDate(
+        let acceptedDate = acceptedDateOverride ?? TradingCalendar.acceptedTradeDate(
             positionDate: draft.positionDate,
             timeType: draft.positionTimeType
         )
@@ -1312,18 +1650,18 @@ final class PortfolioStore {
             manualPrincipal = nil
         }
 
-        let lots: [FundPositionLot]? = position.map {
-            [
-                FundPositionLot(
-                    id: UUID().uuidString,
-                    shares: $0.shares,
-                    cost: $0.cost,
-                    principal: $0.principal,
-                    incomeStartDate: incomeStartDate,
-                    positionDate: draft.positionDate,
-                    positionTimeType: draft.positionTimeType
-                )
-            ]
+        let lots: [FundPositionLot]? = try position.map {
+            let baseLot = FundPositionLot(
+                id: UUID().uuidString,
+                shares: $0.shares,
+                cost: $0.cost,
+                principal: $0.principal,
+                incomeStartDate: incomeStartDate,
+                positionDate: draft.positionDate,
+                positionTimeType: draft.positionTimeType
+            )
+            guard accountKind == .onExchange else { return [baseLot] }
+            return try exchangeBaselineLots(from: baseLot, draft: draft)
         }
         let resolvedDateText = confirmedNetValue != nil
             ? Self.confirmedDateText(acceptedDate)
@@ -1350,6 +1688,9 @@ final class PortfolioStore {
             positionMode: draft.positionMode,
             positionDate: draft.positionDate,
             positionTimeType: draft.positionTimeType,
+            exchangeTurnaroundRule: accountKind == .onExchange
+                ? (draft.exchangeTurnaroundRule ?? existingFund?.resolvedExchangeTurnaroundRule ?? .nextTradingDay)
+                : nil,
             pendingAmount: pendingAmount,
             pendingProfit: pendingProfit,
             zdfRange: nil,
@@ -1945,6 +2286,67 @@ final class PortfolioStore {
         effectiveLots(for: fund).reduce(0) { $0 + $1.shares }
     }
 
+    private func exchangeShareAvailability(
+        for fund: FundPosition,
+        on dateText: String
+    ) -> ExchangeShareAvailability {
+        let lots = effectiveLots(for: fund)
+        let recordsByID = exchangeTradeRecordsByID(for: fund.code)
+        var sellableShares = 0.0
+        var nextUnlockDate: String?
+
+        for lot in lots {
+            let sellableDate = exchangeLotSellableDate(
+                lot,
+                fund: fund,
+                recordsByID: recordsByID
+            )
+            if sellableDate.isEmpty || sellableDate <= dateText {
+                sellableShares += lot.shares
+            } else if nextUnlockDate == nil || sellableDate < nextUnlockDate! {
+                nextUnlockDate = sellableDate
+            }
+        }
+
+        let heldShares = lots.reduce(0) { $0 + $1.shares }
+        let normalizedSellableShares = min(max(sellableShares, 0), heldShares)
+        return ExchangeShareAvailability(
+            heldShares: heldShares,
+            sellableShares: normalizedSellableShares,
+            lockedShares: max(heldShares - normalizedSellableShares, 0),
+            nextUnlockDate: nextUnlockDate
+        )
+    }
+
+    private func exchangeTradeRecordsByID(for code: String) -> [String: FundTradeRecord] {
+        (snapshot.tradeRecords ?? []).reduce(into: [:]) { result, record in
+            guard record.code == code, record.status == .confirmed else { return }
+            result[record.id] = record
+        }
+    }
+
+    private func exchangeLotSellableDate(
+        _ lot: FundPositionLot,
+        fund: FundPosition,
+        recordsByID: [String: FundTradeRecord]
+    ) -> String {
+        if let exchangeSellableDate = lot.exchangeSellableDate {
+            return exchangeSellableDate
+        }
+        guard let record = recordsByID[lot.id] else {
+            // Unmapped and legacy lots are imported holding baselines, so their
+            // recorded position date is already sellable rather than a new buy.
+            return lot.positionDate
+        }
+
+        guard fund.resolvedExchangeTurnaroundRule == .nextTradingDay,
+              record.kind == .buy || record.kind == .conversionIn
+        else {
+            return record.tradeDate
+        }
+        return TradingCalendar.nextFundTradingDate(after: record.tradeDate) ?? record.tradeDate
+    }
+
     private func appendPendingConversion(
         _ draft: FundConversionDraft,
         fromFund: FundPosition,
@@ -2308,6 +2710,80 @@ final class PortfolioStore {
         ]
     }
 
+    private func validatedExchangeSellableShares(
+        requested: Double?,
+        held: Double,
+        rule: ExchangeTurnaroundRule
+    ) throws -> Double {
+        guard held.isFinite, held > 0 else {
+            throw PortfolioStoreError.invalidPosition
+        }
+        let sellable = requested ?? held
+        guard sellable.isFinite,
+              sellable >= -PortfolioPrecision.shareAvailabilityTolerance,
+              sellable <= held + PortfolioPrecision.shareAvailabilityTolerance
+        else {
+            throw PortfolioStoreError.invalidExchangeSellableShares
+        }
+        if rule == .sameDay,
+           sellable + PortfolioPrecision.shareAvailabilityTolerance < held {
+            throw PortfolioStoreError.invalidExchangeSellableShares
+        }
+        return roundedDisplayedShares(min(max(sellable, 0), held))
+    }
+
+    private func exchangeBaselineLots(
+        from baseLot: FundPositionLot,
+        draft: FundPositionDraft
+    ) throws -> [FundPositionLot] {
+        let rule = draft.exchangeTurnaroundRule ?? .nextTradingDay
+        let sellableShares = try validatedExchangeSellableShares(
+            requested: draft.exchangeSellableShares,
+            held: baseLot.shares,
+            rule: rule
+        )
+        let lockedShares = roundedDisplayedShares(baseLot.shares - sellableShares)
+        let sellableDate = draft.positionDate
+        let lockedSellableDate: String? = lockedShares > PortfolioPrecision.shareAvailabilityTolerance
+            ? (rule == .sameDay
+                ? sellableDate
+                : TradingCalendar.nextFundTradingDate(after: sellableDate) ?? sellableDate)
+            : nil
+
+        guard lockedShares > PortfolioPrecision.shareAvailabilityTolerance else {
+            var lot = baseLot
+            lot.exchangeSellableDate = sellableDate
+            return [lot]
+        }
+
+        let totalPrincipal = lotPrincipal(baseLot)
+        func splitLot(id: String, shares: Double, sellableDate: String) -> FundPositionLot {
+            var lot = baseLot
+            lot.id = id
+            lot.shares = shares
+            lot.principal = totalPrincipal * shares / baseLot.shares
+            lot.exchangeSellableDate = sellableDate
+            return lot
+        }
+
+        var lots: [FundPositionLot] = []
+        if sellableShares > PortfolioPrecision.shareAvailabilityTolerance {
+            lots.append(splitLot(
+                id: "\(baseLot.id)-sellable",
+                shares: sellableShares,
+                sellableDate: sellableDate
+            ))
+        }
+        if let lockedSellableDate {
+            lots.append(splitLot(
+                id: "\(baseLot.id)-locked",
+                shares: lockedShares,
+                sellableDate: lockedSellableDate
+            ))
+        }
+        return lots
+    }
+
     private func syncAggregateFields(for fund: inout FundPosition) {
         let lots = effectiveLots(for: fund)
         let totalShares = roundedStoredShares(lots.reduce(0) { $0 + $1.shares })
@@ -2398,6 +2874,9 @@ final class PortfolioStore {
 
         var lots: [FundPositionLot] = []
         var didRebuildPosition = false
+        let recordsByID = records.reduce(into: [String: FundTradeRecord]()) { result, record in
+            result[record.id] = record
+        }
         for record in records {
             switch record.kind {
             case .newFund:
@@ -2409,7 +2888,7 @@ final class PortfolioStore {
                 fund.incomeStartDate = record.acceptedDate
                 fund.dateText = Self.confirmedDateText(record.acceptedDate)
                 if let lot = lot(from: record) {
-                    lots = [lot]
+                    lots = exchangeBaselineLots(from: lot, record: record, fund: fund)
                 }
             case .buy, .conversionIn:
                 guard let lot = lot(from: record) else { continue }
@@ -2421,7 +2900,17 @@ final class PortfolioStore {
             case .sell, .conversionOut:
                 guard didRebuildPosition else { continue }
                 let sellShares = try confirmedShares(for: record)
-                lots = try lotsAfterSelling(shares: sellShares, from: lots)
+                if accountKind == .onExchange {
+                    lots = try lotsAfterExchangeSelling(
+                        shares: sellShares,
+                        from: lots,
+                        fund: fund,
+                        saleDate: record.tradeDate,
+                        recordsByID: recordsByID
+                    )
+                } else {
+                    lots = try lotsAfterSelling(shares: sellShares, from: lots)
+                }
                 fund.positionDate = record.tradeDate
                 fund.positionTimeType = record.tradeTimeType
             }
@@ -2603,6 +3092,61 @@ final class PortfolioStore {
         )
     }
 
+    private func exchangeBaselineLots(
+        from baseLot: FundPositionLot,
+        record: FundTradeRecord,
+        fund: FundPosition
+    ) -> [FundPositionLot] {
+        guard accountKind == .onExchange,
+              let requestedSellableShares = record.exchangeInitialSellableShares,
+              requestedSellableShares.isFinite,
+              requestedSellableShares >= 0,
+              requestedSellableShares <= baseLot.shares + PortfolioPrecision.shareAvailabilityTolerance
+        else {
+            return [baseLot]
+        }
+
+        let sellableShares = roundedDisplayedShares(
+            min(max(requestedSellableShares, 0), baseLot.shares)
+        )
+        let lockedShares = roundedDisplayedShares(baseLot.shares - sellableShares)
+        guard lockedShares > PortfolioPrecision.shareAvailabilityTolerance else {
+            var lot = baseLot
+            lot.exchangeSellableDate = record.tradeDate
+            return [lot]
+        }
+        guard fund.resolvedExchangeTurnaroundRule == .nextTradingDay,
+              let lockedSellableDate = TradingCalendar.nextFundTradingDate(after: record.tradeDate)
+        else {
+            return [baseLot]
+        }
+
+        let totalPrincipal = lotPrincipal(baseLot)
+        func splitLot(id: String, shares: Double, sellableDate: String) -> FundPositionLot {
+            var lot = baseLot
+            lot.id = id
+            lot.shares = shares
+            lot.principal = totalPrincipal * shares / baseLot.shares
+            lot.exchangeSellableDate = sellableDate
+            return lot
+        }
+
+        var lots: [FundPositionLot] = []
+        if sellableShares > PortfolioPrecision.shareAvailabilityTolerance {
+            lots.append(splitLot(
+                id: "\(record.id)-sellable",
+                shares: sellableShares,
+                sellableDate: record.tradeDate
+            ))
+        }
+        lots.append(splitLot(
+            id: "\(record.id)-locked",
+            shares: lockedShares,
+            sellableDate: lockedSellableDate
+        ))
+        return lots
+    }
+
     private func confirmedShares(for record: FundTradeRecord) throws -> Double {
         if let amountModeShares = amountModeConfirmedShares(for: record) {
             return amountModeShares
@@ -2704,6 +3248,52 @@ final class PortfolioStore {
         return lots.filter { $0.shares > 0 }
     }
 
+    private func lotsAfterExchangeSelling(
+        shares sellShares: Double,
+        from sourceLots: [FundPositionLot],
+        fund: FundPosition,
+        saleDate: String,
+        recordsByID: [String: FundTradeRecord]
+    ) throws -> [FundPositionLot] {
+        guard sellShares > 0 else { throw PortfolioStoreError.invalidPosition }
+        var remainingToSell = sellShares
+        var lots = sourceLots.sorted { lhs, rhs in
+            if lhs.incomeStartDate == rhs.incomeStartDate {
+                return lhs.positionDate < rhs.positionDate
+            }
+            return lhs.incomeStartDate < rhs.incomeStartDate
+        }
+        let sellableIndices = lots.indices.filter { index in
+            let sellableDate = exchangeLotSellableDate(
+                lots[index],
+                fund: fund,
+                recordsByID: recordsByID
+            )
+            return sellableDate.isEmpty || sellableDate <= saleDate
+        }
+        let sellableShares = sellableIndices.reduce(0) { $0 + lots[$1].shares }
+        guard sellShares <= sellableShares + PortfolioPrecision.shareAvailabilityTolerance else {
+            throw PortfolioStoreError.insufficientShares
+        }
+
+        for index in sellableIndices {
+            guard remainingToSell > 0 else { break }
+            let originalShares = lots[index].shares
+            let deducted = min(originalShares, remainingToSell)
+            let remainingShares = roundedStoredShares(originalShares - deducted)
+            lots[index].shares = remainingShares
+            if let principal = lots[index].principal {
+                lots[index].principal = remainingPrincipal(
+                    originalPrincipal: principal,
+                    originalShares: originalShares,
+                    remainingShares: remainingShares
+                )
+            }
+            remainingToSell = roundedStoredShares(remainingToSell - deducted)
+        }
+        return lots.filter { $0.shares > 0 }
+    }
+
     private func appendInitialTradeRecord(
         draft: FundPositionDraft,
         fund: FundPosition,
@@ -2746,7 +3336,10 @@ final class PortfolioStore {
             tradeTimeType: draft.positionTimeType,
             acceptedDate: acceptedDate,
             createdAt: .now,
-            confirmedAt: status == .confirmed ? .now : nil
+            confirmedAt: status == .confirmed ? .now : nil,
+            exchangeInitialSellableShares: accountKind == .onExchange
+                ? (draft.exchangeSellableShares ?? confirmedShares)
+                : nil
         )
         appendTradeRecord(record)
     }
@@ -3152,7 +3745,8 @@ final class PortfolioStore {
         acceptedDate: String,
         createdAt: Date,
         confirmedAt: Date?,
-        syncMetadata: FundTradeSyncMetadata? = nil
+        syncMetadata: FundTradeSyncMetadata? = nil,
+        exchangeInitialSellableShares: Double? = nil
     ) -> FundTradeRecord {
         FundTradeRecord(
             id: UUID().uuidString,
@@ -3179,7 +3773,8 @@ final class PortfolioStore {
             syncKey: syncMetadata?.syncKey,
             externalStatus: syncMetadata?.externalStatus,
             externalStatusText: syncMetadata?.externalStatusText,
-            waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation
+            waitsForExternalConfirmation: syncMetadata?.waitsForExternalConfirmation,
+            exchangeInitialSellableShares: exchangeInitialSellableShares
         )
     }
 
@@ -3652,6 +4247,11 @@ final class PortfolioStore {
     }
 
     private func lotPrincipal(from record: FundTradeRecord, shares: Double, cost: Double) -> Double {
+        if accountKind == .onExchange,
+           record.mode == .share,
+           record.kind == .newFund || record.kind == .buy {
+            return shares * cost + max(record.feeAmount ?? 0, 0)
+        }
         if record.kind == .newFund,
            record.mode == .amount,
            let amount = record.amount {
@@ -3718,6 +4318,9 @@ final class PortfolioStore {
     }
 
     private func dateText(for quote: FundQuote, fallback: String) -> String {
+        if let marketPriceTime = quote.marketPriceTime, marketPriceTime.count >= 16 {
+            return String(marketPriceTime.dropFirst(5).prefix(11))
+        }
         if quote.estimateTime.count >= 16 {
             return String(quote.estimateTime.dropFirst(5).prefix(11))
         }
@@ -3735,10 +4338,7 @@ final class PortfolioStore {
     }
 
     private func quoteIsUpdated(_ quote: FundQuote) -> Bool {
-        guard let date = DateOnlyFormatter.parse(quote.netValueDate) else {
-            return false
-        }
-        return Calendar.current.isDateInToday(date)
+        FundQuoteUpdatePolicy.isOfficiallyUpdated(quote, on: nowProvider())
     }
 
     private func save(_ snapshot: PortfolioSnapshot) throws {
@@ -3773,15 +4373,25 @@ final class PortfolioStore {
 
 enum PortfolioStoreError: LocalizedError, Equatable {
     case invalidCode
+    case invalidExchangeCode
     case invalidPosition
     case invalidCost
     case missingNetValue
+    case missingExchangeMarketPrice
+    case invalidExecutionPrice
+    case invalidTradeFee
     case fundNotFound
     case pendingNetValue
     case insufficientShares
     case tradeRecordNotFound
     case buyTradeRequiresAmount
     case sellTradeRequiresShare
+    case exchangePositionRequiresShares
+    case exchangeTradeRequiresShares
+    case invalidExchangeSellableShares
+    case invalidExchangeReconciliationDate
+    case invalidExchangeReconciliationValue
+    case operationUnavailableForAccount
     case invalidConversionTarget
     case concurrentModification
     case jdFinanceAccountUnidentified
@@ -3793,12 +4403,20 @@ enum PortfolioStoreError: LocalizedError, Equatable {
         switch self {
         case .invalidCode:
             "请输入基金代码"
+        case .invalidExchangeCode:
+            "请输入 6 位场内基金代码"
         case .invalidPosition:
             "请输入大于 0 的持仓金额或份额"
         case .invalidCost:
             "成本价计算失败，请检查持仓金额和收益"
         case .missingNetValue:
             "无法获取基金净值，请改用按份额并填写成本价"
+        case .missingExchangeMarketPrice:
+            "无法获取最新成交价，暂时不能按金额推算；请重试或改用按份额"
+        case .invalidExecutionPrice:
+            "请输入大于 0 的实际成交价"
+        case .invalidTradeFee:
+            "手续费不能为负，也不能超过卖出成交金额"
         case .fundNotFound:
             "未找到这只基金"
         case .pendingNetValue:
@@ -3811,6 +4429,18 @@ enum PortfolioStoreError: LocalizedError, Equatable {
             "加仓只能按金额录入"
         case .sellTradeRequiresShare:
             "减仓只能按份额录入"
+        case .exchangePositionRequiresShares:
+            "场内持仓需按份额和平均成本价录入"
+        case .exchangeTradeRequiresShares:
+            "场内买卖需按实际成交份额录入"
+        case .invalidExchangeSellableShares:
+            "可卖份额不能为负数或大于持仓份额；T+0 基金必须全部可卖"
+        case .invalidExchangeReconciliationDate:
+            "对账日期无效，不能晚于今天"
+        case .invalidExchangeReconciliationValue:
+            "首次录入日对账数据无效，请先确认持仓总市值并检查盈亏金额"
+        case .operationUnavailableForAccount:
+            "此操作不适用于当前账户类型"
         case .invalidConversionTarget:
             "转换目标基金不能与当前基金相同"
         case .concurrentModification:

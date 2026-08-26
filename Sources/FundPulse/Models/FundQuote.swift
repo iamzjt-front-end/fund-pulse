@@ -8,6 +8,11 @@ struct FundQuote: Codable, Equatable {
     var growthRate: Double
     var estimateTime: String
     var netValueDate: String
+    /// Present for exchange-traded funds whose `netValue` is the latest market price.
+    /// Keeping this separate avoids treating a live exchange quote as a 15:00 fund NAV.
+    var marketPriceTime: String? = nil
+    /// Previous exchange close, used to calculate the exact daily P&L for older lots.
+    var previousClose: Double? = nil
 }
 
 struct FundNetValuePoint: Identifiable, Equatable {

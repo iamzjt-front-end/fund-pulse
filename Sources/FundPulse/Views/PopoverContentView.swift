@@ -2,12 +2,14 @@ import AppKit
 import SwiftUI
 
 struct MainPanelWindowView: View {
-    let store: PortfolioStore
+    let accountsStore: PortfolioAccountsStore
     let settingsStore: AppSettingsStore
     let marketIndexStore: MarketIndexStore
     let updateStore: AppUpdateStore
     let uiState: PopoverUIState
     let selectedFundCode: String?
+    let onSelectAccount: (PortfolioAccountSelection) -> Void
+    let onManageAccounts: () -> Void
     let onRefresh: (() async -> Void)?
     let onOpenSettings: () -> Void
     let onClose: () -> Void
@@ -41,31 +43,19 @@ struct MainPanelWindowView: View {
                             .stroke(panelBorderColor, lineWidth: 0.5)
                     )
 
-                PopoverContentView(
-                    store: store,
-                    settingsStore: settingsStore,
-                    marketIndexStore: marketIndexStore,
-                    updateStore: updateStore,
-                    selectedFundCode: selectedFundCode,
-                    onRefresh: onRefresh,
-                    onOpenSettings: onOpenSettings,
-                    onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
-                    onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
-                    onOpenTodayRateRanking: onOpenTodayRateRanking,
-                    onOpenHoldingIncome: onOpenHoldingIncome,
-                    onOpenHoldingRate: onOpenHoldingRate,
-                    onAddFund: onAddFund,
-                    onOpenFundDetail: onOpenFundDetail,
-                    onOpenTradeRecords: onOpenTradeRecords,
-                    onOpenPendingActivity: onOpenPendingActivity,
-                    onDeletePendingActivity: onDeletePendingActivity,
-                    onBuyFund: onBuyFund,
-                    onSellFund: onSellFund,
-                    onEditFund: onEditFund,
-                    onDeleteFund: onDeleteFund,
-                    onCheckUpdate: onCheckUpdate,
-                    onOpenUpdate: onOpenUpdate
-                )
+                VStack(spacing: 0) {
+                    if showsAccountBar {
+                        PortfolioAccountTabBar(
+                            accountsStore: accountsStore,
+                            onSelect: onSelectAccount,
+                            onManageAccounts: onManageAccounts,
+                            onOpenSettings: onOpenSettings
+                        )
+                    }
+
+                    selectedScopeContent
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 .frame(width: PopoverLayout.mainWidth, height: contentHeight)
                 .clipShape(RoundedRectangle(cornerRadius: PopoverLayout.cornerRadius, style: .continuous))
                 .offset(y: PopoverLayout.arrowHeight)
@@ -79,6 +69,56 @@ struct MainPanelWindowView: View {
         }
         .frame(width: PopoverLayout.mainWidth)
         .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private var selectedScopeContent: some View {
+        if let store = selectedStoreForPresentation {
+            PopoverContentView(
+                store: store,
+                settingsStore: settingsStore,
+                marketIndexStore: marketIndexStore,
+                updateStore: updateStore,
+                selectedFundCode: selectedFundCode,
+                onRefresh: onRefresh,
+                onOpenPortfolioBreakdown: onOpenPortfolioBreakdown,
+                onOpenTodayIncomeRanking: onOpenTodayIncomeRanking,
+                onOpenTodayRateRanking: onOpenTodayRateRanking,
+                onOpenHoldingIncome: onOpenHoldingIncome,
+                onOpenHoldingRate: onOpenHoldingRate,
+                onAddFund: onAddFund,
+                onOpenFundDetail: onOpenFundDetail,
+                onOpenTradeRecords: onOpenTradeRecords,
+                onOpenPendingActivity: onOpenPendingActivity,
+                onDeletePendingActivity: onDeletePendingActivity,
+                onBuyFund: onBuyFund,
+                onSellFund: onSellFund,
+                onEditFund: onEditFund,
+                onDeleteFund: onDeleteFund,
+                onCheckUpdate: onCheckUpdate,
+                onOpenUpdate: onOpenUpdate
+            )
+        } else {
+            AllAccountsOverviewView(
+                accountsStore: accountsStore,
+                onSelectAccount: { accountID in
+                    onSelectAccount(.account(accountID))
+                },
+                onRefresh: onRefresh
+            )
+        }
+    }
+
+    private var showsAccountBar: Bool {
+        PortfolioAccountPresentation.showsAccountBar(accountCount: accountsStore.accounts.count)
+    }
+
+    private var selectedStoreForPresentation: PortfolioStore? {
+        if accountsStore.accounts.count > 1 {
+            return accountsStore.selectedStore
+        }
+        guard let firstAccount = accountsStore.accounts.first else { return nil }
+        return accountsStore.store(for: firstAccount.id)
     }
 
     private func mainPanelContentHeight(for proposedWindowHeight: CGFloat) -> CGFloat {
@@ -204,7 +244,6 @@ struct PopoverContentView: View {
     let updateStore: AppUpdateStore
     let selectedFundCode: String?
     let onRefresh: (() async -> Void)?
-    let onOpenSettings: () -> Void
     let onOpenPortfolioBreakdown: () -> Void
     let onOpenTodayIncomeRanking: () -> Void
     let onOpenTodayRateRanking: () -> Void
@@ -265,10 +304,33 @@ struct PopoverContentView: View {
         }
         .onAppear {
             normalizePendingActivityNoticeDismissal()
+            normalizeFilterForAccount()
         }
         .onChange(of: pendingActivityIDs) { _, _ in
             normalizePendingActivityNoticeDismissal()
         }
+        .onChange(of: store.accountKind) { _, _ in
+            normalizeFilterForAccount()
+        }
+    }
+
+    private var usesExchangeFirstDayReconciliation: Bool {
+        guard store.accountKind == .onExchange,
+              let reconciliation = store.snapshot.exchangeAccountReconciliation
+        else {
+            return false
+        }
+        return reconciliation.date == DateOnlyFormatter.string(from: store.snapshot.updateTime)
+    }
+
+    private var todayIncomeTitle: String {
+        if usesExchangeFirstDayReconciliation { return "当日参考盈亏" }
+        return store.accountKind == .onExchange ? "今日收益(元)" : "实时收益(元)"
+    }
+
+    private var todayRateTitle: String {
+        if usesExchangeFirstDayReconciliation { return "当日收益率" }
+        return store.accountKind == .onExchange ? "今日收益率" : "实时收益率"
     }
 
     private var header: some View {
@@ -308,7 +370,7 @@ struct PopoverContentView: View {
                 Button(action: onOpenHoldingIncome) {
                     metricCard(
                         "持仓收益",
-                        headerSignedMoneyText(store.snapshot.holdingIncome),
+                        headerHoldingIncomeText(store.snapshot.holdingIncome),
                         tone: headerMetricTone(store.snapshot.holdingIncome)
                     )
                 }
@@ -330,7 +392,7 @@ struct PopoverContentView: View {
                 .help("打开持仓收益率")
             }
 
-            if let pendingHeaderImpact {
+            if store.accountKind == .offExchange, let pendingHeaderImpact {
                 Button {
                     selectFilter(.pending)
                 } label: {
@@ -345,9 +407,11 @@ struct PopoverContentView: View {
                 Button(action: onOpenTodayIncomeRanking) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 5) {
-                            Text("实时收益(元)")
+                            Text(todayIncomeTitle)
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
                             if allConfirmedFundsUpdated {
                                 todayIncomeUpdatedTag
                             }
@@ -364,14 +428,12 @@ struct PopoverContentView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .help("查看实时收益排行")
-
-                Spacer()
+                .help("查看\(todayIncomeTitle)排行")
 
                 Button(action: onOpenTodayRateRanking) {
                     VStack(alignment: .trailing, spacing: 3) {
                         HStack(spacing: 4) {
-                            Text("实时收益率")
+                            Text(todayRateTitle)
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.secondary)
                             disclosureIndicator
@@ -386,8 +448,10 @@ struct PopoverContentView: View {
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
-                .help("查看实时收益率排行")
+                .fixedSize(horizontal: true, vertical: false)
+                .help("查看\(todayRateTitle)排行")
             }
+            .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 14)
         .padding(.top, 10)
@@ -450,7 +514,9 @@ struct PopoverContentView: View {
 
     private var allConfirmedFundsUpdated: Bool {
         let confirmedFunds = store.snapshot.funds.filter { !$0.status.isPendingDisplay }
-        return !confirmedFunds.isEmpty && confirmedFunds.allSatisfy(\.isUpdated)
+        return !confirmedFunds.isEmpty && confirmedFunds.allSatisfy {
+            FundUpdatePresentationPolicy.showsOfficialUpdateMarker(for: $0, accountKind: store.accountKind)
+        }
     }
 
     private var todayIncomeUpdatedTag: some View {
@@ -674,7 +740,6 @@ struct PopoverContentView: View {
         HStack(spacing: 6) {
             toolbarIconButton("plus", "新增基金", tone: PanelDesign.accent, action: onAddFund)
             toolbarRefreshControl
-            toolbarIconButton("gearshape", "设置", action: onOpenSettings)
         }
         .fixedSize(horizontal: true, vertical: false)
     }
@@ -913,6 +978,7 @@ struct PopoverContentView: View {
                 )
                 FundRowView(
                     fund: fund,
+                    accountKind: store.accountKind,
                     sortMode: sortMode,
                     isSelected: selectedFundCode == fund.code,
                     isClosedZeroPosition: isClosedZeroPosition,
@@ -1516,8 +1582,10 @@ struct PopoverContentView: View {
         hidesHeaderAmounts ? hiddenMoneyPlaceholder : MoneyFormatter.plainMoney(value)
     }
 
-    private func headerSignedMoneyText(_ value: Double) -> String {
-        hidesHeaderAmounts ? hiddenMoneyPlaceholder : MoneyFormatter.money(value, signed: true)
+    private func headerHoldingIncomeText(_ value: Double) -> String {
+        hidesHeaderAmounts
+            ? hiddenMoneyPlaceholder
+            : MoneyFormatter.holdingIncome(value, accountKind: store.accountKind)
     }
 
     private func headerPercentText(_ value: Double) -> String {
@@ -2133,7 +2201,13 @@ struct PopoverContentView: View {
     }
 
     private var visibleFilters: [FundListFilter] {
-        FundListFilter.allCases
+        FundListFilterPolicy.visibleFilters(for: store.accountKind)
+    }
+
+    private func normalizeFilterForAccount() {
+        guard !visibleFilters.contains(filter) else { return }
+        filter = .holding
+        isSortMenuPresented = false
     }
 
     private var tradeRecords: [FundTradeRecord] {
@@ -2261,7 +2335,7 @@ struct PopoverContentView: View {
     }
 }
 
-private enum FundListFilter: String, CaseIterable, Identifiable {
+enum FundListFilter: String, CaseIterable, Identifiable {
     case holding
     case pending
 
@@ -2273,6 +2347,17 @@ private enum FundListFilter: String, CaseIterable, Identifiable {
             "持仓"
         case .pending:
             "待确认"
+        }
+    }
+}
+
+enum FundListFilterPolicy {
+    static func visibleFilters(for accountKind: PortfolioAccountKind) -> [FundListFilter] {
+        switch accountKind {
+        case .offExchange:
+            FundListFilter.allCases
+        case .onExchange:
+            [.holding]
         }
     }
 }
@@ -2872,6 +2957,7 @@ private enum PortfolioTreemapLayout {
 
 private struct PortfolioTreemapChart: View {
     let items: [PortfolioAllocationItem]
+    let accountKind: PortfolioAccountKind
 
     private enum LabelDensity {
         case full
@@ -2924,7 +3010,8 @@ private struct PortfolioTreemapChart: View {
                         item: slice.item,
                         location: hoverState.location,
                         chartSize: proxy.size,
-                        colorScheme: colorScheme
+                        colorScheme: colorScheme,
+                        accountKind: accountKind
                     )
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .allowsHitTesting(false)
@@ -2933,7 +3020,8 @@ private struct PortfolioTreemapChart: View {
                         item: nil,
                         location: nil,
                         chartSize: proxy.size,
-                        colorScheme: colorScheme
+                        colorScheme: colorScheme,
+                        accountKind: accountKind
                     )
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .allowsHitTesting(false)
@@ -3079,6 +3167,7 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
     let location: CGPoint?
     let chartSize: CGSize
     let colorScheme: ColorScheme
+    let accountKind: PortfolioAccountKind
 
     func makeNSView(context: Context) -> NSView {
         NSView(frame: .zero)
@@ -3090,6 +3179,7 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
             location: location,
             chartSize: chartSize,
             colorScheme: colorScheme,
+            accountKind: accountKind,
             anchorView: view
         )
     }
@@ -3118,6 +3208,7 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
             location: CGPoint?,
             chartSize: CGSize,
             colorScheme: ColorScheme,
+            accountKind: PortfolioAccountKind,
             anchorView: NSView
         ) {
             guard let item, let location, chartSize.width > 0, chartSize.height > 0 else {
@@ -3138,7 +3229,8 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
             let panel = ensurePanel()
             let content = PortfolioTreemapTooltipWindowContent(
                 item: item,
-                colorScheme: colorScheme
+                colorScheme: colorScheme,
+                accountKind: accountKind
             )
             .padding(shadowMargin)
             .frame(
@@ -3255,6 +3347,7 @@ private struct PortfolioTreemapHoverWindowBridge: NSViewRepresentable {
 private struct PortfolioTreemapTooltipWindowContent: View {
     let item: PortfolioAllocationItem
     let colorScheme: ColorScheme
+    let accountKind: PortfolioAccountKind
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3293,7 +3386,10 @@ private struct PortfolioTreemapTooltipWindowContent: View {
                 tooltipMetric("今日收益", MoneyFormatter.money(item.fund.todayIncome, signed: true), color: toneColor(for: item.fund.todayIncome))
                 tooltipMetric(
                     "持仓收益",
-                    MoneyFormatter.money(PortfolioPanelDisplay.holdingIncome(for: item.fund), signed: true),
+                    MoneyFormatter.holdingIncome(
+                        PortfolioPanelDisplay.holdingIncome(for: item.fund),
+                        accountKind: accountKind
+                    ),
                     color: toneColor(for: PortfolioPanelDisplay.holdingIncome(for: item.fund))
                 )
                 tooltipMetric(
@@ -3443,7 +3539,7 @@ struct PortfolioAllocationPanelView: View {
     private var allocationChartSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             panelSectionTitle("持仓方块图")
-            PortfolioTreemapChart(items: allocationItems)
+            PortfolioTreemapChart(items: allocationItems, accountKind: store.accountKind)
                 .frame(height: 190)
         }
         .padding(12)
@@ -3819,7 +3915,9 @@ struct TodayIncomeRankingPanelView: View {
     }
 
     private var updatedFundsCount: Int {
-        rankingItems.filter { $0.fund.isUpdated }.count
+        rankingItems.filter {
+            FundUpdatePresentationPolicy.showsOfficialUpdateMarker(for: $0.fund, accountKind: store.accountKind)
+        }.count
     }
 
     private var rankingHeaderSubtitle: String {
@@ -3828,7 +3926,9 @@ struct TodayIncomeRankingPanelView: View {
     }
 
     private var updatedHeaderTagText: String? {
-        let updatedCount = rankableFunds.filter { $0.isUpdated }.count
+        let updatedCount = rankableFunds.filter {
+            FundUpdatePresentationPolicy.showsOfficialUpdateMarker(for: $0, accountKind: store.accountKind)
+        }.count
         guard updatedCount > 0 else { return nil }
         if updatedCount == rankableFunds.count {
             return "全部已更新"
@@ -4044,7 +4144,7 @@ struct TodayIncomeRankingPanelView: View {
     private func summaryValueText(_ value: Double) -> String {
         switch metric {
         case .amount:
-            MoneyFormatter.money(value, signed: true)
+            incomeMoneyText(value)
         case .rate:
             MoneyFormatter.percent(value, signed: true)
         }
@@ -4094,7 +4194,10 @@ struct TodayIncomeRankingPanelView: View {
                     Text(item.fund.name)
                         .font(.system(size: isTopRank ? 12.5 : 12, weight: .semibold))
                         .lineLimit(1)
-                    if item.fund.isUpdated {
+                    if FundUpdatePresentationPolicy.showsOfficialUpdateMarker(
+                        for: item.fund,
+                        accountKind: store.accountKind
+                    ) {
                         updatedTag
                     }
                 }
@@ -4144,7 +4247,7 @@ struct TodayIncomeRankingPanelView: View {
     private func primaryValueText(for fund: FundPosition) -> String {
         switch metric {
         case .amount:
-            MoneyFormatter.money(income(for: fund), signed: true)
+            incomeMoneyText(income(for: fund))
         case .rate:
             MoneyFormatter.percent(rate(for: fund), signed: true)
         }
@@ -4155,8 +4258,15 @@ struct TodayIncomeRankingPanelView: View {
         case .amount:
             MoneyFormatter.percent(rate(for: fund), signed: true)
         case .rate:
-            MoneyFormatter.money(income(for: fund), signed: true)
+            incomeMoneyText(income(for: fund))
         }
+    }
+
+    private func incomeMoneyText(_ value: Double) -> String {
+        if kind == .holding {
+            return MoneyFormatter.holdingIncome(value, accountKind: store.accountKind)
+        }
+        return MoneyFormatter.money(value, signed: true)
     }
 
     private func rankBadge(for item: TodayIncomeRankItem) -> some View {
@@ -4703,6 +4813,7 @@ private struct PendingTradeActivityRow: View {
 
 struct FundRowView: View {
     let fund: FundPosition
+    let accountKind: PortfolioAccountKind
     let sortMode: FundSortMode
     let isSelected: Bool
     let isClosedZeroPosition: Bool
@@ -4854,7 +4965,7 @@ struct FundRowView: View {
     }
 
     private var showsUpdateStar: Bool {
-        fund.isUpdated
+        FundUpdatePresentationPolicy.showsOfficialUpdateMarker(for: fund, accountKind: accountKind)
     }
 
     private var statusTagTitle: String {
@@ -4901,7 +5012,11 @@ struct FundRowView: View {
         case .todayIncome:
             return FundRowAmountPrivacyFormatter.signedCompactMoney(fund.todayIncome, isMasked: masksAmounts)
         case .holdingIncome:
-            return FundRowAmountPrivacyFormatter.signedCompactMoney(rowHoldingIncome, isMasked: masksAmounts)
+            return FundRowAmountPrivacyFormatter.signedCompactHoldingIncome(
+                rowHoldingIncome,
+                accountKind: accountKind,
+                isMasked: masksAmounts
+            )
         case .holdingRate:
             return MoneyFormatter.percent(rowHoldingRate ?? 0, signed: true)
         case .costAmount:
@@ -4947,7 +5062,11 @@ struct FundRowView: View {
     }
 
     private var rowConfirmedHoldingIncomeText: String {
-        FundRowAmountPrivacyFormatter.signedCompactMoney(rowConfirmedHoldingIncome, isMasked: masksAmounts)
+        FundRowAmountPrivacyFormatter.signedCompactHoldingIncome(
+            rowConfirmedHoldingIncome,
+            accountKind: accountKind,
+            isMasked: masksAmounts
+        )
     }
 
     private var rowHoldingAmount: Double {
@@ -5349,7 +5468,20 @@ enum FundRowAmountPrivacyFormatter {
 
     static func signedCompactMoney(_ value: Double, isMasked: Bool) -> String {
         guard !isMasked else { return maskedText }
-        return MoneyFormatter.money(value, signed: true)
+        return compact(MoneyFormatter.money(value, signed: true))
+    }
+
+    static func signedCompactHoldingIncome(
+        _ value: Double,
+        accountKind: PortfolioAccountKind,
+        isMasked: Bool
+    ) -> String {
+        guard !isMasked else { return maskedText }
+        return MoneyFormatter.compactHoldingIncome(value, accountKind: accountKind)
+    }
+
+    private static func compact(_ value: String) -> String {
+        value
             .replacingOccurrences(of: "¥ ", with: "")
             .replacingOccurrences(of: "+¥", with: "+")
             .replacingOccurrences(of: "-¥", with: "-")
@@ -5359,6 +5491,7 @@ enum FundRowAmountPrivacyFormatter {
 struct FundDetailView: View {
     let store: PortfolioStore
     private let fundCode: String
+    private let allowsConversion: Bool
     let onBuy: (FundPosition) -> Void
     let onSell: (FundPosition) -> Void
     let onConvert: (FundPosition) -> Void
@@ -5381,6 +5514,7 @@ struct FundDetailView: View {
     init(
         store: PortfolioStore,
         fundCode: String,
+        allowsConversion: Bool = true,
         onBuy: @escaping (FundPosition) -> Void,
         onSell: @escaping (FundPosition) -> Void,
         onConvert: @escaping (FundPosition) -> Void,
@@ -5392,6 +5526,7 @@ struct FundDetailView: View {
     ) {
         self.store = store
         self.fundCode = fundCode
+        self.allowsConversion = allowsConversion
         self.onBuy = onBuy
         self.onSell = onSell
         self.onConvert = onConvert
@@ -5420,7 +5555,7 @@ struct FundDetailView: View {
             .frame(width: 14.5, height: 14.5)
             .frame(width: 17, height: 18, alignment: .center)
             .shadow(color: detailUpdateStarColor.opacity(colorScheme == .dark ? 0.30 : 0.20), radius: 2.5, x: 0, y: 1)
-            .accessibilityLabel("净值已更新")
+            .accessibilityLabel(isOnExchange ? "行情已更新" : "净值已更新")
     }
 
     var body: some View {
@@ -5486,7 +5621,14 @@ struct FundDetailView: View {
                 Text(fund.name)
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
-                if fund.isUpdated {
+                if isOnExchange {
+                    detailTag("场内", color: Color(nsColor: .systemBlue))
+                    detailTag(fund.resolvedExchangeTurnaroundRule.shortTitle, color: PanelDesign.accent)
+                }
+                if FundUpdatePresentationPolicy.showsOfficialUpdateMarker(
+                    for: fund,
+                    accountKind: store.accountKind
+                ) {
                     detailUpdateStar
                         .fixedSize()
                 }
@@ -5510,10 +5652,13 @@ struct FundDetailView: View {
         HStack(alignment: .bottom, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text("当日涨幅")
+                    Text(isOnExchange ? "当日涨跌" : "当日涨幅")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.secondary)
-                    if fund.isUpdated {
+                    if FundUpdatePresentationPolicy.showsOfficialUpdateMarker(
+                        for: fund,
+                        accountKind: store.accountKind
+                    ) {
                         detailTag("已更新", color: updatedDetailTagColor)
                     }
                 }
@@ -5604,12 +5749,35 @@ struct FundDetailView: View {
             alignment: .leading,
             spacing: 14
         ) {
-            metric("持仓金额", numberText(currentTotal, places: 2))
-            metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
-            metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
-            dailyIncomeMetricButton("持仓收益", signedNumberText(holdingIncome), tone: holdingIncome)
-            metric("持仓收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
-            metric("持仓天数", holdingDaysText)
+            if isOnExchange {
+                metric("持仓市值", numberText(currentTotal, places: 2))
+                metric("持有份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
+                metric("可卖份额", numberText(exchangeShareAvailability.sellableShares, places: 2))
+                metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
+                dailyIncomeMetricButton(
+                    "持仓收益",
+                    MoneyFormatter.compactHoldingIncome(
+                        holdingIncome,
+                        accountKind: store.accountKind
+                    ),
+                    tone: holdingIncome
+                )
+                metric("持仓收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
+            } else {
+                metric("持仓金额", numberText(currentTotal, places: 2))
+                metric("持仓份额", totalShares > 0 ? numberText(totalShares, places: 2) : "--")
+                metric("持仓成本", fund.migratedCost.map { numberText($0, places: 4) } ?? "--")
+                dailyIncomeMetricButton(
+                    "持仓收益",
+                    MoneyFormatter.compactHoldingIncome(
+                        holdingIncome,
+                        accountKind: store.accountKind
+                    ),
+                    tone: holdingIncome
+                )
+                metric("持仓收益率", fund.holdingRate.map { MoneyFormatter.percent($0, signed: true) } ?? "0.00%", tone: fund.holdingRate)
+                metric("持仓天数", holdingDaysText)
+            }
         }
         .padding(12)
         .background(PanelDesign.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -5621,7 +5789,9 @@ struct FundDetailView: View {
             PanelSegmentedPicker(
                 values: FundDetailTrendTab.allCases,
                 selection: $trendTab,
-                title: \.title,
+                title: { tab in
+                    isOnExchange && tab == .intraday ? "盘中成交实时涨跌" : tab.title
+                },
                 tint: toneColor(for: fund.todayRate)
             )
 
@@ -5640,7 +5810,7 @@ struct FundDetailView: View {
     private var intradayTrendContent: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(
-                "盘中预估实时涨跌",
+                isOnExchange ? "盘中成交实时涨跌" : "盘中预估实时涨跌",
                 trailing: intradayTrendTrailingText
             )
 
@@ -5775,7 +5945,7 @@ struct FundDetailView: View {
                 Button {
                     onBuy(fund)
                 } label: {
-                    PanelButtonLabel(title: "加仓", systemImage: "plus.circle")
+                    PanelButtonLabel(title: isOnExchange ? "买入" : "加仓", systemImage: "plus.circle")
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
@@ -5783,20 +5953,22 @@ struct FundDetailView: View {
                 Button {
                     onSell(fund)
                 } label: {
-                    PanelButtonLabel(title: "减仓", systemImage: "minus.circle")
+                    PanelButtonLabel(title: isOnExchange ? "卖出" : "减仓", systemImage: "minus.circle")
                 }
                 .buttonStyle(.plain)
                 .focusable(false)
                 .disabled((fund.migratedShares ?? 0) <= 0)
 
-                Button {
-                    onConvert(fund)
-                } label: {
-                    PanelButtonLabel(title: "转换", systemImage: "arrow.left.arrow.right.circle")
+                if allowsConversion {
+                    Button {
+                        onConvert(fund)
+                    } label: {
+                        PanelButtonLabel(title: "转换", systemImage: "arrow.left.arrow.right.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .disabled((fund.migratedShares ?? 0) <= 0)
                 }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .disabled((fund.migratedShares ?? 0) <= 0)
 
                 Button {
                     onEdit(fund)
@@ -6211,6 +6383,10 @@ struct FundDetailView: View {
         return fund.lots?.reduce(0) { $0 + $1.shares } ?? 0
     }
 
+    private var exchangeShareAvailability: ExchangeShareAvailability {
+        store.exchangeShareAvailability(for: fund.code)
+    }
+
     private var effectiveLots: [FundPositionLot] {
         if let lots = fund.lots, !lots.isEmpty {
             return lots
@@ -6269,12 +6445,16 @@ struct FundDetailView: View {
     private var intradayTrendEmptyText: String {
         switch TradingCalendar.marketSessionState() {
         case .open:
-            "等待下一次盘中估值刷新"
+            isOnExchange ? "等待下一次交易所行情刷新" : "等待下一次盘中估值刷新"
         case .middayBreak:
             "午休中，盘中曲线暂停更新"
         case .closed:
             "休市中，盘中曲线停止更新"
         }
+    }
+
+    private var isOnExchange: Bool {
+        store.accountKind == .onExchange
     }
 
     private var intradayCurrentValueFallbackPoints: [FundIntradayRatePoint] {
@@ -6490,11 +6670,11 @@ struct FundTradeRecordsPanelView: View {
 
     private var filterBar: some View {
         HStack(spacing: 6) {
-            ForEach(TradeRecordFilter.allCases) { value in
+            ForEach(visibleTradeRecordFilters) { value in
                 Button {
                     filter = value
                 } label: {
-                    Text(value.title)
+                    Text(filterTitle(value))
                         .font(.system(size: 11, weight: filter == value ? .semibold : .medium))
                         .foregroundStyle(filter == value ? Color.blue : Color.secondary)
                         .frame(maxWidth: .infinity)
@@ -6538,7 +6718,25 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private var emptyTitle: String {
-        filter == .all ? "暂无交易记录" : "暂无\(filter.title)记录"
+        filter == .all ? "暂无交易记录" : "暂无\(filterTitle(filter))记录"
+    }
+
+    private var visibleTradeRecordFilters: [TradeRecordFilter] {
+        store.accountKind == .onExchange ? [.all, .buy, .sell] : Array(TradeRecordFilter.allCases)
+    }
+
+    private func filterTitle(_ filter: TradeRecordFilter) -> String {
+        guard store.accountKind == .onExchange else { return filter.title }
+        return switch filter {
+        case .all:
+            "全部"
+        case .buy:
+            "买入"
+        case .sell:
+            "卖出"
+        case .conversion:
+            "转换"
+        }
     }
 
     private var tradeRecordsHeaderSubtitle: String {
@@ -6548,7 +6746,7 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func deleteTradeRecordConfirmationMessage(for record: FundTradeRecord) -> String {
-        "确定删除 \(tradeDateTimeText(record)) 的\(record.kind.title)记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持仓金额、持仓份额和成本，且无法撤销。"
+        "确定删除 \(tradeDateTimeText(record)) 的\(recordKindTitle(record.kind))记录（\(tradeRecordAmountText(record))）吗？删除后会重新计算这只基金的持仓金额、持仓份额和成本，且无法撤销。"
     }
 
     private func tradeRecordRow(_ record: FundTradeRecord) -> some View {
@@ -6703,7 +6901,21 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func recordKindTitle(_ kind: FundTradeKind) -> String {
-        switch kind {
+        if store.accountKind == .onExchange {
+            switch kind {
+            case .newFund:
+                return "基线"
+            case .buy:
+                return "买入"
+            case .sell:
+                return "卖出"
+            case .conversionOut:
+                return "转出"
+            case .conversionIn:
+                return "转入"
+            }
+        }
+        return switch kind {
         case .newFund:
             "新增"
         case .buy:
@@ -6718,6 +6930,9 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func tradeDateTimeText(_ record: FundTradeRecord) -> String {
+        if store.accountKind == .onExchange {
+            return record.tradeDate
+        }
         if record.kind == .newFund, record.mode == .amount {
             return "首次录入"
         }
@@ -6725,6 +6940,9 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func recordConfirmationText(_ record: FundTradeRecord) -> String {
+        if store.accountKind == .onExchange {
+            return record.kind == .newFund ? "持仓基线 \(record.acceptedDate)" : "成交 \(record.acceptedDate)"
+        }
         if record.status == .pending,
            isConversionRecord(record),
            record.amount != nil,
@@ -6735,6 +6953,9 @@ struct FundTradeRecordsPanelView: View {
     }
 
     private func recordStatusTitle(_ record: FundTradeRecord) -> String {
+        if store.accountKind == .onExchange, record.status == .confirmed {
+            return record.kind == .newFund ? "已录入" : "已成交"
+        }
         if record.status == .pending,
            isConversionRecord(record),
            record.amount != nil {
@@ -6757,7 +6978,7 @@ struct FundTradeRecordsPanelView: View {
         let sharesText = (record.confirmedShares ?? record.shares).map { "\(numberText($0, places: 2))份" }
 
         if priceText == nil && sharesText == nil {
-            Text(record.kind == .newFund && record.mode == .amount ? "手工录入" : "待确认净值和份额")
+            Text(record.kind == .newFund && record.mode == .amount ? "手工录入" : (store.accountKind == .onExchange ? "暂无成交数据" : "待确认净值和份额"))
                 .font(.system(size: 10, weight: .semibold))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -6766,7 +6987,9 @@ struct FundTradeRecordsPanelView: View {
             HStack(spacing: 8) {
                 if let priceText {
                     recordMetricText(
-                        label: record.kind == .newFund && record.mode == .amount ? "参考净值" : "净值",
+                        label: store.accountKind == .onExchange
+                            ? (record.kind == .newFund ? "成本价" : "成交价")
+                            : (record.kind == .newFund && record.mode == .amount ? "参考净值" : "净值"),
                         value: priceText,
                         color: color
                     )
@@ -6774,6 +6997,16 @@ struct FundTradeRecordsPanelView: View {
 
                 if let sharesText {
                     recordMetricText(label: "份额", value: sharesText, color: color)
+                }
+
+                if store.accountKind == .onExchange,
+                   let feeAmount = record.feeAmount,
+                   feeAmount > 0 {
+                    recordMetricText(
+                        label: "费用",
+                        value: MoneyFormatter.plainMoney(feeAmount),
+                        color: color
+                    )
                 }
             }
             .lineLimit(1)

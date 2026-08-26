@@ -15,6 +15,10 @@ struct PortfolioSnapshot: Codable, Equatable {
     var tradeRecords: [FundTradeRecord]? = nil
     var syncedAccountTotal: PortfolioSyncedAccountTotal? = nil
     var jdFinanceSyncState: JDFinanceSyncState? = nil
+    /// Optional broker-reported baseline for an exchange account. Reported
+    /// income amounts replace calculated values only on `date`; account cash
+    /// is deliberately excluded because this app tracks fund holdings only.
+    var exchangeAccountReconciliation: ExchangeAccountReconciliation? = nil
     // Only populated in exported backups. Runtime history lives in
     // portfolio-performance.json so high-frequency quote refreshes do not
     // repeatedly rewrite a growing history array.
@@ -32,6 +36,13 @@ struct PortfolioSnapshot: Codable, Equatable {
         migration: nil
     )
 
+}
+
+struct ExchangeAccountReconciliation: Codable, Equatable {
+    var date: String
+    var holdingsMarketValue: Double
+    var reportedHoldingIncome: Double
+    var reportedTodayIncome: Double
 }
 
 struct JDFinanceSyncState: Codable, Equatable {
@@ -77,6 +88,9 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var positionMode: PositionMode? = nil
     var positionDate: String? = nil
     var positionTimeType: PositionTimeType? = nil
+    /// Exchange-traded funds default to next-trading-day selling unless the
+    /// instrument is explicitly eligible for same-day turnaround trading.
+    var exchangeTurnaroundRule: ExchangeTurnaroundRule? = nil
     var pendingAmount: Double? = nil
     var pendingProfit: Double? = nil
     // JD's synced holding amount may include today's buy orders before shares are confirmed.
@@ -93,6 +107,51 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var intradayRateHistory: [FundIntradayRatePoint]? = nil
 }
 
+enum ExchangeTurnaroundRule: String, Codable, CaseIterable, Identifiable, Equatable {
+    case nextTradingDay
+    case sameDay
+
+    var id: String { rawValue }
+
+    var shortTitle: String {
+        switch self {
+        case .nextTradingDay:
+            "T+1"
+        case .sameDay:
+            "T+0"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .nextTradingDay:
+            "T+1（下一交易日可卖）"
+        case .sameDay:
+            "T+0（当日可卖）"
+        }
+    }
+}
+
+extension FundPosition {
+    var resolvedExchangeTurnaroundRule: ExchangeTurnaroundRule {
+        exchangeTurnaroundRule ?? .nextTradingDay
+    }
+}
+
+struct ExchangeShareAvailability: Equatable {
+    var heldShares: Double
+    var sellableShares: Double
+    var lockedShares: Double
+    var nextUnlockDate: String?
+
+    static let zero = ExchangeShareAvailability(
+        heldShares: 0,
+        sellableShares: 0,
+        lockedShares: 0,
+        nextUnlockDate: nil
+    )
+}
+
 struct FundPositionLot: Codable, Identifiable, Equatable {
     var id: String
     var shares: Double
@@ -101,6 +160,9 @@ struct FundPositionLot: Codable, Identifiable, Equatable {
     var incomeStartDate: String
     var positionDate: String
     var positionTimeType: PositionTimeType
+    /// Explicit sellable date for an imported exchange baseline lot. Normal
+    /// trade lots continue to derive their T+1/T+0 date from trade records.
+    var exchangeSellableDate: String? = nil
 }
 
 struct FundIntradayRatePoint: Codable, Identifiable, Equatable {
@@ -199,6 +261,9 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var externalStatusText: String? = nil
     var waitsForExternalConfirmation: Bool? = nil
     var isReconciliationBaseline: Bool? = nil
+    /// The broker-reported sellable portion of an exchange baseline. This is
+    /// intentionally optional so older records remain fully decodable.
+    var exchangeInitialSellableShares: Double? = nil
 }
 
 enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
@@ -244,6 +309,10 @@ struct FundTradeDraft: Equatable {
     var buyFeeRate: Double? = nil
     var sellFeeMode: TradeFeeMode? = nil
     var sellFeeValue: Double? = nil
+    /// Exact execution price for an exchange-traded transaction.
+    var price: Double? = nil
+    /// Exact broker fee for an exchange-traded transaction.
+    var feeAmount: Double? = nil
 }
 
 struct FundPendingTrade: Codable, Identifiable, Equatable {
@@ -343,6 +412,11 @@ struct FundPositionDraft: Equatable {
     var positionTimeType: PositionTimeType
     var memo: String
     var requiresTradeConfirmation: Bool = true
+    var exchangeTurnaroundRule: ExchangeTurnaroundRule? = nil
+    /// Only used for exchange-traded baseline positions. A nil value keeps
+    /// programmatic callers backwards compatible and means all shares are
+    /// sellable.
+    var exchangeSellableShares: Double? = nil
 
     init(
         code: String,
@@ -355,7 +429,9 @@ struct FundPositionDraft: Equatable {
         positionDate: String,
         positionTimeType: PositionTimeType,
         memo: String,
-        requiresTradeConfirmation: Bool = true
+        requiresTradeConfirmation: Bool = true,
+        exchangeTurnaroundRule: ExchangeTurnaroundRule? = nil,
+        exchangeSellableShares: Double? = nil
     ) {
         self.code = code
         self.name = name
@@ -368,6 +444,8 @@ struct FundPositionDraft: Equatable {
         self.positionTimeType = positionTimeType
         self.memo = memo
         self.requiresTradeConfirmation = requiresTradeConfirmation
+        self.exchangeTurnaroundRule = exchangeTurnaroundRule
+        self.exchangeSellableShares = exchangeSellableShares
     }
 }
 

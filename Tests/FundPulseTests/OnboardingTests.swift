@@ -105,7 +105,7 @@ final class OnboardingTests: XCTestCase {
 
         let store = AppSettingsStore(dataDirectory: directory)
 
-        XCTAssertEqual(AppSettings.currentSchemaVersion, 13)
+        XCTAssertEqual(AppSettings.currentSchemaVersion, 15)
         XCTAssertEqual(AppSettings.currentOnboardingVersion, 1)
         XCTAssertEqual(store.loadOrigin, .createdNew)
         XCTAssertNil(store.settings.completedOnboardingVersion)

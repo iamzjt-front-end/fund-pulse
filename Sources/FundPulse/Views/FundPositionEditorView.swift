@@ -1,6 +1,42 @@
 import SwiftUI
 
+enum FundPositionEntryPolicy {
+    static func modes(for accountKind: PortfolioAccountKind) -> [PositionMode] {
+        switch accountKind {
+        case .offExchange:
+            [.amount, .share]
+        case .onExchange:
+            [.share]
+        }
+    }
+
+    static func defaultMode(
+        for accountKind: PortfolioAccountKind,
+        existingMode: PositionMode?
+    ) -> PositionMode {
+        if accountKind == .onExchange {
+            return .share
+        }
+        if let existingMode {
+            return existingMode
+        }
+        return .amount
+    }
+}
+
 struct FundPositionEditorView: View {
+    private enum MetadataLookupState: Equatable {
+        case idle
+        case loading
+        case loaded(FundQuote)
+        case failed(String)
+    }
+
+    private struct MetadataLookupRequest: Equatable {
+        var code: String
+        var attempt: Int
+    }
+
     let store: PortfolioStore
     let fund: FundPosition?
     let onSaved: (() async -> Void)?
@@ -13,15 +49,16 @@ struct FundPositionEditorView: View {
     @State private var positionAmount: String
     @State private var positionProfit: String
     @State private var shares: String
+    @State private var sellableShares: String
     @State private var cost: String
     @State private var isSameDayNewFund: Bool
     @State private var positionDate: Date
     @State private var positionTimeType: PositionTimeType
+    @State private var exchangeTurnaroundRule: ExchangeTurnaroundRule
     @State private var memo: String
-    @State private var lookupTask: Task<Void, Never>?
     @State private var autoResolvedName: String?
-    @State private var latestQuote: FundQuote?
-    @State private var isLookingUpMetadata = false
+    @State private var metadataLookupState: MetadataLookupState = .idle
+    @State private var metadataLookupAttempt = 0
     @State private var isSaving = false
     @State private var errorMessage: String?
 
@@ -36,7 +73,10 @@ struct FundPositionEditorView: View {
         self.onSaved = onSaved
         self.onClose = onClose
 
-        let mode = fund?.positionMode ?? .amount
+        let mode = FundPositionEntryPolicy.defaultMode(
+            for: store.accountKind,
+            existingMode: fund?.positionMode
+        )
         let date = fund?.positionDate.flatMap(DateOnlyFormatter.parse) ?? .now
         let netValue: Double? = {
             guard let principal = fund?.migratedPrincipal,
@@ -58,6 +98,11 @@ struct FundPositionEditorView: View {
             guard let netValue, let shares = fund?.migratedShares else { return nil }
             return shares * netValue
         }()
+        let initialSellableShares: String = {
+            guard store.accountKind == .onExchange else { return "" }
+            guard let fund else { return "0" }
+            return Self.text(store.exchangeShareAvailability(for: fund.code).sellableShares, places: 2)
+        }()
         let profit: Double? = {
             if let pendingProfit = fund?.pendingProfit {
                 return pendingProfit
@@ -78,10 +123,12 @@ struct FundPositionEditorView: View {
         _positionAmount = State(initialValue: amount.map { Self.fixedText($0, places: PortfolioPrecision.moneyPlaces) } ?? "")
         _positionProfit = State(initialValue: profit.map { Self.fixedText($0, places: PortfolioPrecision.moneyPlaces) } ?? "")
         _shares = State(initialValue: fund?.migratedShares.map { Self.text($0, places: 2) } ?? "")
+        _sellableShares = State(initialValue: initialSellableShares)
         _cost = State(initialValue: fund?.migratedCost.map { Self.text($0, places: 4) } ?? "")
         _isSameDayNewFund = State(initialValue: false)
         _positionDate = State(initialValue: date)
         _positionTimeType = State(initialValue: fund?.positionTimeType ?? TradingCalendar.defaultPositionTimeType())
+        _exchangeTurnaroundRule = State(initialValue: fund?.resolvedExchangeTurnaroundRule ?? .nextTradingDay)
         _memo = State(initialValue: fund?.memo ?? "")
     }
 
@@ -94,6 +141,12 @@ struct FundPositionEditorView: View {
                     PanelSection(title: "基金识别") {
                         field("基金代码") {
                             PanelTextInput("例如 588760", text: $code, isDisabled: fund != nil)
+                            if hasInvalidFundCode {
+                                Text("请输入 6 位基金代码")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.orange)
+                                    .padding(.horizontal, 2)
+                            }
                         }
                         field("基金名称") {
                             PanelTextInput("可选，留空则自动读取", text: $name)
@@ -112,29 +165,97 @@ struct FundPositionEditorView: View {
                     }
 
                     PanelSection(title: "持仓录入") {
-                        PanelSegmentedPicker(
-                            values: Array(PositionMode.allCases),
-                            selection: $positionMode,
-                            title: { $0.title }
-                        )
+                        if FundPositionEntryPolicy.modes(for: store.accountKind).count > 1 {
+                            PanelSegmentedPicker(
+                                values: FundPositionEntryPolicy.modes(for: store.accountKind),
+                                selection: $positionMode,
+                                title: { $0.title }
+                            )
+                        }
 
-                        if positionMode == .amount {
-                            field("持仓金额") {
-                                PanelTextInput("请输入持仓金额", text: $positionAmount, suffix: "元")
+                        if isOnExchange {
+                            HStack(spacing: 8) {
+                                Image(systemName: "building.columns.fill")
+                                    .foregroundStyle(PanelDesign.accent)
+                                Text(exchangePositionModeSummary)
+                                    .font(.system(size: 11, weight: .semibold))
+                                Spacer(minLength: 0)
+                                Text("精确录入")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(PanelDesign.accent)
+                                    .padding(.horizontal, 6)
+                                    .frame(height: 18)
+                                    .background(PanelDesign.accent.opacity(0.10), in: Capsule())
                             }
-                            field("持仓收益") {
-                                PanelTextInput("可为负，默认为 0", text: $positionProfit, suffix: "元")
+                            .padding(9)
+                            .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            .overlay(PanelDesign.border(cornerRadius: 9))
+                        }
+
+                        if isOnExchange {
+                            field("持仓份额") {
+                                PanelTextInput("请输入券商显示的实际持仓份额", text: $shares, suffix: "份")
+                            }
+                            field("可卖份额") {
+                                PanelTextInput("请输入当前可卖份额", text: $sellableShares, suffix: "份")
+                            }
+                            if let validationMessage = exchangeSellableValidationMessage {
+                                Text(validationMessage)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(.red)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            field("平均成本价") {
+                                PanelTextInput("含历史交易费用的平均成本", text: $cost, suffix: "元")
+                            }
+                        } else if positionMode == .amount {
+                            field(isOnExchange ? "持仓市值" : "持仓金额") {
+                                PanelTextInput(
+                                    isOnExchange ? "请输入券商显示的当前市值" : "请输入持仓金额",
+                                    text: $positionAmount,
+                                    suffix: "元"
+                                )
+                            }
+                            field(isOnExchange ? "持仓盈亏" : "持仓收益") {
+                                PanelTextInput(
+                                    isOnExchange ? "请输入券商显示的累计盈亏，可为负" : "可为负，默认为 0",
+                                    text: $positionProfit,
+                                    suffix: "元"
+                                )
+                            }
+                            if isOnExchange, let preview = exchangeAmountPreview {
+                                exchangeAmountPreviewRow(preview)
                             }
                         } else {
                             field("持仓份额") {
                                 PanelTextInput("可精确 2 位小数", text: $shares, suffix: "份")
                             }
                             field("持仓成本价") {
-                                PanelTextInput("可精确 4 位小数", text: $cost)
+                                PanelTextInput("可精确 4 位小数", text: $cost, suffix: "元")
                             }
                         }
 
-                        if fund == nil {
+                        if isOnExchange {
+                            field("可卖规则") {
+                                PanelSegmentedPicker(
+                                    values: Array(ExchangeTurnaroundRule.allCases),
+                                    selection: $exchangeTurnaroundRule,
+                                    title: { $0.shortTitle }
+                                )
+                            }
+                            Text(exchangeTurnaroundHelp)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            field("持仓起始日") {
+                                PanelNativeDatePicker(selection: $positionDate, elements: [.yearMonthDay])
+                            }
+                            Text(exchangePositionHelp)
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if fund == nil {
                             sameDayNewFundRow
                             if shouldShowTradeTimeControls {
                                 field("交易时点") {
@@ -166,9 +287,6 @@ struct FundPositionEditorView: View {
         }
         .frame(width: PopoverLayout.editorWidth, height: PopoverLayout.editorHeight)
         .background(PanelDesign.panelBackground)
-        .onChange(of: code) { _, newValue in
-            scheduleFundMetadataLookup(for: newValue)
-        }
         .onChange(of: isSameDayNewFund) { _, newValue in
             guard newValue else { return }
             positionDate = .now
@@ -179,18 +297,17 @@ struct FundPositionEditorView: View {
                 positionDate = .now
                 positionTimeType = TradingCalendar.defaultPositionTimeType()
             }
-            scheduleFundMetadataLookup(for: code)
         }
-        .onDisappear {
-            lookupTask?.cancel()
+        .task(id: metadataLookupRequest) {
+            await loadFundMetadata(for: metadataLookupRequest)
         }
     }
 
     private var header: some View {
         PanelHeader(
             systemImage: fund == nil ? "plus" : "pencil",
-            title: fund == nil ? "添加基金" : "修改基金",
-            subtitle: fund == nil ? "记录一只新的基金持仓" : "调整基金持仓与提醒",
+            title: headerTitle,
+            subtitle: headerSubtitle,
             onClose: close
         )
     }
@@ -232,25 +349,44 @@ struct FundPositionEditorView: View {
     private var latestNetValueRow: some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("最新净值")
+                Text(isOnExchange ? "最新成交价" : "最新净值")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
-                Text(latestQuote?.netValueDate.isEmpty == false ? "净值日期 \(latestQuote?.netValueDate ?? "")" : "输入基金代码后自动读取")
+                Text(latestQuoteSubtitle)
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            if isLookingUpMetadata {
+            switch metadataLookupState {
+            case .loading:
                 ProgressView()
                     .controlSize(.small)
-            } else if let latestQuote {
+            case .loaded(let latestQuote):
                 Text(Self.text(latestQuote.netValue, places: 4))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(PanelDesign.accent)
                     .monospacedDigit()
-            } else {
+            case .failed(let reason):
+                Button {
+                    metadataLookupAttempt &+= 1
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("重试")
+                    }
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 7)
+                    .frame(height: 24)
+                    .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("行情读取失败：\(reason)。点击重试")
+                .accessibilityLabel("行情读取失败，重试")
+            case .idle:
                 Text("暂无")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.tertiary)
@@ -258,6 +394,35 @@ struct FundPositionEditorView: View {
         }
         .padding(9)
         .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 10))
+    }
+
+    private func exchangeAmountPreviewRow(
+        _ preview: (shares: Double, cost: Double, price: Double)
+    ) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("系统自动推算")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("按最新成交价 \(Self.text(preview.price, places: 4)) 元")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("约 \(Self.text(preview.shares, places: 4)) 份")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                Text("平均成本 \(Self.text(preview.cost, places: 4)) 元")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+        }
+        .padding(9)
+        .background(PanelDesign.selectorBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(PanelDesign.border(cornerRadius: 10))
     }
 
@@ -315,7 +480,7 @@ struct FundPositionEditorView: View {
     }
 
     private var isTodayNewFund: Bool {
-        fund == nil && isSameDayNewFund
+        !isOnExchange && fund == nil && isSameDayNewFund
     }
 
     private var shouldShowTradeTimeControls: Bool {
@@ -323,11 +488,42 @@ struct FundPositionEditorView: View {
     }
 
     private var canSubmit: Bool {
-        !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (
-            positionMode == .amount
-                ? (Self.number(positionAmount) ?? 0) > 0
-                : (Self.number(shares) ?? 0) > 0 && (Self.number(cost) ?? 0) > 0
-        )
+        guard isValidFundCode else { return false }
+        switch positionMode {
+        case .amount:
+            let amount = Self.number(positionAmount) ?? 0
+            let profit = Self.number(positionProfit) ?? 0
+            guard amount > 0, amount - profit > 0 else { return false }
+            return !isOnExchange || (latestQuote?.netValue ?? 0) > 0
+        case .share:
+            let shares = Self.number(shares) ?? 0
+            let cost = Self.number(cost) ?? 0
+            guard shares > 0, cost > 0 else { return false }
+            guard isOnExchange else { return true }
+            let sellableShares = Self.number(sellableShares) ?? -1
+            return sellableShares >= 0
+                && sellableShares <= shares + PortfolioPrecision.shareAvailabilityTolerance
+                && exchangeSellableValidationMessage == nil
+        }
+    }
+
+    private var exchangeSellableValidationMessage: String? {
+        guard isOnExchange else { return nil }
+        guard let heldShares = Self.number(shares), heldShares > 0 else { return nil }
+        guard let sellableShares = Self.number(sellableShares) else {
+            return "请填写当前可卖份额"
+        }
+        if sellableShares < 0 {
+            return "可卖份额不能为负数"
+        }
+        if sellableShares > heldShares + PortfolioPrecision.shareAvailabilityTolerance {
+            return "可卖份额不能大于持仓份额"
+        }
+        if exchangeTurnaroundRule == .sameDay,
+           sellableShares + PortfolioPrecision.shareAvailabilityTolerance < heldShares {
+            return "T+0 基金的可卖份额应等于持仓份额"
+        }
+        return nil
     }
 
     private func field<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -344,22 +540,23 @@ struct FundPositionEditorView: View {
         isSaving = true
         errorMessage = nil
         let resolvedPositionDate = DateOnlyFormatter.string(from: isTodayNewFund ? .now : positionDate)
-        let resolvedPositionTimeType = isTodayNewFund
-            ? positionTimeType
-            : .before15
+        let resolvedPositionTimeType = isTodayNewFund ? positionTimeType : .before15
+        let resolvedMode = positionMode
 
         let draft = FundPositionDraft(
             code: code,
             name: name,
-            positionMode: positionMode,
-            positionAmount: Self.number(positionAmount),
-            positionProfit: Self.number(positionProfit) ?? 0,
-            shares: Self.number(shares),
-            cost: Self.number(cost),
+            positionMode: resolvedMode,
+            positionAmount: resolvedMode == .amount ? Self.number(positionAmount) : nil,
+            positionProfit: resolvedMode == .amount ? (Self.number(positionProfit) ?? 0) : 0,
+            shares: resolvedMode == .share ? Self.number(shares) : nil,
+            cost: resolvedMode == .share ? Self.number(cost) : nil,
             positionDate: resolvedPositionDate,
             positionTimeType: resolvedPositionTimeType,
             memo: memo,
-            requiresTradeConfirmation: isTodayNewFund
+            requiresTradeConfirmation: !isOnExchange && isTodayNewFund,
+            exchangeTurnaroundRule: isOnExchange ? exchangeTurnaroundRule : nil,
+            exchangeSellableShares: isOnExchange ? Self.number(sellableShares) : nil
         )
 
         Task {
@@ -386,42 +583,164 @@ struct FundPositionEditorView: View {
         }
     }
 
-    private func scheduleFundMetadataLookup(for rawCode: String) {
-        lookupTask?.cancel()
-        let trimmedCode = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func loadFundMetadata(for request: MetadataLookupRequest) async {
+        let trimmedCode = request.code
         guard trimmedCode.count == 6, trimmedCode.allSatisfy(\.isNumber) else {
-            isLookingUpMetadata = false
-            latestQuote = nil
+            metadataLookupState = .idle
             return
         }
 
-        isLookingUpMetadata = true
-        lookupTask = Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            let fetchedQuote = await store.fetchLatestQuote(code: trimmedCode)
+        metadataLookupState = .loading
+        do {
+            try await Task.sleep(for: .milliseconds(350))
+            try Task.checkCancellation()
+
+            let fetchedQuote = try await store.fetchLatestQuoteThrowing(code: trimmedCode)
             let fetchedName: String?
-            if let fetchedQuote, fetchedQuote.name != trimmedCode {
+            if fetchedQuote.name != trimmedCode {
                 fetchedName = fetchedQuote.name
             } else {
                 fetchedName = await store.lookupFundName(code: trimmedCode)
             }
-            await MainActor.run {
-                guard !Task.isCancelled,
-                      code.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedCode
-                else {
-                    return
-                }
-
-                latestQuote = fetchedQuote
-                if fund == nil,
-                   let fetchedName,
-                   name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name == autoResolvedName {
-                    name = fetchedName
-                    autoResolvedName = fetchedName
-                }
-                isLookingUpMetadata = false
+            try Task.checkCancellation()
+            guard code.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedCode else {
+                return
             }
+
+            applyResolvedName(fetchedName)
+            metadataLookupState = .loaded(fetchedQuote)
+        } catch is CancellationError {
+            return
+        } catch {
+            let reason = error.localizedDescription
+            let fetchedName = await store.lookupFundName(code: trimmedCode)
+            guard !Task.isCancelled,
+                  code.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedCode
+            else {
+                return
+            }
+
+            applyResolvedName(fetchedName)
+            metadataLookupState = .failed(reason)
+        }
+    }
+
+    private func applyResolvedName(_ fetchedName: String?) {
+        guard fund == nil,
+              let fetchedName,
+              name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name == autoResolvedName
+        else {
+            return
+        }
+        name = fetchedName
+        autoResolvedName = fetchedName
+    }
+
+    private var metadataLookupRequest: MetadataLookupRequest {
+        MetadataLookupRequest(
+            code: code.trimmingCharacters(in: .whitespacesAndNewlines),
+            attempt: metadataLookupAttempt
+        )
+    }
+
+    private var isLookingUpMetadata: Bool {
+        metadataLookupState == .loading
+    }
+
+    private var latestQuote: FundQuote? {
+        guard case .loaded(let quote) = metadataLookupState else { return nil }
+        return quote
+    }
+
+    private var exchangeAmountPreview: (shares: Double, cost: Double, price: Double)? {
+        guard isOnExchange,
+              positionMode == .amount,
+              let price = latestQuote?.netValue,
+              price > 0,
+              let amount = Self.number(positionAmount),
+              amount > 0
+        else {
+            return nil
+        }
+        let profit = Self.number(positionProfit) ?? 0
+        let principal = amount - profit
+        guard principal > 0 else { return nil }
+        let shares = amount / price
+        guard shares > 0 else { return nil }
+        return (shares, principal / shares, price)
+    }
+
+    private var isValidFundCode: Bool {
+        let trimmedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedCode.count == 6 && trimmedCode.allSatisfy(\.isNumber)
+    }
+
+    private var hasInvalidFundCode: Bool {
+        let trimmedCode = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmedCode.isEmpty && !isValidFundCode
+    }
+
+    private var isOnExchange: Bool {
+        store.accountKind == .onExchange
+    }
+
+    private var exchangePositionModeSummary: String {
+        switch positionMode {
+        case .amount:
+            "兼容旧数据的金额录入"
+        case .share:
+            "按持仓份额、可卖份额与平均成本价记录"
+        }
+    }
+
+    private var exchangePositionHelp: String {
+        switch positionMode {
+        case .amount:
+            "旧数据仍可读取，但新建场内基金请按份额录入。"
+        case .share:
+            "首次录入直接建立券商持仓基线；锁定份额按 T+1 默认于下一交易日解锁，之后的买卖按成交价和手续费即时更新。"
+        }
+    }
+
+    private var exchangeTurnaroundHelp: String {
+        switch exchangeTurnaroundRule {
+        case .nextTradingDay:
+            "境内股票 ETF 通常选择 T+1：买入即时计入持有，但要到下一交易日才转为可卖份额。"
+        case .sameDay:
+            "仅当该基金支持当日回转交易时选择 T+0，例如符合规则的债券、货币、黄金、跨境或商品期货 ETF。"
+        }
+    }
+
+    private var headerTitle: String {
+        if isOnExchange {
+            return fund == nil ? "添加场内基金" : "修改场内基金"
+        }
+        return fund == nil ? "添加基金" : "修改基金"
+    }
+
+    private var headerSubtitle: String {
+        if isOnExchange {
+            return fund == nil ? "建立独立的交易所基金持仓" : "调整场内基金持仓基线"
+        }
+        return fund == nil ? "记录一只新的基金持仓" : "调整基金持仓与提醒"
+    }
+
+    private var latestQuoteSubtitle: String {
+        switch metadataLookupState {
+        case .idle:
+            return "输入基金代码后自动读取"
+        case .loading:
+            return "正在读取基金行情"
+        case .failed:
+            return "行情读取失败，请重试"
+        case .loaded(let latestQuote):
+            if isOnExchange, let marketPriceTime = latestQuote.marketPriceTime, !marketPriceTime.isEmpty {
+                return "行情时间 \(marketPriceTime)"
+            }
+            if !latestQuote.netValueDate.isEmpty {
+                return "净值日期 \(latestQuote.netValueDate)"
+            }
+            return "已读取行情"
         }
     }
 

@@ -6,15 +6,42 @@ import AppKit
 #endif
 
 enum MoneyFormatter {
-    static func money(_ value: Double, signed: Bool = false) -> String {
-        let value = normalizedZero(value)
+    static func money(
+        _ value: Double,
+        signed: Bool = false,
+        fractionDigits: Int = 2
+    ) -> String {
+        let fractionDigits = max(fractionDigits, 0)
+        let value = normalizedZero(value, fractionDigits: fractionDigits)
         let sign: String
         if signed {
             sign = value > 0 ? "+" : value < 0 ? "-" : ""
         } else {
             sign = value < 0 ? "-" : ""
         }
-        return "\(sign)¥ \(abs(value).formatted(.number.precision(.fractionLength(2))))"
+        return "\(sign)¥ \(abs(value).formatted(.number.precision(.fractionLength(fractionDigits))))"
+    }
+
+    static func holdingIncome(
+        _ value: Double,
+        accountKind: PortfolioAccountKind,
+        signed: Bool = true
+    ) -> String {
+        money(
+            value,
+            signed: signed,
+            fractionDigits: accountKind == .onExchange ? 3 : 2
+        )
+    }
+
+    static func compactHoldingIncome(
+        _ value: Double,
+        accountKind: PortfolioAccountKind
+    ) -> String {
+        holdingIncome(value, accountKind: accountKind)
+            .replacingOccurrences(of: "¥ ", with: "")
+            .replacingOccurrences(of: "+¥", with: "+")
+            .replacingOccurrences(of: "-¥", with: "-")
     }
 
     static func plainMoney(_ value: Double) -> String {
@@ -27,8 +54,9 @@ enum MoneyFormatter {
         return "\(sign)\(value.formatted(.number.precision(.fractionLength(2))))%"
     }
 
-    private static func normalizedZero(_ value: Double) -> Double {
-        abs(value) < 0.005 ? 0 : value
+    private static func normalizedZero(_ value: Double, fractionDigits: Int = 2) -> Double {
+        let threshold = 0.5 * pow(10, -Double(fractionDigits))
+        return abs(value) < threshold ? 0 : value
     }
 }
 

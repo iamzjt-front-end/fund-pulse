@@ -103,7 +103,8 @@ struct PortfolioPerformanceView: View {
     private var showsJDFinanceCompletionAction: Bool {
         HoldingPerformancePresentation.showsJDFinanceCompletionAction(
             page: page,
-            betaFeaturesEnabled: betaFeaturesEnabled
+            betaFeaturesEnabled: betaFeaturesEnabled,
+            accountKind: portfolioStore.accountKind
         )
     }
 
@@ -117,7 +118,8 @@ struct PortfolioPerformanceView: View {
                 holdingIncome: portfolioStore.snapshot.holdingIncome,
                 holdingIncomeRate: portfolioStore.snapshot.holdingIncomeRate,
                 metric: rankingMetric,
-                hidesAmounts: hidesAmounts
+                hidesAmounts: hidesAmounts,
+                accountKind: portfolioStore.accountKind
             )
         }
         guard let start = store.snapshot.trackingStartDate else { return "按日记录组合净收益" }
@@ -237,7 +239,7 @@ struct PortfolioPerformanceView: View {
                 summaryDivider
                 PerformanceSummaryMetric(
                     title: "持有收益",
-                    value: amountText(summary.holdingIncome),
+                    value: holdingIncomeText(summary.holdingIncome),
                     color: PortfolioPerformanceSemanticColor.color(for: summary.holdingIncome),
                     detail: MoneyFormatter.percent(summary.holdingIncomeRate, signed: true),
                     detailColor: PortfolioPerformanceSemanticColor.color(for: summary.holdingIncomeRate)
@@ -401,6 +403,12 @@ struct PortfolioPerformanceView: View {
         hidesAmounts ? "••••" : MoneyFormatter.money(value, signed: true)
     }
 
+    private func holdingIncomeText(_ value: Double) -> String {
+        hidesAmounts
+            ? "••••"
+            : MoneyFormatter.holdingIncome(value, accountKind: portfolioStore.accountKind)
+    }
+
     private func totalAmountText(_ value: Double) -> String {
         hidesAmounts ? "••••" : MoneyFormatter.money(value)
     }
@@ -461,9 +469,10 @@ enum HoldingPerformancePresentation {
 
     static func showsJDFinanceCompletionAction(
         page: HoldingPerformancePage,
-        betaFeaturesEnabled: Bool
+        betaFeaturesEnabled: Bool,
+        accountKind: PortfolioAccountKind = .offExchange
     ) -> Bool {
-        betaFeaturesEnabled && page != .ranking
+        accountKind == .offExchange && betaFeaturesEnabled && page != .ranking
     }
 
     static func rankingSubtitle(
@@ -471,12 +480,15 @@ enum HoldingPerformancePresentation {
         holdingIncome: Double,
         holdingIncomeRate: Double,
         metric: IncomeRankingMetric,
-        hidesAmounts: Bool
+        hidesAmounts: Bool,
+        accountKind: PortfolioAccountKind = .offExchange
     ) -> String {
         let value: String
         switch metric {
         case .amount:
-            value = hidesAmounts ? "••••" : MoneyFormatter.money(holdingIncome, signed: true)
+            value = hidesAmounts
+                ? "••••"
+                : MoneyFormatter.holdingIncome(holdingIncome, accountKind: accountKind)
         case .rate:
             value = MoneyFormatter.percent(holdingIncomeRate, signed: true)
         }

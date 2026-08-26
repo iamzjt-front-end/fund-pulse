@@ -186,6 +186,9 @@ enum PopoverLayout {
     static let privacyDisclaimerSize = NSSize(width: privacyDisclaimerWidth, height: standardChildPanelHeight)
     static let portfolioPerformanceSize = NSSize(width: portfolioPerformanceWidth, height: standardChildPanelHeight)
     static let jdFinancePerformanceSyncSize = portfolioPerformanceSize
+    static let accountEditorSize = NSSize(width: editorWidth, height: 520)
+    static let accountManagementSize = NSSize(width: standardChildPanelWidth, height: 620)
+    static let exchangeReconciliationSize = NSSize(width: editorWidth, height: 600)
 
     static func clampedMainPanelHeight(_ height: CGFloat) -> CGFloat {
         CGFloat(AppSettings.clampedMainPanelHeight(Int(height.rounded())))
@@ -327,7 +330,7 @@ private final class OnboardingAddFlowState {
 @MainActor
 final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
-    private let store: PortfolioStore
+    private let accountsStore: PortfolioAccountsStore
     private let settingsStore: AppSettingsStore
     private let marketIndexStore: MarketIndexStore
     private let updateStore: AppUpdateStore
@@ -345,6 +348,7 @@ final class StatusBarController: NSObject {
     private var mainPanelHostingView: NSHostingView<AnyView>?
     private var activeChildPanel: ChildPanelRoute?
     private var selectedFundCode: String?
+    private var jdFinanceTargetAccountID: String?
     private var jdFinanceLoginCompletion: ((String?) -> Void)?
     private var localEventMonitor: Any?
     private var globalEventMonitor: Any?
@@ -420,6 +424,14 @@ final class StatusBarController: NSObject {
         PopoverLayout.clampedMainPanelHeight(CGFloat(settingsStore.settings.mainPanelHeight))
     }
 
+    private var store: PortfolioStore {
+        accountsStore.focusedStore
+    }
+
+    private var allowsAllAccountsView: Bool {
+        accountsStore.accounts.count > 1
+    }
+
     private var mainPanelWindowSize: NSSize {
         PopoverLayout.mainWindowFrameSize(forHeight: mainPanelHeight)
     }
@@ -437,7 +449,7 @@ final class StatusBarController: NSObject {
     }
 
     init(
-        store: PortfolioStore,
+        accountsStore: PortfolioAccountsStore,
         settingsStore: AppSettingsStore,
         marketIndexStore: MarketIndexStore,
         updateStore: AppUpdateStore,
@@ -445,7 +457,7 @@ final class StatusBarController: NSObject {
         onCheckUpdate: @escaping (AppUpdateCheckMode) async -> Void,
         onOpenUpdate: @escaping () -> Void
     ) {
-        self.store = store
+        self.accountsStore = accountsStore
         self.settingsStore = settingsStore
         self.marketIndexStore = marketIndexStore
         self.updateStore = updateStore
@@ -456,6 +468,7 @@ final class StatusBarController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
+        normalizeAccountSelectionForAccountCount()
         fundThresholdReminderLastSentAt = Self.loadFundThresholdReminderLastSentAt()
         configureStatusItem()
         updateStatusTitle()
@@ -493,6 +506,12 @@ final class StatusBarController: NSObject {
               arguments.indices.contains(flagIndex + 1)
         else { return }
 
+        if arguments[flagIndex + 1] == "main" {
+            NSApp.activate(ignoringOtherApps: true)
+            showMainPanel()
+            return
+        }
+
         let route: ChildPanelRoute
         switch arguments[flagIndex + 1] {
         case "onboarding":
@@ -520,6 +539,8 @@ final class StatusBarController: NSObject {
             route = .jdFinancePerformanceSync
         case "settings":
             route = .settings
+        case "accounts":
+            route = .manageAccounts
         default:
             return
         }
@@ -581,8 +602,15 @@ final class StatusBarController: NSObject {
 
     private func currentStatusTitlePresentation() -> StatusTitlePresentation {
         let contentMode = settingsStore.settings.menuBarContentMode
-        let amountValue = store.snapshot.todayIncome
-        let rateValue = store.snapshot.todayIncomeRate
+        let amountValue: Double
+        let rateValue: Double
+        if accountsStore.selection == .all {
+            amountValue = accountsStore.summary.todayIncome
+            rateValue = accountsStore.summary.todayIncomeRate
+        } else {
+            amountValue = store.snapshot.todayIncome
+            rateValue = store.snapshot.todayIncomeRate
+        }
         let font = statusTitleFont()
         let statusText = MenuBarStatusFormatter.text(
             amount: amountValue,
@@ -660,7 +688,10 @@ final class StatusBarController: NSObject {
         applyPanelAppearance(to: window)
         setStatusItemHighlighted(true)
 
-        store.load()
+        if case .loading = accountsStore.loadState {
+            accountsStore.load()
+        }
+        normalizeAccountSelectionForAccountCount()
         updateStatusTitle()
         sendFundThresholdRemindersIfNeeded()
         updateMainPanelRootView()
@@ -710,17 +741,23 @@ final class StatusBarController: NSObject {
 
     private func makeMainPanelRootView() -> MainPanelWindowView {
         MainPanelWindowView(
-            store: store,
+            accountsStore: accountsStore,
             settingsStore: settingsStore,
             marketIndexStore: marketIndexStore,
             updateStore: updateStore,
             uiState: popoverState,
             selectedFundCode: selectedFundCode,
+            onSelectAccount: { [weak self] selection in
+                self?.selectAccount(selection)
+            },
+            onManageAccounts: { [weak self] in
+                self?.showChildPanel(.manageAccounts)
+            },
             onRefresh: { [weak self] in
                 await self?.refreshQuotesAndStatusTitleAsync()
             },
             onOpenSettings: { [weak self] in
-                self?.showChildPanel(.settings)
+                self?.openSettingsForFocusedAccount()
             },
             onClose: { [weak self] in
                 self?.closeAllPanels()
@@ -785,9 +822,50 @@ final class StatusBarController: NSObject {
         showChildPanel(.portfolioPerformance)
     }
 
+    @discardableResult
+    private func normalizeAccountSelectionForAccountCount(hidePanels: Bool = true) -> Bool {
+        guard let firstAccount = accountsStore.accounts.first else { return false }
+        guard !allowsAllAccountsView, accountsStore.selection != .account(firstAccount.id) else {
+            return false
+        }
+
+        if hidePanels {
+            hideJDFinanceLoginPanel(reportCancellation: true)
+            hideChildPanel()
+        }
+        selectedFundCode = nil
+        accountsStore.select(.account(firstAccount.id))
+        return true
+    }
+
+    private func selectAccount(_ selection: PortfolioAccountSelection) {
+        if selection == .all, !allowsAllAccountsView {
+            normalizeAccountSelectionForAccountCount()
+            return
+        }
+
+        guard selection != accountsStore.selection else { return }
+        hideJDFinanceLoginPanel(reportCancellation: true)
+        hideChildPanel()
+        selectedFundCode = nil
+        accountsStore.select(selection)
+        updateStatusTitle()
+        updateMainPanelRootView()
+        sendFundThresholdRemindersIfNeeded()
+    }
+
     private func showChildPanel(_ route: ChildPanelRoute) {
         if mainPanelWindow?.isVisible != true {
             showMainPanel()
+        }
+
+        if route.ownsJDFinanceLoginPanel,
+           accountsStore.focusedAccount.kind != .offExchange {
+            presentAccountActionUnavailable(
+                title: "此账户不支持京东同步",
+                message: "京东金融同步只适用于场外基金账户。请先切换到场外账户。"
+            )
+            return
         }
 
         if let activeChildPanel,
@@ -826,7 +904,54 @@ final class StatusBarController: NSObject {
     }
 
     private func showJDFinanceSyncPanel() {
+        guard !jdFinanceTargetCandidates.isEmpty else {
+            showChildPanel(.addAccount)
+            return
+        }
+        guard let target = jdFinanceTargetAccount else {
+            return
+        }
+
+        if accountsStore.selection != .account(target.id) {
+            selectAccount(.account(target.id))
+        }
         showChildPanel(.jdFinanceSync)
+    }
+
+    private var jdFinanceTargetCandidates: [PortfolioAccount] {
+        accountsStore.accounts.filter { $0.kind == .offExchange }
+    }
+
+    private var jdFinanceTargetAccount: PortfolioAccount? {
+        let boundAccountIDs = Set<String>(
+            jdFinanceTargetCandidates.compactMap { account in
+                guard accountsStore.store(for: account.id)?.snapshot.jdFinanceSyncState?.accountKey?.isEmpty == false else {
+                    return nil
+                }
+                return account.id
+            }
+        )
+        return JDFinanceTargetResolver.resolve(
+            accounts: accountsStore.accounts,
+            focusedAccountID: accountsStore.focusedAccount.id,
+            preferredAccountID: jdFinanceTargetAccountID,
+            boundAccountIDs: boundAccountIDs
+        )
+    }
+
+    private func selectJDFinanceTargetAccount(_ accountID: String) {
+        guard jdFinanceTargetCandidates.contains(where: { $0.id == accountID }) else { return }
+        jdFinanceTargetAccountID = accountID
+        showChildPanel(.settings)
+    }
+
+    private func presentAccountActionUnavailable(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     private func createChildPanelWindow() -> FundPulsePanel {
@@ -1016,9 +1141,56 @@ final class StatusBarController: NSObject {
             )
             return (PanelFocusAppearance.hostingView(view), PopoverLayout.jdFinancePerformanceSyncSize)
 
+        case .addAccount:
+            let view = PortfolioAccountEditorView(
+                accountsStore: accountsStore,
+                onSaved: { [weak self] _ in
+                    guard let self else { return }
+                    hideChildPanel()
+                    normalizeAccountSelectionForAccountCount()
+                    selectedFundCode = nil
+                    updateStatusTitle()
+                    updateMainPanelRootView()
+                    sendFundThresholdRemindersIfNeeded()
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.accountEditorSize)
+
+        case .manageAccounts:
+            let view = PortfolioAccountManagementView(
+                accountsStore: accountsStore,
+                onAddAccount: { [weak self] in
+                    self?.showChildPanel(.addAccount)
+                },
+                onSelected: { [weak self] accountID in
+                    guard let self else { return }
+                    hideChildPanel()
+                    selectAccount(.account(accountID))
+                    updateMainPanelRootView()
+                },
+                onAccountsChanged: { [weak self] in
+                    guard let self else { return }
+                    normalizeAccountSelectionForAccountCount(hidePanels: false)
+                    updateStatusTitle()
+                    updateMainPanelRootView()
+                    reconcileActiveChildPanelRoute()
+                },
+                onClose: { [weak self] in
+                    self?.hideChildPanel()
+                }
+            )
+            return (PanelFocusAppearance.hostingView(view), PopoverLayout.accountManagementSize)
+
         case .settings:
             let view = SettingsView(
                 store: store,
+                account: accountsStore.focusedAccount,
+                accountCount: accountsStore.accounts.count,
+                jdFinanceTargetAccount: jdFinanceTargetAccount,
+                jdFinanceTargetCandidates: jdFinanceTargetCandidates,
                 settingsStore: settingsStore,
                 updateStore: updateStore,
                 appVersion: appVersion,
@@ -1033,6 +1205,15 @@ final class StatusBarController: NSObject {
                 },
                 onOpenJDFinanceSync: { [weak self] in
                     self?.showJDFinanceSyncPanel()
+                },
+                onManageAccounts: { [weak self] in
+                    self?.showChildPanel(.manageAccounts)
+                },
+                onSelectJDFinanceTarget: { [weak self] accountID in
+                    self?.selectJDFinanceTargetAccount(accountID)
+                },
+                onCreateOffExchangeAccount: { [weak self] in
+                    self?.showChildPanel(.addAccount)
                 },
                 onOpenPrivacyDisclaimer: { [weak self] in
                     self?.showChildPanel(.privacyDisclaimer(origin: .settings))
@@ -1135,6 +1316,7 @@ final class StatusBarController: NSObject {
             let view = FundDetailView(
                 store: store,
                 fundCode: fundCode,
+                allowsConversion: store.accountKind == .offExchange,
                 onBuy: { [weak self] fund in
                     self?.showChildPanel(.buyFund(fundCode: fund.code))
                 },
@@ -1201,6 +1383,23 @@ final class StatusBarController: NSObject {
 
         case .buyFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
+            if store.accountKind == .onExchange {
+                let view = ExchangeFundTradeEditorView(
+                    store: store,
+                    fund: fund,
+                    action: .buy,
+                    onSaved: { [weak self] in
+                        await MainActor.run {
+                            self?.updateStatusTitle()
+                            self?.sendFundThresholdRemindersIfNeeded()
+                        }
+                    },
+                    onClose: { [weak self] in
+                        self?.hideChildPanel()
+                    }
+                )
+                return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
+            }
             let view = FundTradeEditorView(
                 store: store,
                 fund: fund,
@@ -1219,6 +1418,23 @@ final class StatusBarController: NSObject {
 
         case .sellFund(let fundCode):
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
+            if store.accountKind == .onExchange {
+                let view = ExchangeFundTradeEditorView(
+                    store: store,
+                    fund: fund,
+                    action: .sell,
+                    onSaved: { [weak self] in
+                        await MainActor.run {
+                            self?.updateStatusTitle()
+                            self?.sendFundThresholdRemindersIfNeeded()
+                        }
+                    },
+                    onClose: { [weak self] in
+                        self?.hideChildPanel()
+                    }
+                )
+                return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
+            }
             let view = FundTradeEditorView(
                 store: store,
                 fund: fund,
@@ -1236,6 +1452,13 @@ final class StatusBarController: NSObject {
             return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
 
         case .convertFund(let fundCode):
+            guard store.accountKind == .offExchange else {
+                presentAccountActionUnavailable(
+                    title: "场内基金无需转换",
+                    message: "场内基金请按实际成交价记录买入或卖出；基金转换仅适用于场外账户。"
+                )
+                return nil
+            }
             guard let fund = store.snapshot.funds.first(where: { $0.code == fundCode }) else { return nil }
             let view = FundConversionEditorView(
                 store: store,
@@ -1257,6 +1480,25 @@ final class StatusBarController: NSObject {
                   let record = store.snapshot.tradeRecords?.first(where: { $0.id == recordID })
             else { return nil }
             let action: FundTradeAction = record.kind == .sell ? .sell : .buy
+            if store.accountKind == .onExchange {
+                let view = ExchangeFundTradeEditorView(
+                    store: store,
+                    fund: fund,
+                    action: action,
+                    editingRecord: record,
+                    onSaved: { [weak self] in
+                        await MainActor.run {
+                            self?.updateStatusTitle()
+                            self?.sendFundThresholdRemindersIfNeeded()
+                            self?.showChildPanel(.tradeRecords(fundCode: fundCode))
+                        }
+                    },
+                    onClose: { [weak self] in
+                        self?.showChildPanel(.tradeRecords(fundCode: fundCode))
+                    }
+                )
+                return (PanelFocusAppearance.hostingView(view), PopoverLayout.tradeEditorSize)
+            }
             let view = FundTradeEditorView(
                 store: store,
                 fund: fund,
@@ -1556,6 +1798,10 @@ final class StatusBarController: NSObject {
             size = PopoverLayout.portfolioBreakdownSize
         case .todayIncomeRanking:
             size = PopoverLayout.todayIncomeRankingSize
+        case .addAccount:
+            size = PopoverLayout.accountEditorSize
+        case .manageAccounts:
+            size = PopoverLayout.accountManagementSize
         case .fundDetail:
             size = PopoverLayout.fundDetailSize
         case .fundDailyIncome:
@@ -2061,8 +2307,7 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func openSettingsFromMenu() {
-        showMainPanel()
-        showChildPanel(.settings)
+        openSettingsForFocusedAccount()
     }
 
     @objc private func selectMenuBarContentModeFromMenu(_ sender: NSMenuItem) {
@@ -2088,11 +2333,12 @@ final class StatusBarController: NSObject {
     @discardableResult
     private func importFundConfiguration() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
+        ensureFocusedAccountIsSelected()
 
         let panel = NSOpenPanel()
         panel.title = "导入基金配置"
         panel.prompt = "导入"
-        panel.message = "选择 fund-pulse 导出的 JSON 配置文件。"
+        panel.message = "导入到“\(accountsStore.focusedAccount.name)”。选择 fund-pulse 导出的 JSON 配置文件。"
         panel.allowedContentTypes = [.json]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -2114,11 +2360,12 @@ final class StatusBarController: NSObject {
 
     @objc private func exportFundConfigurationFromMenu() {
         NSApp.activate(ignoringOtherApps: true)
+        ensureFocusedAccountIsSelected()
 
         let panel = NSSavePanel()
         panel.title = "导出基金配置"
         panel.prompt = "导出"
-        panel.message = "导出当前录入的基金、持仓日期、待确认交易和交易记录。"
+        panel.message = "导出“\(accountsStore.focusedAccount.name)”中的基金、待确认交易和交易记录。"
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
@@ -2138,7 +2385,24 @@ final class StatusBarController: NSObject {
     }
 
     private func defaultFundConfigurationFileName() -> String {
-        "fund-pulse-portfolio-\(DateOnlyFormatter.string(from: .now)).json"
+        let safeAccountName = accountsStore.focusedAccount.name
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        return "fund-pulse-\(safeAccountName)-\(DateOnlyFormatter.string(from: .now)).json"
+    }
+
+    private func openSettingsForFocusedAccount() {
+        ensureFocusedAccountIsSelected()
+        showMainPanel()
+        showChildPanel(.settings)
+    }
+
+    private func ensureFocusedAccountIsSelected() {
+        guard accountsStore.selection == .all else { return }
+        accountsStore.select(.account(accountsStore.focusedAccount.id))
+        selectedFundCode = nil
+        updateStatusTitle()
+        updateMainPanelRootView()
     }
 
     private func presentConfigurationError(title: String, error: Error) {
@@ -2158,7 +2422,9 @@ final class StatusBarController: NSObject {
     }
 
     private func handleSettingsChanged() {
+        normalizeAccountSelectionForAccountCount()
         updateStatusTitle()
+        updateMainPanelRootView()
         refreshVisiblePanels(animatedAppearance: true)
         configureAutoRefreshTimer()
         configureOperationReminder()
@@ -2171,7 +2437,7 @@ final class StatusBarController: NSObject {
     }
 
     private func refreshQuotesAndStatusTitleAsync() async {
-        await store.refreshQuotes()
+        await accountsStore.refreshQuotes()
         await refreshMarketIndexesIfNeeded()
         updateStatusTitle()
         sendFundThresholdRemindersIfNeeded()

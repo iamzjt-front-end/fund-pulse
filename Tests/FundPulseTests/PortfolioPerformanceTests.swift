@@ -115,6 +115,32 @@ final class PortfolioPerformanceTests: XCTestCase {
         )
     }
 
+    func testQuoteConfirmationTreatsDelayedQDIINAVAsConfirmedOnNextTradingDay() throws {
+        let now = try shanghaiDate("2026-08-25 20:20")
+        var snapshot = portfolio(todayIncome: -501.95, todayIncomeRate: -0.24)
+        snapshot.funds[0].code = "022184"
+        snapshot.funds[0].name = "富国全球科技互联网股票(QDII)C"
+        snapshot.funds[0].isIncomeActive = true
+        let quote = FundQuote(
+            code: "022184",
+            name: "富国全球科技互联网股票(QDII)C",
+            netValue: 5.0156,
+            estimatedNetValue: 5.0156,
+            growthRate: -4.82,
+            estimateTime: "",
+            netValueDate: "2026-08-24"
+        )
+
+        XCTAssertEqual(
+            PortfolioPerformanceRecorder.quoteConfirmationState(
+                portfolio: snapshot,
+                quotes: ["022184": quote],
+                now: now
+            ),
+            true
+        )
+    }
+
     func testSameDayEstimateUpgradesToConfirmedAndCannotDowngrade() throws {
         let morning = try shanghaiDate("2026-07-15 10:00")
         let evening = try shanghaiDate("2026-07-15 21:00")

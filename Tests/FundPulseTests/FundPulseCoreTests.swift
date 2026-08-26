@@ -7393,6 +7393,22 @@ final class FundPulseCoreTests: XCTestCase {
             FundRowAmountPrivacyFormatter.signedCompactMoney(69.12, isMasked: false),
             "+69.12"
         )
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.signedCompactHoldingIncome(
+                69.1234,
+                accountKind: .onExchange,
+                isMasked: false
+            ),
+            "+69.123"
+        )
+        XCTAssertEqual(
+            FundRowAmountPrivacyFormatter.signedCompactHoldingIncome(
+                69.1234,
+                accountKind: .offExchange,
+                isMasked: false
+            ),
+            "+69.12"
+        )
         XCTAssertEqual(MoneyFormatter.percent(3.78, signed: true), "+3.78%")
     }
 
@@ -14141,6 +14157,160 @@ final class FundPulseCoreTests: XCTestCase {
         XCTAssertEqual(result.funds[0].todayRate, 3.9439, accuracy: 0.0001)
         XCTAssertTrue(result.funds[0].isUpdated)
         XCTAssertEqual(result.funds[0].dateText, "06-18 15:00")
+    }
+
+    func testPortfolioCalculatorTreatsPreviousTradingDayQDIINAVAsUpdatedToday() throws {
+        let now = try chinaDate("2026-08-25 20:20")
+        let shares = 1_976.230129
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "022184",
+                    name: "富国全球科技互联网股票(QDII)C",
+                    dateText: "08-21 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    migratedShares: shares,
+                    migratedCost: 5.4143,
+                    migratedPrincipal: 10_700,
+                    incomeStartDate: "2026-08-20"
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "022184",
+            name: "富国全球科技互联网股票(QDII)C",
+            netValue: 5.0156,
+            estimatedNetValue: 5.0156,
+            growthRate: -4.82,
+            estimateTime: "",
+            netValueDate: "2026-08-24"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["022184": quote],
+            now: now
+        )
+
+        let expectedTodayIncome = shares * quote.netValue * quote.growthRate / (100 + quote.growthRate)
+        let expectedTodayBase = shares * quote.netValue / (1 + quote.growthRate / 100)
+        XCTAssertEqual(result.funds[0].todayRate, -4.82, accuracy: 0.0001)
+        XCTAssertEqual(result.funds[0].todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertTrue(result.funds[0].isUpdated)
+        XCTAssertEqual(result.funds[0].dateText, "08-24 15:00")
+        XCTAssertEqual(result.todayIncome, expectedTodayIncome, accuracy: 0.0001)
+        XCTAssertEqual(result.todayIncomeRate, expectedTodayIncome / expectedTodayBase * 100, accuracy: 0.0001)
+    }
+
+    func testPortfolioCalculatorKeepsPreviousTradingDayDomesticNAVInactive() throws {
+        let now = try chinaDate("2026-08-25 20:20")
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "026210",
+                    name: "平安科技精选混合发起式A",
+                    dateText: "08-24 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    migratedShares: 100,
+                    migratedCost: 2,
+                    migratedPrincipal: 200,
+                    incomeStartDate: "2026-08-20"
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "026210",
+            name: "平安科技精选混合发起式A",
+            netValue: 2.1,
+            estimatedNetValue: 2.1,
+            growthRate: -4.82,
+            estimateTime: "",
+            netValueDate: "2026-08-24"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["026210": quote],
+            now: now
+        )
+
+        XCTAssertEqual(result.funds[0].todayRate, 0)
+        XCTAssertEqual(result.funds[0].todayIncome, 0)
+        XCTAssertFalse(result.funds[0].isUpdated)
+        XCTAssertEqual(result.todayIncome, 0)
+    }
+
+    func testPortfolioCalculatorDoesNotRepeatOlderQDIINAVAsTodayUpdate() throws {
+        let now = try chinaDate("2026-08-25 20:20")
+        let snapshot = PortfolioSnapshot(
+            updateTime: now,
+            totalAmount: 0,
+            holdingIncome: 0,
+            holdingIncomeRate: 0,
+            todayIncome: 0,
+            todayIncomeRate: 0,
+            pendingCount: 0,
+            funds: [
+                FundPosition(
+                    code: "022184",
+                    name: "富国全球科技互联网股票(QDII)C",
+                    dateText: "08-21 15:00",
+                    todayIncome: 0,
+                    todayRate: 0,
+                    holdingRate: nil,
+                    status: .holding,
+                    isUpdated: false,
+                    migratedShares: 100,
+                    migratedCost: 5,
+                    migratedPrincipal: 500,
+                    incomeStartDate: "2026-08-20"
+                )
+            ],
+            migration: nil
+        )
+        let quote = FundQuote(
+            code: "022184",
+            name: "富国全球科技互联网股票(QDII)C",
+            netValue: 5.2696,
+            estimatedNetValue: 5.2696,
+            growthRate: -0.27,
+            estimateTime: "",
+            netValueDate: "2026-08-21"
+        )
+
+        let result = PortfolioCalculator.applyingQuotes(
+            to: snapshot,
+            quotes: ["022184": quote],
+            now: now
+        )
+
+        XCTAssertEqual(result.funds[0].todayRate, 0)
+        XCTAssertEqual(result.funds[0].todayIncome, 0)
+        XCTAssertFalse(result.funds[0].isUpdated)
     }
 
     func testPortfolioCalculatorExcludesSameDayJDPendingBuyEmbeddedInSyncedAmount() throws {

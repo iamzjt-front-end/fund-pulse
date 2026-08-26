@@ -80,6 +80,10 @@ struct SettingsSectionSession: Equatable {
 
 struct SettingsView: View {
     let store: PortfolioStore
+    let account: PortfolioAccount
+    let accountCount: Int
+    let jdFinanceTargetAccount: PortfolioAccount?
+    let jdFinanceTargetCandidates: [PortfolioAccount]
     let settingsStore: AppSettingsStore
     let updateStore: AppUpdateStore
     let appVersion: String
@@ -87,6 +91,9 @@ struct SettingsView: View {
     let onRefresh: (() async -> Void)?
     let onCheckUpdate: (() async -> Void)?
     let onOpenJDFinanceSync: (() -> Void)?
+    let onManageAccounts: (() -> Void)?
+    let onSelectJDFinanceTarget: ((String) -> Void)?
+    let onCreateOffExchangeAccount: (() -> Void)?
     let onOpenPrivacyDisclaimer: (() -> Void)?
     let onOpenOnboarding: (() -> Void)?
     let onOpenExternalURL: ((URL) -> Bool)?
@@ -118,6 +125,10 @@ struct SettingsView: View {
 
     init(
         store: PortfolioStore,
+        account: PortfolioAccount,
+        accountCount: Int = 1,
+        jdFinanceTargetAccount: PortfolioAccount? = nil,
+        jdFinanceTargetCandidates: [PortfolioAccount] = [],
         settingsStore: AppSettingsStore,
         updateStore: AppUpdateStore,
         appVersion: String,
@@ -125,6 +136,9 @@ struct SettingsView: View {
         onRefresh: (() async -> Void)?,
         onCheckUpdate: (() async -> Void)?,
         onOpenJDFinanceSync: (() -> Void)? = nil,
+        onManageAccounts: (() -> Void)? = nil,
+        onSelectJDFinanceTarget: ((String) -> Void)? = nil,
+        onCreateOffExchangeAccount: (() -> Void)? = nil,
         onOpenPrivacyDisclaimer: (() -> Void)? = nil,
         onOpenOnboarding: (() -> Void)? = nil,
         onOpenExternalURL: ((URL) -> Bool)? = nil,
@@ -133,6 +147,10 @@ struct SettingsView: View {
         onClose: (() -> Void)? = nil
     ) {
         self.store = store
+        self.account = account
+        self.accountCount = accountCount
+        self.jdFinanceTargetAccount = jdFinanceTargetAccount
+        self.jdFinanceTargetCandidates = jdFinanceTargetCandidates
         self.settingsStore = settingsStore
         self.updateStore = updateStore
         self.appVersion = appVersion
@@ -140,6 +158,9 @@ struct SettingsView: View {
         self.onRefresh = onRefresh
         self.onCheckUpdate = onCheckUpdate
         self.onOpenJDFinanceSync = onOpenJDFinanceSync
+        self.onManageAccounts = onManageAccounts
+        self.onSelectJDFinanceTarget = onSelectJDFinanceTarget
+        self.onCreateOffExchangeAccount = onCreateOffExchangeAccount
         self.onOpenPrivacyDisclaimer = onOpenPrivacyDisclaimer
         self.onOpenOnboarding = onOpenOnboarding
         self.onOpenExternalURL = onOpenExternalURL
@@ -224,13 +245,13 @@ struct SettingsView: View {
         .onChange(of: selectedSection) { _, section in
             onSectionChanged?(section)
         }
-        .alert("清空所有持仓", isPresented: $isClearHoldingsConfirmationPresented) {
+        .alert(clearHoldingsAlertTitle, isPresented: $isClearHoldingsConfirmationPresented) {
             Button("取消", role: .cancel) {}
             Button("清空", role: .destructive) {
                 clearAllHoldings()
             }
         } message: {
-            Text("会删除全部基金、待确认操作、交易记录、组合收益历史和当前收益汇总。此操作无法撤销。")
+            Text("会删除“\(account.name)”账户的基金、待确认操作、交易记录、组合收益历史和当前收益汇总；不会影响其他账户。此操作无法撤销。")
         }
     }
 
@@ -311,15 +332,29 @@ struct SettingsView: View {
 
     private var dataSettingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
+            PanelSection(title: "账户") {
+                accountManagementSection
+            }
+
+            PanelSection(title: "当前账户") {
+                currentAccountScopeSection
+            }
+
             PanelSection(title: "实验功能") {
                 betaFeaturesSection
             }
 
-            PanelSection(title: "京东会话") {
+            if settingsStore.settings.betaFeaturesEnabled {
+                PanelSection(title: "京东金融同步") {
+                    jdFinanceSyncSection
+                }
+            }
+
+            PanelSection(title: "京东会话（本机全局）") {
                 jdFinanceSessionSection
             }
 
-            PanelSection(title: "本地数据") {
+            PanelSection(title: "当前账户数据") {
                 clearHoldingsSection
             }
         }
@@ -518,34 +553,6 @@ struct SettingsView: View {
                     .frame(width: 54, height: 30)
             }
 
-            if settingsStore.settings.betaFeaturesEnabled {
-                Divider()
-                    .overlay(.secondary.opacity(0.14))
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text("京东金融同步")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("从京东金融读取持仓并生成本地同步预览。")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Button {
-                        onOpenJDFinanceSync?()
-                    } label: {
-                        PanelButtonLabel(
-                            title: "同步京东",
-                            systemImage: "arrow.triangle.2.circlepath",
-                            style: .primary
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .focusable(false)
-                    .disabled(onOpenJDFinanceSync == nil)
-                    .help("打开京东金融同步")
-                }
-            }
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -554,13 +561,195 @@ struct SettingsView: View {
         .animation(.easeInOut(duration: 0.16), value: settingsStore.settings.betaFeaturesEnabled)
     }
 
+    private var accountManagementSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(accountCount > 1
+                 ? "已创建 \(accountCount) 个账户，可直接在顶部账户条切换。"
+                 : "默认账户已就绪；新增账户后，可直接在顶部账户条切换。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let onManageAccounts {
+                Button(action: onManageAccounts) {
+                    PanelButtonLabel(
+                        title: accountCount > 1 ? "管理账户" : "新增账户",
+                        systemImage: "person.2",
+                        style: .secondary
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .help("打开账户管理")
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var currentAccountScopeSection: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: account.kind == .onExchange ? "chart.line.uptrend.xyaxis" : "banknote")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange)
+                .frame(width: 24, height: 24)
+                .background(
+                    (account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(account.name)
+                        .font(.system(size: 11, weight: .semibold))
+                        .lineLimit(1)
+                    Text(account.kind.title)
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange)
+                        .padding(.horizontal, 4)
+                        .frame(height: 14)
+                        .background(
+                            (account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange).opacity(0.10),
+                            in: Capsule()
+                        )
+                }
+                Text(account.kind.detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
+    private var jdFinanceSyncSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("从京东金融读取持仓并生成本地同步预览。同步目标明确显示在操作前，不受当前左侧账户影响。")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(nil)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if jdFinanceTargetCandidates.isEmpty {
+                Text("京东同步只写入场外基金账户，请先创建一个场外账户。")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    onCreateOffExchangeAccount?()
+                } label: {
+                    PanelButtonLabel(
+                        title: "创建场外账户",
+                        systemImage: "plus.circle",
+                        style: .secondary,
+                        isEnabled: onCreateOffExchangeAccount != nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .focusable(false)
+                .disabled(onCreateOffExchangeAccount == nil)
+                .help("创建用于京东同步的场外基金账户")
+            } else {
+                jdFinanceTargetPicker
+
+                if jdFinanceTargetAccount != nil {
+                    Button {
+                        onOpenJDFinanceSync?()
+                    } label: {
+                        PanelButtonLabel(
+                            title: "同步到“\(jdFinanceTargetAccount?.name ?? "场外账户")”",
+                            systemImage: "arrow.triangle.2.circlepath",
+                            style: .primary,
+                            isEnabled: onOpenJDFinanceSync != nil
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                    .disabled(onOpenJDFinanceSync == nil)
+                    .help("切换到目标账户并打开京东同步")
+                } else {
+                    Text("请先选择接收京东持仓的场外账户。")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var jdFinanceTargetPicker: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(PanelDesign.accent)
+                .frame(width: 22, height: 22)
+                .background(PanelDesign.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("同步目标")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(jdFinanceTargetAccount.map { "\($0.name) · 场外" } ?? "选择场外账户")
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            Menu {
+                ForEach(jdFinanceTargetCandidates) { candidate in
+                    Button {
+                        onSelectJDFinanceTarget?(candidate.id)
+                    } label: {
+                        HStack {
+                            Text(candidate.name)
+                            Text("· 场外")
+                                .foregroundStyle(.secondary)
+                            if candidate.id == jdFinanceTargetAccount?.id {
+                                Spacer()
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(jdFinanceTargetCandidates.count > 1 ? "更换" : "查看")
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(PanelDesign.accent)
+                .padding(.horizontal, 7)
+                .frame(height: 25)
+                .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(PanelDesign.border(cornerRadius: 7))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(onSelectJDFinanceTarget == nil)
+            .help("选择京东同步目标账户")
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(PanelDesign.border(cornerRadius: 9))
+    }
+
     private var clearHoldingsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("清空所有持仓")
+                    Text("清空“\(account.name)”账户数据")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("删除本地基金列表、待确认操作、交易记录和组合收益历史，适合彻底重新开始。")
+                    Text("删除当前账户的基金列表、待确认操作、交易记录和组合收益历史，不会影响其他账户。")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -583,7 +772,7 @@ struct SettingsView: View {
                 isClearHoldingsConfirmationPresented = true
             } label: {
                 PanelButtonLabel(
-                    title: "清空所有持仓",
+                    title: "清空“\(account.name)”账户数据",
                     systemImage: "trash",
                     style: .destructive
                 )
@@ -591,7 +780,7 @@ struct SettingsView: View {
             .buttonStyle(.plain)
             .focusable(false)
             .disabled(!canClearHoldings)
-            .help(canClearHoldings ? "清空所有本地持仓数据" : "当前没有可清空的持仓数据")
+            .help(canClearHoldings ? "清空当前账户的本地持仓数据" : "当前账户没有可清空的数据")
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -601,7 +790,7 @@ struct SettingsView: View {
 
     private var jdFinanceSessionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("清除这台 Mac 上的京东网页登录状态。不会删除本地持仓、交易记录或历史收益。")
+            Text("清除这台 Mac 上的京东网页登录状态。不会删除任何账户的本地持仓、交易记录或历史收益。")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -721,6 +910,10 @@ struct SettingsView: View {
             || store.snapshot.tradeRecords?.isEmpty == false
             || store.snapshot.syncedAccountTotal != nil
             || !store.performanceStore.snapshot.days.isEmpty
+    }
+
+    private var clearHoldingsAlertTitle: String {
+        "清空“\(account.name)”账户数据"
     }
 
     private func autoRefreshIntervalControl(
@@ -1587,7 +1780,7 @@ struct SettingsView: View {
     private func clearAllHoldings() {
         do {
             try store.clearAllHoldings()
-            clearHoldingsStatusMessage = "已清空所有本地持仓数据。"
+            clearHoldingsStatusMessage = "已清空“\(account.name)”账户数据。"
             onSettingsChanged?()
             Task {
                 await onRefresh?()

@@ -16,12 +16,20 @@ struct FundPulseApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    let portfolioStore = PortfolioStore()
+    let portfolioStore: PortfolioStore
+    let portfolioAccountsStore: PortfolioAccountsStore
     let settingsStore = AppSettingsStore()
     let marketIndexStore = MarketIndexStore()
     let updateStore = AppUpdateStore()
     nonisolated private let operationReminderPresentationGate = OperationReminderNotificationPresentationGate()
     private var statusBarController: StatusBarController?
+
+    override init() {
+        let portfolioStore = PortfolioStore()
+        self.portfolioStore = portfolioStore
+        self.portfolioAccountsStore = PortfolioAccountsStore(legacyStore: portfolioStore)
+        super.init()
+    }
 
     var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -34,9 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #else
         JDFinanceDebugArtifacts.removePersistedFiles()
 #endif
-        portfolioStore.load()
+        portfolioAccountsStore.load()
         statusBarController = StatusBarController(
-            store: portfolioStore,
+            accountsStore: portfolioAccountsStore,
             settingsStore: settingsStore,
             marketIndexStore: marketIndexStore,
             updateStore: updateStore,
@@ -67,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func refreshPortfolioAndStatusTitle() async {
-        await portfolioStore.refreshQuotes()
+        await portfolioAccountsStore.refreshQuotes()
         if settingsStore.settings.showsMarketIndexes {
             await marketIndexStore.refresh()
         }

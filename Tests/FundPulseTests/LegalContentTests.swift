@@ -64,7 +64,8 @@ final class LegalContentTests: XCTestCase {
         XCTAssertTrue(text.contains("投资建议"))
         XCTAssertTrue(text.contains("不承诺"))
         XCTAssertTrue(text.contains("独立"))
-        XCTAssertTrue(text.contains("清空所有持仓"))
+        XCTAssertTrue(text.contains("清空当前账户数据"))
+        XCTAssertTrue(text.contains("账户数据按账户分别保存"))
         XCTAssertTrue(text.contains("设置 > 数据 > 京东会话"))
         XCTAssertTrue(text.contains("删除应用"))
     }

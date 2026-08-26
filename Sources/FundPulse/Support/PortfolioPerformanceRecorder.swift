@@ -9,9 +9,10 @@ enum PortfolioPerformanceRecorder {
         var updatedAt: Date
     }
 
-    /// Returns `true` when every active holding has an official NAV for the
-    /// current Shanghai date, `false` when every holding has at least a current
-    /// estimate, and `nil` when the quote set is stale or incomplete.
+    /// Returns `true` when every active holding has an official NAV effective
+    /// for the current Shanghai date, including a QDII NAV published on the
+    /// next fund trading day. Returns `false` when every holding has at least a
+    /// current estimate, and `nil` when the quote set is stale or incomplete.
     static func quoteConfirmationState(
         portfolio: PortfolioSnapshot,
         quotes: [String: FundQuote],
@@ -22,12 +23,11 @@ enum PortfolioPerformanceRecorder {
             .map(\.code)
         guard !activeCodes.isEmpty else { return nil }
 
-        let today = DateOnlyFormatter.string(from: now)
         var allConfirmed = true
         for code in activeCodes {
             guard let quote = quotes[code] else { return nil }
-            let isConfirmed = quote.netValueDate == today
-            let isEstimated = quote.estimateTime.hasPrefix(today)
+            let isConfirmed = FundQuoteUpdatePolicy.isOfficiallyUpdated(quote, on: now)
+            let isEstimated = FundQuoteUpdatePolicy.hasCurrentIntradayEstimate(quote, on: now)
             guard isConfirmed || isEstimated else { return nil }
             allConfirmed = allConfirmed && isConfirmed
         }

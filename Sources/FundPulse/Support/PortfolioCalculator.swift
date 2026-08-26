@@ -4,9 +4,16 @@ enum PortfolioCalculator {
     static func applyingQuotes(
         to snapshot: PortfolioSnapshot,
         quotes: [String: FundQuote],
-        now: Date = .now
+        now: Date = .now,
+        accountKind: PortfolioAccountKind = .offExchange
     ) -> PortfolioSnapshot {
         let tradeRecords = snapshot.tradeRecords ?? []
+        let confirmedTradeRecordsByID = tradeRecords.reduce(
+            into: [String: FundTradeRecord]()
+        ) { result, record in
+            guard record.status == .confirmed else { return }
+            result[record.id] = record
+        }
         var costTotal = 0.0
         var currentTotal = 0.0
         var todayIncomeTotal = 0.0
@@ -71,13 +78,41 @@ enum PortfolioCalculator {
             let holdingNetValue = confirmedHoldingNetValue(for: quote, fallback: cost)
             let confirmedHoldingIncome = calculatedConfirmedHoldingIncome(lots: lots, quote: quote, netValue: netValue) + manualProfit
             let holdingIncome = calculatedHoldingIncome(lots: lots, quote: quote, netValue: holdingNetValue) + manualProfit
-            let todayIncome = quote.map {
-                calculatedTodayIncome(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
-                    + calculatedManualTodayIncome(amount: manualDailyIncomeAmount, quote: $0, dailyState: dailyState)
+            let todayIncome = quote.map { quote in
+                if accountKind == .onExchange {
+                    return calculatedExchangeTodayIncome(
+                        lots: lots,
+                        currentPrice: netValue,
+                        quote: quote,
+                        dailyState: dailyState,
+                        tradeRecordsByID: confirmedTradeRecordsByID,
+                        now: now
+                    )
+                }
+                return calculatedTodayIncome(
+                    confirmedShares: dailyIncomeShares,
+                    netValue: netValue,
+                    quote: quote,
+                    dailyState: dailyState
+                ) + calculatedManualTodayIncome(amount: manualDailyIncomeAmount, quote: quote, dailyState: dailyState)
             } ?? 0
-            let todayIncomeBase = quote.map {
-                calculatedTodayIncomeBase(confirmedShares: dailyIncomeShares, netValue: netValue, quote: $0, dailyState: dailyState)
-                    + calculatedManualTodayIncomeBase(amount: manualDailyIncomeAmount, dailyState: dailyState)
+            let todayIncomeBase = quote.map { quote in
+                if accountKind == .onExchange {
+                    return calculatedExchangeTodayIncomeBase(
+                        lots: lots,
+                        currentPrice: netValue,
+                        quote: quote,
+                        dailyState: dailyState,
+                        tradeRecordsByID: confirmedTradeRecordsByID,
+                        now: now
+                    )
+                }
+                return calculatedTodayIncomeBase(
+                    confirmedShares: dailyIncomeShares,
+                    netValue: netValue,
+                    quote: quote,
+                    dailyState: dailyState
+                ) + calculatedManualTodayIncomeBase(amount: manualDailyIncomeAmount, dailyState: dailyState)
             } ?? 0
             let holdingCostTotal = max(fundCostTotal - displayPendingBuyAmount, 0)
             let confirmedHoldingRate = holdingCostTotal > 0 ? confirmedHoldingIncome / holdingCostTotal * 100 : nil
@@ -108,10 +143,13 @@ enum PortfolioCalculator {
             if let quote {
                 next.name = quote.name.isEmpty ? fund.name : quote.name
                 next.dateText = shortDateText(quote: quote, fallback: fund.dateText, now: now)
-                next.todayRate = dailyState.isActive && (dailyIncomeShares > 0 || (manualDailyIncomeAmount ?? 0) > 0)
+                let hasDailyPosition = accountKind == .onExchange
+                    ? totalShares > 0
+                    : (dailyIncomeShares > 0 || (manualDailyIncomeAmount ?? 0) > 0)
+                next.todayRate = dailyState.isActive && hasDailyPosition
                     ? quote.growthRate
                     : 0
-                next.isUpdated = isQuoteUpdated(quote, now: now)
+                next.isUpdated = FundQuoteUpdatePolicy.isOfficiallyUpdated(quote, on: now)
             }
             next.status = status
             next.isIncomeActive = isIncomeActive
@@ -127,15 +165,28 @@ enum PortfolioCalculator {
             return next
         }
 
-        let todayIncomeRate = todayIncomeBaseTotal > 0 ? todayIncomeTotal / todayIncomeBaseTotal * 100 : 0
-        let holdingIncomeRate = costTotal > 0 ? holdingIncomeTotal / costTotal * 100 : 0
+        let reconciliation = accountKind == .onExchange ? snapshot.exchangeAccountReconciliation : nil
+        let today = DateOnlyFormatter.string(from: now)
+        let usesReportedBaseline = reconciliation?.date == today
+        let effectiveTodayIncome = usesReportedBaseline
+            ? finite(reconciliation?.reportedTodayIncome)
+            : todayIncomeTotal
+        let effectiveHoldingIncome = usesReportedBaseline
+            ? finite(reconciliation?.reportedHoldingIncome)
+            : holdingIncomeTotal
+        let todayIncomeBase = accountKind == .onExchange ? currentTotal : todayIncomeBaseTotal
+        let holdingIncomeBase = usesReportedBaseline
+            ? max(currentTotal - effectiveHoldingIncome, 0)
+            : costTotal
+        let todayIncomeRate = todayIncomeBase > 0 ? effectiveTodayIncome / todayIncomeBase * 100 : 0
+        let holdingIncomeRate = holdingIncomeBase > 0 ? effectiveHoldingIncome / holdingIncomeBase * 100 : 0
 
         return PortfolioSnapshot(
             updateTime: now,
             totalAmount: currentTotal,
-            holdingIncome: holdingIncomeTotal,
+            holdingIncome: effectiveHoldingIncome,
             holdingIncomeRate: holdingIncomeRate,
-            todayIncome: todayIncomeTotal,
+            todayIncome: effectiveTodayIncome,
             todayIncomeRate: todayIncomeRate,
             pendingCount: pendingCount,
             funds: funds,
@@ -145,8 +196,14 @@ enum PortfolioCalculator {
             tradeRecords: snapshot.tradeRecords,
             syncedAccountTotal: snapshot.syncedAccountTotal,
             jdFinanceSyncState: snapshot.jdFinanceSyncState,
+            exchangeAccountReconciliation: snapshot.exchangeAccountReconciliation,
             portfolioPerformanceHistory: snapshot.portfolioPerformanceHistory
         )
+    }
+
+    private static func finite(_ value: Double?) -> Double {
+        guard let value, value.isFinite else { return 0 }
+        return value
     }
 
     private static func effectiveStatus(totalShares: Double, hasManualHolding: Bool = false) -> FundHoldingStatus {
@@ -275,6 +332,9 @@ enum PortfolioCalculator {
     }
 
     private static func shortDateText(quote: FundQuote, fallback: String, now: Date) -> String {
+        if let marketPriceTime = quote.marketPriceTime, marketPriceTime.count >= 16 {
+            return String(marketPriceTime.dropFirst(5).prefix(11))
+        }
         if dailyQuoteState(for: quote, now: now) == .intradayEstimate, quote.estimateTime.count >= 16 {
             return String(quote.estimateTime.dropFirst(5).prefix(11))
         }
@@ -284,13 +344,6 @@ enum PortfolioCalculator {
         return fallback
     }
 
-    private static func isQuoteUpdated(_ quote: FundQuote, now: Date) -> Bool {
-        guard let date = DateOnlyFormatter.parse(quote.netValueDate) else {
-            return false
-        }
-        return Calendar.current.isDate(date, inSameDayAs: now)
-    }
-
     private static func dailyQuoteState(for quote: FundQuote, now: Date) -> DailyQuoteState {
         guard TradingCalendar.isFundTradingDay(now) else { return .inactive }
 
@@ -298,8 +351,11 @@ enum PortfolioCalculator {
         if quote.netValueDate == today {
             return .officialUpdated
         }
-        if quote.estimateTime.count >= 10, String(quote.estimateTime.prefix(10)) == today {
+        if FundQuoteUpdatePolicy.hasCurrentIntradayEstimate(quote, on: now) {
             return .intradayEstimate
+        }
+        if FundQuoteUpdatePolicy.isDelayedQDIIOfficialUpdate(quote, on: now) {
+            return .officialUpdated
         }
         return .inactive
     }
@@ -342,6 +398,93 @@ enum PortfolioCalculator {
         case .inactive:
             return 0
         }
+    }
+
+    private static func calculatedExchangeTodayIncome(
+        lots: [FundPositionLot],
+        currentPrice: Double,
+        quote: FundQuote,
+        dailyState: DailyQuoteState,
+        tradeRecordsByID: [String: FundTradeRecord],
+        now: Date
+    ) -> Double {
+        guard dailyState.isActive,
+              currentPrice > 0,
+              let previousClose = exchangePreviousClose(currentPrice: currentPrice, quote: quote),
+              previousClose > 0
+        else {
+            return 0
+        }
+
+        let today = DateOnlyFormatter.string(from: now)
+        return lots.reduce(0) { total, lot in
+            guard lot.positionDate <= today else { return total }
+            if isSameDayExchangeBuy(
+                lot,
+                today: today,
+                tradeRecordsByID: tradeRecordsByID
+            ) {
+                return total + lot.shares * currentPrice - lotPrincipal(lot)
+            }
+            return total + lot.shares * (currentPrice - previousClose)
+        }
+    }
+
+    private static func calculatedExchangeTodayIncomeBase(
+        lots: [FundPositionLot],
+        currentPrice: Double,
+        quote: FundQuote,
+        dailyState: DailyQuoteState,
+        tradeRecordsByID: [String: FundTradeRecord],
+        now: Date
+    ) -> Double {
+        guard dailyState.isActive,
+              currentPrice > 0,
+              let previousClose = exchangePreviousClose(currentPrice: currentPrice, quote: quote),
+              previousClose > 0
+        else {
+            return 0
+        }
+
+        let today = DateOnlyFormatter.string(from: now)
+        return lots.reduce(0) { total, lot in
+            guard lot.positionDate <= today else { return total }
+            if isSameDayExchangeBuy(
+                lot,
+                today: today,
+                tradeRecordsByID: tradeRecordsByID
+            ) {
+                return total + lotPrincipal(lot)
+            }
+            return total + lot.shares * previousClose
+        }
+    }
+
+    private static func isSameDayExchangeBuy(
+        _ lot: FundPositionLot,
+        today: String,
+        tradeRecordsByID: [String: FundTradeRecord]
+    ) -> Bool {
+        guard let record = tradeRecordsByID[lot.id],
+              record.kind == .buy || record.kind == .conversionIn
+        else {
+            // Initial `.newFund` lots are imported holding baselines. Their
+            // position date may be the day they were entered into the app, so
+            // it must not be interpreted as an exchange execution date.
+            return false
+        }
+        return record.tradeDate == today
+    }
+
+    private static func exchangePreviousClose(currentPrice: Double, quote: FundQuote) -> Double? {
+        if let previousClose = quote.previousClose,
+           previousClose.isFinite,
+           previousClose > 0 {
+            return previousClose
+        }
+        let multiplier = 1 + quote.growthRate / 100
+        guard multiplier.isFinite, multiplier > 0 else { return nil }
+        return currentPrice / multiplier
     }
 
     private static func calculatedManualTodayIncome(
@@ -421,6 +564,33 @@ enum PortfolioCalculator {
     private static func rounded(_ value: Double, places: Int) -> Double {
         let scale = pow(10, Double(places))
         return (value * scale).rounded() / scale
+    }
+}
+
+enum FundQuoteUpdatePolicy {
+    static func isOfficiallyUpdated(_ quote: FundQuote, on date: Date) -> Bool {
+        let today = DateOnlyFormatter.string(from: date)
+        if quote.netValueDate == today {
+            return true
+        }
+        return isDelayedQDIIOfficialUpdate(quote, on: date)
+    }
+
+    static func hasCurrentIntradayEstimate(_ quote: FundQuote, on date: Date) -> Bool {
+        let today = DateOnlyFormatter.string(from: date)
+        return quote.estimateTime.count >= 10 && String(quote.estimateTime.prefix(10)) == today
+    }
+
+    static func isDelayedQDIIOfficialUpdate(_ quote: FundQuote, on date: Date) -> Bool {
+        guard TradingCalendar.isFundTradingDay(date),
+              quote.name.range(of: "QDII", options: [.caseInsensitive, .diacriticInsensitive]) != nil,
+              !hasCurrentIntradayEstimate(quote, on: date)
+        else {
+            return false
+        }
+
+        let today = DateOnlyFormatter.string(from: date)
+        return TradingCalendar.nextFundTradingDate(after: quote.netValueDate) == today
     }
 }
 

@@ -18,6 +18,8 @@ enum ChildPanelRoute: Equatable {
     case jdFinanceSync
     case portfolioBreakdown
     case todayIncomeRanking(IncomeRankingMetric)
+    case addAccount
+    case manageAccounts
     case addFund
     case onboardingAddFund(origin: OnboardingOrigin)
     case fundDetail(fundCode: String)
@@ -49,7 +51,8 @@ enum ChildPanelRoute: Equatable {
             sourceFundCode
         case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
              .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
-             .todayIncomeRanking, .addFund, .onboardingAddFund:
+             .todayIncomeRanking, .addAccount, .manageAccounts,
+             .addFund, .onboardingAddFund:
             nil
         }
     }
@@ -124,7 +127,8 @@ enum ChildPanelRouteResolver {
             recordID
         case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
              .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
-             .todayIncomeRanking, .addFund, .onboardingAddFund,
+             .todayIncomeRanking, .addAccount, .manageAccounts,
+             .addFund, .onboardingAddFund,
              .fundDetail, .fundDailyIncome, .tradeRecords, .buyFund, .sellFund,
              .convertFund, .editFund:
             nil
@@ -141,7 +145,8 @@ enum ChildPanelRouteResolver {
             returnFundCode
         case .settings, .privacyDisclaimer, .onboarding, .sampleExperience,
              .portfolioPerformance, .jdFinancePerformanceSync, .jdFinanceSync, .portfolioBreakdown,
-             .todayIncomeRanking, .addFund, .onboardingAddFund,
+             .todayIncomeRanking, .addAccount, .manageAccounts,
+             .addFund, .onboardingAddFund,
              .fundDetail, .fundDailyIncome, .tradeRecords, .buyFund, .sellFund,
              .convertFund, .editFund:
             nil
