@@ -1188,7 +1188,6 @@ final class StatusBarController: NSObject {
             let view = SettingsView(
                 store: store,
                 account: accountsStore.focusedAccount,
-                accountCount: accountsStore.accounts.count,
                 jdFinanceTargetAccount: jdFinanceTargetAccount,
                 jdFinanceTargetCandidates: jdFinanceTargetCandidates,
                 settingsStore: settingsStore,
@@ -1205,9 +1204,6 @@ final class StatusBarController: NSObject {
                 },
                 onOpenJDFinanceSync: { [weak self] in
                     self?.showJDFinanceSyncPanel()
-                },
-                onManageAccounts: { [weak self] in
-                    self?.showChildPanel(.manageAccounts)
                 },
                 onSelectJDFinanceTarget: { [weak self] accountID in
                     self?.selectJDFinanceTargetAccount(accountID)

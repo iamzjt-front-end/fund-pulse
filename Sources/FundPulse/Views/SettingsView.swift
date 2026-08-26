@@ -81,7 +81,6 @@ struct SettingsSectionSession: Equatable {
 struct SettingsView: View {
     let store: PortfolioStore
     let account: PortfolioAccount
-    let accountCount: Int
     let jdFinanceTargetAccount: PortfolioAccount?
     let jdFinanceTargetCandidates: [PortfolioAccount]
     let settingsStore: AppSettingsStore
@@ -91,7 +90,6 @@ struct SettingsView: View {
     let onRefresh: (() async -> Void)?
     let onCheckUpdate: (() async -> Void)?
     let onOpenJDFinanceSync: (() -> Void)?
-    let onManageAccounts: (() -> Void)?
     let onSelectJDFinanceTarget: ((String) -> Void)?
     let onCreateOffExchangeAccount: (() -> Void)?
     let onOpenPrivacyDisclaimer: (() -> Void)?
@@ -126,7 +124,6 @@ struct SettingsView: View {
     init(
         store: PortfolioStore,
         account: PortfolioAccount,
-        accountCount: Int = 1,
         jdFinanceTargetAccount: PortfolioAccount? = nil,
         jdFinanceTargetCandidates: [PortfolioAccount] = [],
         settingsStore: AppSettingsStore,
@@ -136,7 +133,6 @@ struct SettingsView: View {
         onRefresh: (() async -> Void)?,
         onCheckUpdate: (() async -> Void)?,
         onOpenJDFinanceSync: (() -> Void)? = nil,
-        onManageAccounts: (() -> Void)? = nil,
         onSelectJDFinanceTarget: ((String) -> Void)? = nil,
         onCreateOffExchangeAccount: (() -> Void)? = nil,
         onOpenPrivacyDisclaimer: (() -> Void)? = nil,
@@ -148,7 +144,6 @@ struct SettingsView: View {
     ) {
         self.store = store
         self.account = account
-        self.accountCount = accountCount
         self.jdFinanceTargetAccount = jdFinanceTargetAccount
         self.jdFinanceTargetCandidates = jdFinanceTargetCandidates
         self.settingsStore = settingsStore
@@ -158,7 +153,6 @@ struct SettingsView: View {
         self.onRefresh = onRefresh
         self.onCheckUpdate = onCheckUpdate
         self.onOpenJDFinanceSync = onOpenJDFinanceSync
-        self.onManageAccounts = onManageAccounts
         self.onSelectJDFinanceTarget = onSelectJDFinanceTarget
         self.onCreateOffExchangeAccount = onCreateOffExchangeAccount
         self.onOpenPrivacyDisclaimer = onOpenPrivacyDisclaimer
@@ -332,13 +326,7 @@ struct SettingsView: View {
 
     private var dataSettingsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
-            PanelSection(title: "账户") {
-                accountManagementSection
-            }
-
-            PanelSection(title: "当前账户") {
-                currentAccountScopeSection
-            }
+            currentAccountContext
 
             PanelSection(title: "实验功能") {
                 betaFeaturesSection
@@ -561,71 +549,20 @@ struct SettingsView: View {
         .animation(.easeInOut(duration: 0.16), value: settingsStore.settings.betaFeaturesEnabled)
     }
 
-    private var accountManagementSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(accountCount > 1
-                 ? "已创建 \(accountCount) 个账户，可直接在顶部账户条切换。"
-                 : "默认账户已就绪；新增账户后，可直接在顶部账户条切换。")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let onManageAccounts {
-                Button(action: onManageAccounts) {
-                    PanelButtonLabel(
-                        title: accountCount > 1 ? "管理账户" : "新增账户",
-                        systemImage: "person.2",
-                        style: .secondary
-                    )
-                }
-                .buttonStyle(.plain)
-                .focusable(false)
-                .help("打开账户管理")
-            }
-        }
-        .padding(9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 9))
-    }
-
-    private var currentAccountScopeSection: some View {
-        HStack(alignment: .top, spacing: 9) {
+    private var currentAccountContext: some View {
+        HStack(spacing: 7) {
             Image(systemName: account.kind == .onExchange ? "chart.line.uptrend.xyaxis" : "banknote")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange)
-                .frame(width: 24, height: 24)
-                .background(
-                    (account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange).opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Text(account.name)
-                        .font(.system(size: 11, weight: .semibold))
-                        .lineLimit(1)
-                    Text(account.kind.title)
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange)
-                        .padding(.horizontal, 4)
-                        .frame(height: 14)
-                        .background(
-                            (account.kind == .onExchange ? Color(nsColor: .systemBlue) : Color.orange).opacity(0.10),
-                            in: Capsule()
-                        )
-                }
-                Text(account.kind.detail)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 16, height: 16)
+            Text("当前账户：\(account.name) · \(account.kind.title)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
         }
-        .padding(9)
+        .padding(.horizontal, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PanelDesign.inputBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .overlay(PanelDesign.border(cornerRadius: 9))
     }
 
     private var jdFinanceSyncSection: some View {

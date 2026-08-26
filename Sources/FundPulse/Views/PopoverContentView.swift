@@ -2363,7 +2363,6 @@ enum FundListFilterPolicy {
 }
 
 enum FundSortMode: String, CaseIterable, Identifiable {
-    case custom
     case todayRate
     case costAmount
     case todayIncome
@@ -2376,8 +2375,6 @@ enum FundSortMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .custom:
-            "自定义"
         case .todayRate:
             "今日涨幅"
         case .costAmount:
@@ -2399,8 +2396,6 @@ enum FundSortMode: String, CaseIterable, Identifiable {
 enum FundListSorter {
     static func sort(_ funds: [FundPosition], mode: FundSortMode) -> [FundPosition] {
         switch mode {
-        case .custom:
-            return funds
         case .todayRate:
             return sortDescending(funds) { $0.todayRate }
         case .costAmount:
@@ -5023,7 +5018,7 @@ struct FundRowView: View {
             return compactUnsignedMoney(principal)
         case .todayTotal:
             return compactUnsignedMoney(rowHoldingAmount)
-        case .custom, .todayRate, .name:
+        case .todayRate, .name:
             return MoneyFormatter.percent(fund.todayRate, signed: true)
         }
     }
@@ -5038,7 +5033,7 @@ struct FundRowView: View {
             return rowHoldingRate ?? 0
         case .costAmount, .todayTotal:
             return 0
-        case .custom, .todayRate, .name:
+        case .todayRate, .name:
             return fund.todayRate
         }
     }
@@ -5047,7 +5042,7 @@ struct FundRowView: View {
         switch sortMode {
         case .todayIncome, .holdingIncome, .costAmount, .todayTotal:
             return 70
-        case .custom, .todayRate, .holdingRate, .name:
+        case .todayRate, .holdingRate, .name:
             return 60
         }
     }
