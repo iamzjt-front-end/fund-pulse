@@ -284,6 +284,66 @@ final class PortfolioPerformanceTests: XCTestCase {
         XCTAssertEqual(summary.days.map(\.date), ["2026-07-01", "2026-07-02"])
     }
 
+    func testCalendarMonthSummaryCompoundsDailyReturnRates() throws {
+        let update = try shanghaiDate("2026-07-15 15:00")
+        let snapshot = PortfolioPerformanceSnapshot(
+            trackingStartDate: "2026-07-01",
+            days: [
+                PortfolioPerformanceDay(
+                    date: "2026-07-01",
+                    profit: 100,
+                    returnRate: 10,
+                    status: .confirmed,
+                    updatedAt: update
+                ),
+                PortfolioPerformanceDay(
+                    date: "2026-07-02",
+                    profit: -50,
+                    returnRate: -5,
+                    status: .confirmed,
+                    updatedAt: update
+                )
+            ]
+        )
+
+        let summary = PortfolioPerformanceCalendar.summary(
+            in: snapshot,
+            monthContaining: try shanghaiDate("2026-07-15 12:00")
+        )
+
+        XCTAssertEqual(summary.monthlyReturnRate ?? .nan, 4.5, accuracy: 0.000_001)
+    }
+
+    func testCalendarMonthSummaryOmitsMonthlyReturnRateWhenADayIsMissingIt() throws {
+        let update = try shanghaiDate("2026-07-15 15:00")
+        let snapshot = PortfolioPerformanceSnapshot(
+            trackingStartDate: "2026-07-01",
+            days: [
+                PortfolioPerformanceDay(
+                    date: "2026-07-01",
+                    profit: 100,
+                    returnRate: 10,
+                    status: .confirmed,
+                    updatedAt: update
+                ),
+                PortfolioPerformanceDay(
+                    date: "2026-07-02",
+                    profit: -50,
+                    returnRate: nil,
+                    status: .confirmed,
+                    updatedAt: update
+                )
+            ]
+        )
+
+        let summary = PortfolioPerformanceCalendar.summary(
+            in: snapshot,
+            monthContaining: try shanghaiDate("2026-07-15 12:00")
+        )
+
+        XCTAssertNil(summary.monthlyReturnRate)
+    }
+
     @MainActor
     func testStoreLoadsMissingEmptyAndLegacyFiles() throws {
         let directory = temporaryDirectory()

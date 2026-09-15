@@ -314,6 +314,10 @@ struct PortfolioPerformanceView: View {
                 HStack(spacing: 8) {
                     Label(amountText(summary.totalProfit), systemImage: "sum")
                         .foregroundStyle(PortfolioPerformanceSemanticColor.color(for: summary.totalProfit))
+                    Text(monthlyReturnRateText(summary.monthlyReturnRate))
+                        .foregroundStyle(monthlyReturnRateColor(summary.monthlyReturnRate))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
                     Spacer()
                     Text("涨 \(summary.riseDays) 天")
                         .foregroundStyle(PortfolioPerformanceSemanticColor.positive)
@@ -349,6 +353,14 @@ struct PortfolioPerformanceView: View {
                 }
             }
         }
+    }
+
+    private func monthlyReturnRateText(_ value: Double?) -> String {
+        value.map { MoneyFormatter.percent($0, signed: true) } ?? "--"
+    }
+
+    private func monthlyReturnRateColor(_ value: Double?) -> Color {
+        value.map { PortfolioPerformanceSemanticColor.color(for: $0) } ?? .secondary
     }
 
     private func monthButton(systemImage: String, offset: Int) -> some View {

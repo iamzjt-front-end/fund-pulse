@@ -278,6 +278,7 @@ struct PortfolioPerformanceMonthGrid: Equatable, Sendable {
 struct PortfolioPerformanceMonthSummary: Equatable, Sendable {
     var days: [PortfolioPerformanceDay]
     var totalProfit: Double
+    var monthlyReturnRate: Double?
     var riseDays: Int
     var fallDays: Int
     var estimatedDays: Int

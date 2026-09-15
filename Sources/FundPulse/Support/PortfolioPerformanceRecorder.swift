@@ -267,10 +267,30 @@ enum PortfolioPerformanceCalendar {
         return PortfolioPerformanceMonthSummary(
             days: days,
             totalProfit: days.reduce(0) { $0 + $1.profit },
+            monthlyReturnRate: compoundedReturnRate(for: days),
             riseDays: days.count { $0.profit > 0 },
             fallDays: days.count { $0.profit < 0 },
             estimatedDays: days.count { $0.status == .estimated }
         )
+    }
+
+    private static func compoundedReturnRate(for days: [PortfolioPerformanceDay]) -> Double? {
+        guard !days.isEmpty else { return nil }
+
+        var growthFactor = 1.0
+        for day in days {
+            guard let returnRate = day.returnRate,
+                  returnRate.isFinite,
+                  returnRate >= -100
+            else {
+                return nil
+            }
+
+            growthFactor *= 1 + returnRate / 100
+            guard growthFactor.isFinite else { return nil }
+        }
+
+        return (growthFactor - 1) * 100
     }
 
     static func shiftedMonth(from date: Date, by offset: Int) -> Date {
