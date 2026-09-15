@@ -3335,8 +3335,8 @@ final class PortfolioStore {
             tradeDate: draft.positionDate,
             tradeTimeType: draft.positionTimeType,
             acceptedDate: acceptedDate,
-            createdAt: .now,
-            confirmedAt: status == .confirmed ? .now : nil,
+            createdAt: nowProvider(),
+            confirmedAt: status == .confirmed ? nowProvider() : nil,
             exchangeInitialSellableShares: accountKind == .onExchange
                 ? (draft.exchangeSellableShares ?? confirmedShares)
                 : nil
