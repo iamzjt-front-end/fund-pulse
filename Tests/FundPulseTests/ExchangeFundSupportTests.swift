@@ -25,6 +25,62 @@ final class ExchangeFundSupportTests: XCTestCase {
         XCTAssertNil(ExchangeFundQuoteService.securityID(for: "51030"))
     }
 
+    @MainActor
+    func testRefreshRejectsDelayedQuotesAndRetainsPricesAcrossFailureAndRestart() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "exchange-freshness-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try JSONPortfolioRepository(dataDirectory: directory).save(.empty)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ExchangeQuoteURLProtocol.self]
+        let service = ExchangeFundQuoteService(session: URLSession(configuration: configuration))
+        let now = try XCTUnwrap(DateOnlyFormatter.parse("2026-08-24"))
+        func makeStore() -> PortfolioStore {
+            PortfolioStore(dataDirectory: directory, exchangeQuoteService: service,
+                           accountKind: .onExchange, now: { now })
+        }
+        let store = makeStore()
+        store.load()
+        ExchangeQuoteURLProtocol.responseStore.set(Self.quoteFixture)
+        try await store.upsertFund(FundPositionDraft(
+            code: "510300", name: "ETF", positionMode: .share, positionProfit: 0,
+            shares: 100, cost: 4, positionDate: "2026-08-21",
+            positionTimeType: .before15, memo: ""
+        ))
+        let original = store.snapshot
+        XCTAssertEqual(original.totalAmount, 462.7, accuracy: 0.000_001)
+        XCTAssertEqual(original.funds[0].lastExchangeQuote?.marketTimestamp, 1787559092)
+
+        // Same display minute, but an older source timestamp and a different price.
+        let delayed = Data(String(decoding: Self.quoteFixture, as: UTF8.self)
+            .replacingOccurrences(of: "1787559092", with: "1787559090")
+            .replacingOccurrences(of: "4.627", with: "4.500").utf8)
+        ExchangeQuoteURLProtocol.responseStore.set([
+            "push2.eastmoney.com": Data("not-json".utf8),
+            "push2delay.eastmoney.com": delayed
+        ])
+        await store.refreshQuotes()
+        XCTAssertEqual(store.snapshot.totalAmount, original.totalAmount)
+        XCTAssertEqual(store.snapshot.todayIncome, original.todayIncome)
+        XCTAssertEqual(store.snapshot.funds[0].todayRate, original.funds[0].todayRate)
+
+        let restarted = makeStore()
+        restarted.load()
+        ExchangeQuoteURLProtocol.responseStore.set(Data("not-json".utf8))
+        await restarted.refreshQuotes()
+        XCTAssertEqual(restarted.snapshot.totalAmount, original.totalAmount)
+        XCTAssertEqual(restarted.snapshot.holdingIncome, original.holdingIncome)
+        XCTAssertEqual(restarted.snapshot.todayIncome, original.todayIncome)
+
+        // A real subsequent downtick must still update all calculated amounts.
+        let newer = Data(String(decoding: delayed, as: UTF8.self)
+            .replacingOccurrences(of: "1787559090", with: "1787559095").utf8)
+        ExchangeQuoteURLProtocol.responseStore.set(newer)
+        await restarted.refreshQuotes()
+        XCTAssertEqual(restarted.snapshot.totalAmount, 450, accuracy: 0.000_001)
+        XCTAssertEqual(restarted.snapshot.todayIncome, (4.5 - 4.68) * 100, accuracy: 0.000_001)
+    }
+
     func testExchangePositionEntryUsesSharesAndSellableBaseline() {
         XCTAssertEqual(FundPositionEntryPolicy.modes(for: .onExchange), [.share])
         XCTAssertEqual(FundPositionEntryPolicy.defaultMode(for: .onExchange, existingMode: nil), .share)

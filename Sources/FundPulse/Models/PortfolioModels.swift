@@ -105,6 +105,8 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var lots: [FundPositionLot]? = nil
     var intradayRateDate: String? = nil
     var intradayRateHistory: [FundIntradayRatePoint]? = nil
+    /// Last accepted market quote, retained across refresh failures and app restarts.
+    var lastExchangeQuote: FundQuote? = nil
 }
 
 enum ExchangeTurnaroundRule: String, Codable, CaseIterable, Identifiable, Equatable {

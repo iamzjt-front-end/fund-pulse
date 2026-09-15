@@ -24,7 +24,12 @@ enum PortfolioCalculator {
 
         let funds = snapshot.funds.map { fund in
             var next = fund
-            let quote = quotes[fund.code]
+            let quote = accountKind == .onExchange
+                ? ExchangeQuoteFreshnessPolicy.acceptedQuote(incoming: quotes[fund.code], for: fund)
+                : quotes[fund.code]
+            if accountKind == .onExchange {
+                next.lastExchangeQuote = quote
+            }
             let shouldPreserveSyncedManualAmount = preservesSyncedManualAmount(for: fund)
             let storedLots = effectiveLots(for: fund)
             var lots = shouldPreserveSyncedManualAmount ? [] : storedLots

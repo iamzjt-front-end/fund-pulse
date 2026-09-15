@@ -274,7 +274,12 @@ final class PortfolioStore {
                 await processPendingConversions(quotes: quotes)
                 await processPendingPositions(quotes: quotes)
             case .onExchange:
-                quotes = await exchangeQuoteService.fetchQuotes(codes: codes)
+                let fetched = await exchangeQuoteService.fetchQuotes(codes: codes)
+                quotes = snapshot.funds.reduce(into: [:]) { result, fund in
+                    result[fund.code] = ExchangeQuoteFreshnessPolicy.acceptedQuote(
+                        incoming: fetched[fund.code], for: fund
+                    )
+                }
             }
             let now = nowProvider()
             let calculatedSnapshot = PortfolioCalculator.applyingQuotes(

@@ -109,7 +109,8 @@ struct ExchangeFundQuoteService {
                 estimateTime: priceTime,
                 netValueDate: DateOnlyFormatter.string(from: quoteDate),
                 marketPriceTime: priceTime,
-                previousClose: previousClose
+                previousClose: previousClose,
+                marketTimestamp: timestamp
             )
         }
 

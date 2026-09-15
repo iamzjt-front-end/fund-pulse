@@ -13,6 +13,8 @@ struct FundQuote: Codable, Equatable {
     var marketPriceTime: String? = nil
     /// Previous exchange close, used to calculate the exact daily P&L for older lots.
     var previousClose: Double? = nil
+    /// Source time in seconds; display strings deliberately retain minute precision.
+    var marketTimestamp: Double? = nil
 }
 
 struct FundNetValuePoint: Identifiable, Equatable {
