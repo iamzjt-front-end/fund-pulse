@@ -1,6 +1,6 @@
 import Foundation
 
-struct PortfolioSnapshot: Codable, Equatable {
+struct PortfolioSnapshot: Codable, Equatable, Sendable {
     var updateTime: Date
     var totalAmount: Double
     var holdingIncome: Double
@@ -23,6 +23,8 @@ struct PortfolioSnapshot: Codable, Equatable {
     // portfolio-performance.json so high-frequency quote refreshes do not
     // repeatedly rewrite a growing history array.
     var portfolioPerformanceHistory: PortfolioPerformanceSnapshot? = nil
+    var schemaVersion: Int? = nil
+    var accountKind: PortfolioAccountKind? = nil
 
     static let empty = PortfolioSnapshot(
         updateTime: .now,
@@ -38,14 +40,14 @@ struct PortfolioSnapshot: Codable, Equatable {
 
 }
 
-struct ExchangeAccountReconciliation: Codable, Equatable {
+struct ExchangeAccountReconciliation: Codable, Equatable, Sendable {
     var date: String
     var holdingsMarketValue: Double
     var reportedHoldingIncome: Double
     var reportedTodayIncome: Double
 }
 
-struct JDFinanceSyncState: Codable, Equatable {
+struct JDFinanceSyncState: Codable, Equatable, Sendable {
     var schemaVersion: Int = 1
     var accountKey: String?
     var baselineEstablishedAt: Date
@@ -56,17 +58,17 @@ struct JDFinanceSyncState: Codable, Equatable {
     var trackedPendingStartDate: String? = nil
 }
 
-struct PortfolioSyncedAccountTotal: Codable, Equatable {
+struct PortfolioSyncedAccountTotal: Codable, Equatable, Sendable {
     var source: PortfolioAccountTotalSource
     var amount: Double
     var syncedAt: Date
 }
 
-enum PortfolioAccountTotalSource: String, Codable, Equatable {
+enum PortfolioAccountTotalSource: String, Codable, Equatable, Sendable {
     case jdFinance
 }
 
-struct FundPosition: Codable, Identifiable, Equatable {
+struct FundPosition: Codable, Identifiable, Equatable, Sendable {
     var id: String { code }
     var code: String
     var name: String
@@ -107,9 +109,10 @@ struct FundPosition: Codable, Identifiable, Equatable {
     var intradayRateHistory: [FundIntradayRatePoint]? = nil
     /// Last accepted market quote, retained across refresh failures and app restarts.
     var lastExchangeQuote: FundQuote? = nil
+    var lastOffExchangeQuote: FundQuote? = nil
 }
 
-enum ExchangeTurnaroundRule: String, Codable, CaseIterable, Identifiable, Equatable {
+enum ExchangeTurnaroundRule: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case nextTradingDay
     case sameDay
 
@@ -140,7 +143,7 @@ extension FundPosition {
     }
 }
 
-struct ExchangeShareAvailability: Equatable {
+struct ExchangeShareAvailability: Equatable, Sendable {
     var heldShares: Double
     var sellableShares: Double
     var lockedShares: Double
@@ -154,7 +157,7 @@ struct ExchangeShareAvailability: Equatable {
     )
 }
 
-struct FundPositionLot: Codable, Identifiable, Equatable {
+struct FundPositionLot: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var shares: Double
     var cost: Double
@@ -165,16 +168,19 @@ struct FundPositionLot: Codable, Identifiable, Equatable {
     /// Explicit sellable date for an imported exchange baseline lot. Normal
     /// trade lots continue to derive their T+1/T+0 date from trade records.
     var exchangeSellableDate: String? = nil
+    /// A locked baseline whose next trading day is outside calendar coverage.
+    /// Resolve after a calendar update, without treating nil as already sellable.
+    var exchangeUnlockAfterDate: String? = nil
 }
 
-struct FundIntradayRatePoint: Codable, Identifiable, Equatable {
+struct FundIntradayRatePoint: Codable, Identifiable, Equatable, Sendable {
     var id: Int64 { timestamp }
     var timestamp: Int64
     var rate: Double
     var estimateTime: String
 }
 
-enum FundTradeKind: String, Codable, Equatable {
+enum FundTradeKind: String, Codable, Equatable, Sendable {
     case newFund
     case buy
     case sell
@@ -197,7 +203,7 @@ enum FundTradeKind: String, Codable, Equatable {
     }
 }
 
-enum FundTradeRecordStatus: String, Codable, Equatable {
+enum FundTradeRecordStatus: String, Codable, Equatable, Sendable {
     case pending
     case confirmed
     case failed
@@ -214,17 +220,17 @@ enum FundTradeRecordStatus: String, Codable, Equatable {
     }
 }
 
-enum FundTradeSyncSource: String, Codable, Equatable {
+enum FundTradeSyncSource: String, Codable, Equatable, Sendable {
     case jdFinance
 }
 
-enum FundTradeExternalStatus: String, Codable, Equatable {
+enum FundTradeExternalStatus: String, Codable, Equatable, Sendable {
     case waitingExternalConfirmation
     case externalConfirmed
     case conflict
 }
 
-struct FundTradeSyncMetadata: Codable, Equatable {
+struct FundTradeSyncMetadata: Codable, Equatable, Sendable {
     var source: FundTradeSyncSource
     var syncKey: String?
     var externalStatus: FundTradeExternalStatus?
@@ -232,7 +238,7 @@ struct FundTradeSyncMetadata: Codable, Equatable {
     var waitsForExternalConfirmation: Bool? = nil
 }
 
-struct FundTradeRecord: Codable, Identifiable, Equatable {
+struct FundTradeRecord: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var kind: FundTradeKind
     var status: FundTradeRecordStatus
@@ -268,7 +274,7 @@ struct FundTradeRecord: Codable, Identifiable, Equatable {
     var exchangeInitialSellableShares: Double? = nil
 }
 
-enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
+enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case buy
     case sell
 
@@ -284,7 +290,7 @@ enum FundTradeAction: String, Codable, CaseIterable, Identifiable, Equatable {
     }
 }
 
-enum TradeFeeMode: String, Codable, CaseIterable, Identifiable, Equatable {
+enum TradeFeeMode: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case rate
     case amount
 
@@ -300,7 +306,7 @@ enum TradeFeeMode: String, Codable, CaseIterable, Identifiable, Equatable {
     }
 }
 
-struct FundTradeDraft: Equatable {
+struct FundTradeDraft: Equatable, Sendable {
     var action: FundTradeAction
     var code: String
     var mode: PositionMode
@@ -317,7 +323,7 @@ struct FundTradeDraft: Equatable {
     var feeAmount: Double? = nil
 }
 
-struct FundPendingTrade: Codable, Identifiable, Equatable {
+struct FundPendingTrade: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var recordID: String? = nil
     var action: FundTradeAction
@@ -353,7 +359,7 @@ struct FundPendingTrade: Codable, Identifiable, Equatable {
     }
 }
 
-struct FundConversionDraft: Equatable {
+struct FundConversionDraft: Equatable, Sendable {
     var fromCode: String
     var toCode: String
     var toName: String? = nil
@@ -365,7 +371,7 @@ struct FundConversionDraft: Equatable {
     var buyFeeRate: Double = 0
 }
 
-struct FundPendingConversion: Codable, Identifiable, Equatable {
+struct FundPendingConversion: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var outRecordID: String? = nil
     var inRecordID: String? = nil
@@ -402,7 +408,7 @@ struct FundPendingConversion: Codable, Identifiable, Equatable {
     }
 }
 
-struct FundPositionDraft: Equatable {
+struct FundPositionDraft: Equatable, Sendable {
     var code: String
     var name: String
     var positionMode: PositionMode
@@ -451,7 +457,7 @@ struct FundPositionDraft: Equatable {
     }
 }
 
-struct FundAmountPositionSyncUpdate: Equatable {
+struct FundAmountPositionSyncUpdate: Equatable, Sendable {
     var code: String
     var amount: Double
     var holdingIncome: Double?
@@ -459,14 +465,14 @@ struct FundAmountPositionSyncUpdate: Equatable {
     var syncedAt: Date? = nil
 }
 
-struct MigrationInfo: Codable, Equatable {
+struct MigrationInfo: Codable, Equatable, Sendable {
     var source: String
     var currentWalletCode: String
     var walletName: String
     var eyeStatus: Bool
 }
 
-enum FundHoldingStatus: String, Codable, Equatable {
+enum FundHoldingStatus: String, Codable, Equatable, Sendable {
     case holding
     case pending
     case watch
@@ -531,7 +537,7 @@ enum FundListDisplayRules {
     }
 }
 
-enum PositionMode: String, Codable, CaseIterable, Identifiable, Equatable {
+enum PositionMode: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case amount
     case share
 
@@ -547,7 +553,7 @@ enum PositionMode: String, Codable, CaseIterable, Identifiable, Equatable {
     }
 }
 
-enum PositionTimeType: String, Codable, CaseIterable, Identifiable, Equatable {
+enum PositionTimeType: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case before15
     case after15
 

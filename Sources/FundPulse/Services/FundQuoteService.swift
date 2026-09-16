@@ -1,7 +1,7 @@
 import CoreFoundation
 import Foundation
 
-struct FundQuoteService {
+struct FundQuoteService: Sendable {
     enum QuoteError: LocalizedError {
         case invalidResponse
 
@@ -13,6 +13,8 @@ struct FundQuoteService {
         }
     }
 
+    private let historicalCache = FundDataCache<Double>()
+    private let supplementCache = FundDataCache<FundDetailSupplement>(capacity: 32)
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -53,18 +55,17 @@ struct FundQuoteService {
         acceptedDate: String,
         latestQuote: FundQuote? = nil
     ) async -> Double? {
-        if latestQuote?.netValueDate == acceptedDate,
-           let netValue = latestQuote?.netValue,
-           netValue > 0 {
+        if latestQuote?.code == code,
+           latestQuote?.netValueDate == acceptedDate,
+           let netValue = latestQuote?.officialNetValue {
             return netValue
         }
 
-        guard let value = try? await fetchHistoricalNetValue(code: code, date: acceptedDate),
-              value > 0
-        else {
-            return nil
+        return await historicalCache.value(key: code + "/" + acceptedDate, ttl: 60) {
+            guard let value = try? await fetchHistoricalNetValue(code: code, date: acceptedDate),
+                  value.isFinite, value > 0 else { return nil }
+            return value
         }
-        return value
     }
 
     func lookupFundName(code: String) async -> String? {
@@ -121,6 +122,15 @@ struct FundQuoteService {
     }
 
     func fetchFundDetailSupplement(code: String, now: Date = .now) async -> FundDetailSupplement {
+        let key = code + "/" + DateOnlyFormatter.string(from: now)
+        if let cached = await supplementCache.value(key: key, now: now, ttl: 300,
+            shouldCache: { !$0.history.isEmpty }, load: {
+                await fetchUncachedFundDetailSupplement(code: code, now: now)
+        }) { return cached }
+        return await fetchUncachedFundDetailSupplement(code: code, now: now)
+    }
+
+    private func fetchUncachedFundDetailSupplement(code: String, now: Date) async -> FundDetailSupplement {
         async let history = fetchNetValueHistorySafely(code: code)
         async let position = fetchPositionSupplementSafely(code: code)
         async let assetAllocation = fetchAssetAllocationSafely(code: code)
@@ -943,17 +953,19 @@ private struct EastmoneyCoreQuotePayload: Decodable {
         let growthRate = officialDateHasCaughtUp
             ? (latestGrowthRateText != nil ? latestGrowthRateText.doubleValue : estimatedGrowthRate.doubleValue)
             : estimatedGrowthRate.doubleValue
-        let resolvedNetValue = netValue > 0 ? netValue : estimatedNetValue
-        guard resolvedNetValue > 0 else { return nil }
+        let hasOfficialNetValue = netValue.isFinite && netValue > 0
+        let resolvedNetValue = hasOfficialNetValue ? netValue : estimatedNetValue
+        guard resolvedNetValue.isFinite, resolvedNetValue > 0, growthRate.isFinite else { return nil }
 
         return FundQuote(
             code: resolvedCode,
             name: name?.nilIfDash ?? resolvedCode,
             netValue: resolvedNetValue,
-            estimatedNetValue: estimatedNetValue > 0 ? estimatedNetValue : resolvedNetValue,
+            estimatedNetValue: estimatedNetValue.isFinite && estimatedNetValue > 0 ? estimatedNetValue : resolvedNetValue,
             growthRate: growthRate,
             estimateTime: hasRealtimeEstimate ? (estimateTimeText ?? "") : "",
-            netValueDate: netValueDateText ?? ""
+            netValueDate: netValueDateText ?? "",
+            hasOfficialNetValue: hasOfficialNetValue
         )
     }
 

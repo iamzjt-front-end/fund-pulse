@@ -1,6 +1,6 @@
 import Foundation
 
-enum PortfolioAccountKind: String, Codable, CaseIterable, Identifiable, Equatable {
+enum PortfolioAccountKind: String, Codable, CaseIterable, Identifiable, Equatable, Sendable {
     case offExchange
     case onExchange
 
@@ -34,7 +34,7 @@ enum PortfolioAccountKind: String, Codable, CaseIterable, Identifiable, Equatabl
     }
 }
 
-struct PortfolioAccount: Codable, Identifiable, Equatable {
+struct PortfolioAccount: Codable, Identifiable, Equatable, Sendable {
     static let defaultAccountID = "default-off-exchange"
 
     var id: String
@@ -60,7 +60,7 @@ struct PortfolioAccount: Codable, Identifiable, Equatable {
     }
 }
 
-enum PortfolioAccountSelection: Hashable, Equatable {
+enum PortfolioAccountSelection: Hashable, Equatable, Sendable {
     case all
     case account(String)
 
@@ -93,7 +93,7 @@ enum JDFinanceTargetResolver {
     }
 }
 
-struct PortfolioAccountsSummary: Equatable {
+struct PortfolioAccountsSummary: Equatable, Sendable {
     var totalAmount: Double
     var holdingIncome: Double
     var holdingIncomeRate: Double

@@ -8,7 +8,7 @@ protocol PortfolioRepository {
     func save(_ snapshot: PortfolioSnapshot) throws
 }
 
-struct JSONPortfolioRepository: PortfolioRepository {
+struct JSONPortfolioRepository: PortfolioRepository, Sendable {
     let dataDirectory: URL
 
     var dataFileURL: URL {
@@ -24,7 +24,9 @@ struct JSONPortfolioRepository: PortfolioRepository {
         let data = try Data(contentsOf: dataFileURL)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(PortfolioSnapshot.self, from: data)
+        let snapshot = try decoder.decode(PortfolioSnapshot.self, from: data)
+        try PortfolioValidation.validate(snapshot)
+        return applyingQuoteCache(to: snapshot, data: data)
     }
 
     func save(_ snapshot: PortfolioSnapshot) throws {
@@ -34,6 +36,7 @@ struct JSONPortfolioRepository: PortfolioRepository {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(snapshot)
         try data.write(to: dataFileURL, options: .atomic)
+        try? FileManager.default.removeItem(at: quoteCacheURL)
     }
 }
 

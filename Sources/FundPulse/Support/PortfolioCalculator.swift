@@ -8,7 +8,8 @@ enum PortfolioCalculator {
         accountKind: PortfolioAccountKind = .offExchange
     ) -> PortfolioSnapshot {
         let tradeRecords = snapshot.tradeRecords ?? []
-        let confirmedTradeRecordsByID = tradeRecords.reduce(
+        let recordsByCode = Dictionary(grouping: tradeRecords, by: \.code)
+        let confirmedTradeRecordsByID = (accountKind == .onExchange ? tradeRecords : []).reduce(
             into: [String: FundTradeRecord]()
         ) { result, record in
             guard record.status == .confirmed else { return }
@@ -26,9 +27,11 @@ enum PortfolioCalculator {
             var next = fund
             let quote = accountKind == .onExchange
                 ? ExchangeQuoteFreshnessPolicy.acceptedQuote(incoming: quotes[fund.code], for: fund)
-                : quotes[fund.code]
+                : OffExchangeQuoteFreshnessPolicy.acceptedQuote(incoming: quotes[fund.code], for: fund)
             if accountKind == .onExchange {
                 next.lastExchangeQuote = quote
+            } else {
+                next.lastOffExchangeQuote = quote
             }
             let shouldPreserveSyncedManualAmount = preservesSyncedManualAmount(for: fund)
             let storedLots = effectiveLots(for: fund)
@@ -69,7 +72,7 @@ enum PortfolioCalculator {
             let allDailyIncomeShares = sharesParticipatingInDailyIncome(lots: lots, fund: fund, now: now)
             let embeddedPendingBuyAmount = syncedPendingBuyAmount(
                 for: fund,
-                tradeRecords: tradeRecords,
+                tradeRecords: recordsByCode[fund.code] ?? [],
                 now: now
             )
             let dailyIncomeShares = max(
@@ -134,7 +137,7 @@ enum PortfolioCalculator {
                 && fund.pendingAmount == nil
             let isClosedZeroPosition = PendingFundDisplayRules.isClosedZeroPosition(
                 next,
-                tradeRecords: tradeRecords
+                tradeRecords: recordsByCode[fund.code] ?? []
             )
             if status == .pending && !isConversionPlaceholder && !isClosedZeroPosition {
                 pendingCount += 1
@@ -353,7 +356,7 @@ enum PortfolioCalculator {
         guard TradingCalendar.isFundTradingDay(now) else { return .inactive }
 
         let today = DateOnlyFormatter.string(from: now)
-        if quote.netValueDate == today {
+        if quote.netValueDate == today && quote.hasOfficialNetValue != false {
             return .officialUpdated
         }
         if FundQuoteUpdatePolicy.hasCurrentIntradayEstimate(quote, on: now) {
@@ -574,6 +577,7 @@ enum PortfolioCalculator {
 
 enum FundQuoteUpdatePolicy {
     static func isOfficiallyUpdated(_ quote: FundQuote, on date: Date) -> Bool {
+        guard quote.hasOfficialNetValue != false else { return false }
         let today = DateOnlyFormatter.string(from: date)
         if quote.netValueDate == today {
             return true
@@ -587,7 +591,7 @@ enum FundQuoteUpdatePolicy {
     }
 
     static func isDelayedQDIIOfficialUpdate(_ quote: FundQuote, on date: Date) -> Bool {
-        guard TradingCalendar.isFundTradingDay(date),
+        guard quote.officialNetValue != nil, TradingCalendar.isFundTradingDay(date),
               quote.name.range(of: "QDII", options: [.caseInsensitive, .diacriticInsensitive]) != nil,
               !hasCurrentIntradayEstimate(quote, on: date)
         else {

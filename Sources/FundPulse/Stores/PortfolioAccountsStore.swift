@@ -64,16 +64,24 @@ final class PortfolioAccountsStore {
     private var storesByID: [String: PortfolioStore]
     private var lastSelectedAccountID: String
     private var refreshOperationCount = 0
+    private let quoteService: FundQuoteService
+    private let exchangeQuoteService: ExchangeFundQuoteService
+    private var refreshTask: Task<Void, Never>?
     private let nowProvider: () -> Date
 
     init(
         dataDirectory: URL = AppDataPaths.sharedDataDirectory,
         legacyStore: PortfolioStore? = nil,
+        quoteService: FundQuoteService = FundQuoteService(),
+        exchangeQuoteService: ExchangeFundQuoteService = ExchangeFundQuoteService(),
         now: @escaping () -> Date = { .now }
     ) {
         let defaultAccount = PortfolioAccount.defaultAccount(createdAt: now())
         self.dataDirectory = dataDirectory
-        self.legacyStore = legacyStore ?? PortfolioStore(dataDirectory: dataDirectory, now: now)
+        self.quoteService = legacyStore?.quoteService ?? quoteService
+        self.exchangeQuoteService = exchangeQuoteService
+        self.legacyStore = legacyStore ?? PortfolioStore(dataDirectory: dataDirectory,
+            quoteService: quoteService, exchangeQuoteService: exchangeQuoteService, now: now)
         self.accounts = [defaultAccount]
         self.selection = .account(defaultAccount.id)
         self.storesByID = [defaultAccount.id: self.legacyStore]
@@ -131,6 +139,7 @@ final class PortfolioAccountsStore {
     func load() {
         loadState = .loading
         do {
+            try recoverInterruptedAccountsRestore()
             let registry = try loadOrCreateRegistry()
             try validate(registry)
             let normalized = normalizedRegistry(registry)
@@ -200,6 +209,7 @@ final class PortfolioAccountsStore {
 
         let store = PortfolioStore(
             dataDirectory: accountDirectory,
+            quoteService: quoteService, exchangeQuoteService: exchangeQuoteService,
             accountKind: account.kind,
             now: nowProvider
         )
@@ -300,15 +310,33 @@ final class PortfolioAccountsStore {
     }
 
     func refreshQuotes() async {
-        refreshOperationCount += 1
-        isRefreshing = true
-        defer {
-            refreshOperationCount -= 1
-            isRefreshing = refreshOperationCount > 0
+        if let refreshTask { await refreshTask.value; return }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            refreshOperationCount += 1
+            isRefreshing = true
+            defer {
+                refreshOperationCount -= 1
+                isRefreshing = false
+                refreshTask = nil
+            }
+            let participants = accounts.compactMap { account in
+                store(for: account.id).map { (account.kind, $0) }
+            }
+            let offCodes = Array(Set(participants.filter { $0.0 == .offExchange }.flatMap { $0.1.snapshot.funds.map(\.code) }))
+            let onCodes = Array(Set(participants.filter { $0.0 == .onExchange }.flatMap { $0.1.snapshot.funds.map(\.code) }))
+            async let offQuotes = quoteService.fetchQuotes(codes: offCodes)
+            async let onQuotes = exchangeQuoteService.fetchQuotes(codes: onCodes)
+            let (off, on) = await (offQuotes, onQuotes)
+            for (kind, store) in participants {
+                // A trade/import may have added symbols during the batch fetch.
+                let requested = kind == .offExchange ? Set(offCodes) : Set(onCodes)
+                let unchanged = Set(store.snapshot.funds.map(\.code)).isSubset(of: requested)
+                await store.refreshQuotes(prefetched: unchanged ? (kind == .offExchange ? off : on) : nil)
+            }
         }
-        for account in accounts {
-            await store(for: account.id)?.refreshQuotes()
-        }
+        refreshTask = task
+        await task.value
     }
 
     private func loadOrCreateRegistry() throws -> PortfolioAccountsRegistry {
@@ -334,7 +362,7 @@ final class PortfolioAccountsStore {
         }
     }
 
-    private func validate(_ registry: PortfolioAccountsRegistry) throws {
+    func validate(_ registry: PortfolioAccountsRegistry) throws {
         guard registry.schemaVersion <= PortfolioAccountsRegistry.currentSchemaVersion else {
             throw PortfolioAccountsStoreError.unsupportedSchemaVersion(registry.schemaVersion)
         }
@@ -354,12 +382,23 @@ final class PortfolioAccountsStore {
             throw PortfolioAccountsStoreError.invalidRegistry("默认账户类型不正确")
         }
 
+        guard registry.accounts.allSatisfy({ $0.isDefault || $0.directoryName != nil }) else {
+            throw PortfolioAccountsStoreError.invalidRegistry("非默认账户必须有独立目录")
+        }
         let directoryNames = registry.accounts.compactMap(\.directoryName)
         guard Set(directoryNames).count == directoryNames.count else {
             throw PortfolioAccountsStoreError.invalidRegistry("存在重复账户目录")
         }
         guard directoryNames.allSatisfy(Self.isSafeDirectoryName) else {
             throw PortfolioAccountsStoreError.invalidRegistry("账户目录名称不安全")
+        }
+        let resolvedAccountsRoot = accountsDataDirectory.resolvingSymlinksInPath().standardizedFileURL
+        for account in registry.accounts where !account.isDefault {
+            guard let name = account.directoryName,
+                  dataDirectory(for: account).resolvingSymlinksInPath().standardizedFileURL.path
+                    == resolvedAccountsRoot.appending(path: name).standardizedFileURL.path else {
+                throw PortfolioAccountsStoreError.invalidRegistry("账户目录不能链接到其他位置")
+            }
         }
         guard registry.accounts.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw PortfolioAccountsStoreError.invalidRegistry("存在空账户名称")
@@ -387,7 +426,7 @@ final class PortfolioAccountsStore {
         )
     }
 
-    private func apply(_ registry: PortfolioAccountsRegistry) {
+    func apply(_ registry: PortfolioAccountsRegistry) {
         var nextStores: [String: PortfolioStore] = [:]
         for account in registry.accounts {
             let store: PortfolioStore
@@ -396,6 +435,7 @@ final class PortfolioAccountsStore {
             } else {
                 store = PortfolioStore(
                     dataDirectory: dataDirectory(for: account),
+                    quoteService: quoteService, exchangeQuoteService: exchangeQuoteService,
                     accountKind: account.kind,
                     now: nowProvider
                 )
@@ -421,13 +461,16 @@ final class PortfolioAccountsStore {
         return name
     }
 
-    private func ensureRegistryIsWritable() throws {
+    func ensureRegistryIsWritable() throws {
+        guard !FileManager.default.fileExists(atPath: dataDirectory.appending(path: "pending-accounts-restore.json").path) else {
+            throw PortfolioStoreError.importRecoveryRequired
+        }
         if case .failed(let reason) = loadState {
             throw PortfolioAccountsStoreError.unreadableRegistry(reason)
         }
     }
 
-    private func makeRegistry(
+    func makeRegistry(
         accounts: [PortfolioAccount]? = nil,
         selection: PortfolioAccountSelection? = nil,
         lastSelectedAccountID: String? = nil
@@ -450,7 +493,7 @@ final class PortfolioAccountsStore {
         }
     }
 
-    private func persist(_ registry: PortfolioAccountsRegistry) throws {
+    func persist(_ registry: PortfolioAccountsRegistry) throws {
         try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         try Self.encoder.encode(registry).write(to: registryFileURL, options: .atomic)
     }
@@ -463,14 +506,14 @@ final class PortfolioAccountsStore {
             && !name.contains(":")
     }
 
-    private static var encoder: JSONEncoder {
+    static var encoder: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return encoder
     }
 
-    private static var decoder: JSONDecoder {
+    static var decoder: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

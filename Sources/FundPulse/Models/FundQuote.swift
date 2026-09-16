@@ -1,6 +1,6 @@
 import Foundation
 
-struct FundQuote: Codable, Equatable {
+struct FundQuote: Codable, Equatable, Sendable {
     var code: String
     var name: String
     var netValue: Double
@@ -15,16 +15,25 @@ struct FundQuote: Codable, Equatable {
     var previousClose: Double? = nil
     /// Source time in seconds; display strings deliberately retain minute precision.
     var marketTimestamp: Double? = nil
+    /// False when the source supplied only a realtime estimate. Legacy quotes
+    /// remain readable; newly decoded estimates never become execution prices.
+    var hasOfficialNetValue: Bool? = nil
+
+    var officialNetValue: Double? {
+        guard hasOfficialNetValue != false, marketPriceTime == nil,
+              netValue.isFinite, netValue > 0 else { return nil }
+        return netValue
+    }
 }
 
-struct FundNetValuePoint: Identifiable, Equatable {
+struct FundNetValuePoint: Identifiable, Equatable, Sendable {
     var id: Int64 { timestamp }
     var timestamp: Int64
     var value: Double
     var equityReturn: Double?
 }
 
-struct FundStockHolding: Identifiable, Equatable {
+struct FundStockHolding: Identifiable, Equatable, Sendable {
     var id: String { code.isEmpty ? name : code }
     var code: String
     var name: String
@@ -59,7 +68,7 @@ struct FundStockHolding: Identifiable, Equatable {
     }
 }
 
-struct FundSectorExposure: Identifiable, Equatable {
+struct FundSectorExposure: Identifiable, Equatable, Sendable {
     enum Source: String, Equatable {
         case topHoldings
         case disclosedIndustry
@@ -73,14 +82,14 @@ struct FundSectorExposure: Identifiable, Equatable {
     var source: Source
 }
 
-struct FundAssetAllocationItem: Identifiable, Equatable {
+struct FundAssetAllocationItem: Identifiable, Equatable, Sendable {
     var id: String { name }
     var name: String
     var weight: Double
     var date: String?
 }
 
-struct FundDetailSupplement: Equatable {
+struct FundDetailSupplement: Equatable, Sendable {
     var trend: [FundNetValuePoint]
     var history: [FundNetValuePoint]
     var topHoldings: [FundStockHolding]

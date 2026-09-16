@@ -9,14 +9,14 @@ private let operationReminderNotificationID = "fund-pulse.operation-reminder"
 private let fundThresholdReminderLastSentDefaultsKey = "fund-pulse.threshold-reminder.last-sent-times"
 private let operationReminderNotificationPrefix = "\(operationReminderNotificationID)."
 private let appearanceTransitionOverlayIdentifier = NSUserInterfaceItemIdentifier("fund-pulse.appearance-transition-overlay")
-private let statusBarUpdateLogger = Logger(
+let statusBarUpdateLogger = Logger(
     subsystem: Bundle.main.bundleIdentifier ?? "com.iamzjt.frontend.fund-pulse.swift",
     category: "AppUpdate"
 )
 
-private final class ContextMenuUpdateCheckResultBox: @unchecked Sendable {
+final class ContextMenuUpdateCheckResultBox: @unchecked Sendable {
     private let lock = NSLock()
-    private var completion: AppUpdateCheckCompletion?
+    var completion: AppUpdateCheckCompletion?
 
     func set(_ completion: AppUpdateCheckCompletion) {
         lock.lock()
@@ -34,313 +34,27 @@ private final class ContextMenuUpdateCheckResultBox: @unchecked Sendable {
     }
 }
 
-private struct ContextMenuUpdateCheck {
+struct ContextMenuUpdateCheck {
     var id: UUID
     var request: AppUpdateCheckRequest
     var resultBox: ContextMenuUpdateCheckResultBox
     var task: Task<Void, Never>
 }
 
-private extension AppAppearanceMode {
-    var nsAppearance: NSAppearance? {
-        switch self {
-        case .system:
-            nil
-        case .light:
-            NSAppearance(named: .aqua)
-        case .dark:
-            NSAppearance(named: .darkAqua)
-        }
-    }
-}
-
-private final class AppearanceTransitionOverlayView: NSView {
-    private let gradientLayer = CAGradientLayer()
-
-    init(appearance: NSAppearance) {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer = gradientLayer
-        configure(for: appearance)
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    override func layout() {
-        super.layout()
-        gradientLayer.frame = bounds
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-
-    private func configure(for appearance: NSAppearance) {
-        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let leading = isDark
-            ? NSColor(red: 17 / 255, green: 19 / 255, blue: 24 / 255, alpha: 0.96)
-            : NSColor(red: 251 / 255, green: 249 / 255, blue: 245 / 255, alpha: 0.94)
-        let trailing = isDark
-            ? NSColor(red: 29 / 255, green: 33 / 255, blue: 42 / 255, alpha: 0.86)
-            : NSColor(red: 242 / 255, green: 238 / 255, blue: 229 / 255, alpha: 0.80)
-        gradientLayer.colors = [leading.cgColor, trailing.cgColor]
-        gradientLayer.startPoint = CGPoint(x: 0, y: 0)
-        gradientLayer.endPoint = CGPoint(x: 1, y: 1)
-    }
-}
-
-private enum StatusItemPresentation {
-    static let height: CGFloat = 24
-    static let iconSize: CGFloat = 16
-
-    static func visualLength(
-        for text: String,
-        attributes: [NSAttributedString.Key: Any]
-    ) -> CGFloat {
-        let textWidth = (text as NSString).size(withAttributes: attributes).width
-        return ceil(iconSize + textWidth)
-    }
-}
-
-private struct StatusTitlePresentation {
-    let text: String
-    let attributes: [NSAttributedString.Key: Any]
-    let visualLength: CGFloat
-}
-
-private func makeStatusPulseImage(size: NSSize, tintColor: NSColor? = nil) -> NSImage {
-    let image = NSImage(size: size, flipped: false) { rect in
-        let color = tintColor ?? .labelColor
-        color.setStroke()
-        color.setFill()
-
-        let path = NSBezierPath()
-        path.lineWidth = tintColor == nil ? 1.8 : 2.05
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: rect.minX + 1.6, y: rect.minY + 8.0))
-        path.line(to: NSPoint(x: rect.minX + 4.6, y: rect.minY + 8.0))
-        path.line(to: NSPoint(x: rect.minX + 6.4, y: rect.minY + 13.0))
-        path.line(to: NSPoint(x: rect.minX + 9.5, y: rect.minY + 4.0))
-        path.line(to: NSPoint(x: rect.minX + 11.5, y: rect.minY + 10.0))
-        path.line(to: NSPoint(x: rect.minX + 14.4, y: rect.minY + 10.0))
-        path.stroke()
-
-        NSBezierPath(
-            ovalIn: NSRect(
-                x: rect.minX + 12.0,
-                y: rect.minY + 12.5,
-                width: 2.8,
-                height: 2.8
-            )
-        ).fill()
-        return true
-    }
-    image.isTemplate = tintColor == nil
-    return image
-}
-
-enum PopoverLayout {
-    static let mainWidth: CGFloat = 360
-    static let jdFinanceLoginWidth: CGFloat = 1040
-    static let jdFinancePreviewWidth: CGFloat = 430
-    static let jdFinanceSyncWidth: CGFloat = 500
-    static let jdFinanceSyncHeight: CGFloat = 720
-    static let standardChildPanelWidth: CGFloat = 360
-    static let settingsWidth: CGFloat = standardChildPanelWidth
-    static let editorWidth: CGFloat = standardChildPanelWidth
-    static let standardChildPanelHeight: CGFloat = 660
-    static let editorHeight: CGFloat = 600
-    static let tradeRecordsHeight: CGFloat = standardChildPanelHeight
-    static let settingsHeight: CGFloat = 750
-    static let portfolioBreakdownWidth: CGFloat = standardChildPanelWidth
-    static let todayIncomeRankingWidth: CGFloat = standardChildPanelWidth
-    static let fundDailyIncomeWidth: CGFloat = standardChildPanelWidth
-    static let fundDailyIncomeHeight: CGFloat = 600
-    static let onboardingWidth: CGFloat = standardChildPanelWidth
-    static let privacyDisclaimerWidth: CGFloat = onboardingWidth
-    static let sampleExperienceWidth: CGFloat = 430
-    static let portfolioPerformanceWidth: CGFloat = 430
-    static let height: CGFloat = CGFloat(AppSettings.defaultMainPanelHeight)
-    static let arrowHeight: CGFloat = 10
-    static let arrowWidth: CGFloat = 22
-    static let cornerRadius: CGFloat = 16
-    static let panelGap: CGFloat = 3
-
-    static let mainSize = mainContentSize(forHeight: height)
-    static let windowHeight: CGFloat = mainWindowHeight(forHeight: height)
-    static let mainWindowSize = mainWindowFrameSize(forHeight: height)
-    static let jdFinanceLoginSize = NSSize(width: jdFinanceLoginWidth, height: jdFinanceSyncHeight)
-    static let jdFinanceNetworkProbeSize = NSSize(width: jdFinancePreviewWidth, height: jdFinanceSyncHeight)
-    static let jdFinanceSyncSize = NSSize(width: jdFinanceSyncWidth, height: jdFinanceSyncHeight)
-    static let settingsSize = NSSize(width: settingsWidth, height: settingsHeight)
-    static let editorSize = NSSize(width: editorWidth, height: editorHeight)
-    static let tradeEditorSize = NSSize(width: editorWidth, height: standardChildPanelHeight)
-    static let fundDetailSize = NSSize(width: editorWidth, height: standardChildPanelHeight)
-    static let tradeRecordsSize = NSSize(width: editorWidth, height: tradeRecordsHeight)
-    static let portfolioBreakdownSize = NSSize(width: portfolioBreakdownWidth, height: standardChildPanelHeight)
-    static let todayIncomeRankingSize = NSSize(width: todayIncomeRankingWidth, height: standardChildPanelHeight)
-    static let fundDailyIncomeSize = NSSize(width: fundDailyIncomeWidth, height: fundDailyIncomeHeight)
-    static let onboardingSize = NSSize(width: onboardingWidth, height: standardChildPanelHeight)
-    static let sampleExperienceSize = NSSize(width: sampleExperienceWidth, height: standardChildPanelHeight)
-    static let privacyDisclaimerSize = NSSize(width: privacyDisclaimerWidth, height: standardChildPanelHeight)
-    static let portfolioPerformanceSize = NSSize(width: portfolioPerformanceWidth, height: standardChildPanelHeight)
-    static let jdFinancePerformanceSyncSize = portfolioPerformanceSize
-    static let accountEditorSize = NSSize(width: editorWidth, height: 520)
-    static let accountManagementSize = NSSize(width: standardChildPanelWidth, height: 620)
-    static let exchangeReconciliationSize = NSSize(width: editorWidth, height: 600)
-
-    static func clampedMainPanelHeight(_ height: CGFloat) -> CGFloat {
-        CGFloat(AppSettings.clampedMainPanelHeight(Int(height.rounded())))
-    }
-
-    static func mainContentSize(forHeight height: CGFloat) -> NSSize {
-        NSSize(width: mainWidth, height: clampedMainPanelHeight(height))
-    }
-
-    static func mainWindowHeight(forHeight height: CGFloat) -> CGFloat {
-        clampedMainPanelHeight(height) + arrowHeight
-    }
-
-    static func mainWindowFrameSize(forHeight height: CGFloat) -> NSSize {
-        NSSize(width: mainWidth, height: mainWindowHeight(forHeight: height))
-    }
-
-}
-
-@Observable
-@MainActor
-final class PopoverUIState {
-    var arrowX: CGFloat = PopoverLayout.mainWidth / 2
-}
-
-private final class FundPulsePanel: NSPanel {
-    var onOrderOut: (() -> Void)?
-    var onClose: (() -> Void)?
-    var onCancel: (() -> Void)?
-
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
-
-    init() {
-        super.init(
-            contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        isOpaque = false
-        backgroundColor = .clear
-        hasShadow = true
-        level = .statusBar
-        collectionBehavior = [.transient, .moveToActiveSpace, .fullScreenAuxiliary]
-        hidesOnDeactivate = false
-        isMovableByWindowBackground = false
-        contentView?.wantsLayer = true
-        contentView?.layer?.backgroundColor = NSColor.clear.cgColor
-    }
-
-    override func orderOut(_ sender: Any?) {
-        let wasVisible = isVisible
-        super.orderOut(sender)
-        if wasVisible {
-            onOrderOut?()
-        }
-    }
-
-    override func close() {
-        let wasVisible = isVisible
-        super.close()
-        if wasVisible {
-            onClose?()
-        }
-    }
-
-    override func cancelOperation(_ sender: Any?) {
-        onCancel?()
-    }
-}
-
-final class PanelCardContainerView: NSView {
-    let hostedContentView: NSView
-
-    init(contentView: NSView, cornerRadius: CGFloat = PopoverLayout.cornerRadius) {
-        hostedContentView = contentView
-        super.init(frame: .zero)
-
-        if let hostingView = contentView as? NSHostingView<AnyView> {
-            hostingView.sizingOptions = []
-        }
-
-        wantsLayer = true
-        layer?.cornerRadius = cornerRadius
-        layer?.masksToBounds = true
-        updateAppearanceColors()
-
-        contentView.wantsLayer = true
-        contentView.layer?.backgroundColor = NSColor.clear.cgColor
-        contentView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(contentView)
-
-        NSLayoutConstraint.activate([
-            contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            contentView.topAnchor.constraint(equalTo: topAnchor),
-            contentView.bottomAnchor.constraint(equalTo: bottomAnchor)
-        ])
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var fittingSize: NSSize {
-        hostedContentView.fittingSize
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateAppearanceColors()
-    }
-
-    func applyAppearance(_ appearance: NSAppearance?) {
-        self.appearance = appearance
-        hostedContentView.appearance = appearance
-        updateAppearanceColors()
-    }
-
-    private func updateAppearanceColors() {
-        let appearance = effectiveAppearance
-        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        layer?.backgroundColor = (isDark
-            ? NSColor(red: 17 / 255, green: 19 / 255, blue: 24 / 255, alpha: 0.98)
-            : NSColor(red: 251 / 255, green: 249 / 255, blue: 245 / 255, alpha: 0.99)
-        ).cgColor
-        layer?.borderWidth = 0.5
-        layer?.borderColor = (isDark
-            ? NSColor.white.withAlphaComponent(0.08)
-            : NSColor.black.withAlphaComponent(0.06)
-        ).cgColor
-    }
-}
-
-@MainActor
-private final class OnboardingAddFlowState {
-    var didSave = false
-}
-
 @MainActor
 final class StatusBarController: NSObject {
-    private let statusItem: NSStatusItem
-    private let accountsStore: PortfolioAccountsStore
-    private let settingsStore: AppSettingsStore
+    let statusItem: NSStatusItem
+    let accountsStore: PortfolioAccountsStore
+    let settingsStore: AppSettingsStore
     private let marketIndexStore: MarketIndexStore
-    private let updateStore: AppUpdateStore
-    private let appVersion: String
+    let updateStore: AppUpdateStore
+    let appVersion: String
     private let popoverState = PopoverUIState()
     private lazy var statusPulseImage = makeStatusPulseImage(
         size: NSSize(width: StatusItemPresentation.iconSize, height: StatusItemPresentation.iconSize)
     )
-    private let onCheckUpdate: (AppUpdateCheckMode) async -> Void
-    private let onOpenUpdate: () -> Void
+    let onCheckUpdate: (AppUpdateCheckMode) async -> Void
+    let onOpenUpdate: () -> Void
 
     private var mainPanelWindow: FundPulsePanel?
     private var childPanelWindow: FundPulsePanel?
@@ -355,11 +69,11 @@ final class StatusBarController: NSObject {
     private var deactivateObserver: NSObjectProtocol?
     private var mainPanelAnchorFrame: NSRect?
     private var autoRefreshTimer: Timer?
-    private weak var contextMenuUpdateItem: NSMenuItem?
-    private var contextMenuUpdateRefreshTimer: Timer?
-    private var contextMenuUpdateAnimationFrame = 2
-    private var contextMenuUpdateStatusOverride: AppUpdateStatus?
-    private var contextMenuUpdateCheck: ContextMenuUpdateCheck?
+    weak var contextMenuUpdateItem: NSMenuItem?
+    var contextMenuUpdateRefreshTimer: Timer?
+    var contextMenuUpdateAnimationFrame = 2
+    var contextMenuUpdateStatusOverride: AppUpdateStatus?
+    var contextMenuUpdateCheck: ContextMenuUpdateCheck?
     private var fundThresholdReminderLastSentAt: [String: Date] = [:]
     private var pendingFundThresholdReminderKeys: Set<String> = []
     private let operationReminderScheduler: OperationReminderNotificationScheduler
@@ -1725,7 +1439,7 @@ final class StatusBarController: NSObject {
         setStatusItemHighlighted(false)
     }
 
-    private func closeAllPanels() {
+    func closeAllPanels() {
         hideJDFinanceLoginPanel(reportCancellation: true)
         mainPanelWindow?.orderOut(nil)
         childPanelWindow?.orderOut(nil)
@@ -2060,269 +1774,22 @@ final class StatusBarController: NSObject {
             : NSColor.black.withAlphaComponent(0.08)
     }
 
-    private func showContextMenu(relativeTo sender: NSStatusBarButton) {
-        let menu = NSMenu()
-        menu.delegate = self
+    @objc func exportAllAccountsFromMenu() {
+        PortfolioBackupController.exportAll(accounts: accountsStore)
+    }
 
-        menu.addItem(disabledMenuItem("fund-pulse v\(appVersion)"))
-        menu.addItem(.separator())
+    @objc func restoreAllAccountsFromMenu() { restoreAllAccounts(latest: false) }
+    @objc func restoreLatestAccountsFromMenu() { restoreAllAccounts(latest: true) }
 
-        menu.addItem(NSMenuItem(title: "刷新基金数据", action: #selector(refreshFromMenu), keyEquivalent: "r"))
-        menu.addItem(.separator())
-
-        addUpdateMenuItems(to: menu)
-
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "设置", action: #selector(openSettingsFromMenu), keyEquivalent: ","))
-        addMenuBarConfigurationMenuItems(to: menu)
-        menu.addItem(NSMenuItem(title: "导入基金配置", action: #selector(importFundConfigurationFromMenu), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "导出基金配置", action: #selector(exportFundConfigurationFromMenu), keyEquivalent: ""))
-        menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出", action: #selector(quitFromMenu), keyEquivalent: "q"))
-
-        for item in menu.items where item.action != nil {
-            item.target = self
-        }
-
+    private func restoreAllAccounts(latest: Bool) {
+        guard PortfolioBackupController.restoreAll(accounts: accountsStore, latest: latest) else { return }
+        selectedFundCode = nil
         closeAllPanels()
-        startContextMenuUpdateRefresh()
-        let startedUpdateCheck = checkForUpdatesFromContextMenu()
-        if startedUpdateCheck {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.popUpContextMenu(menu)
-            }
-            return
-        }
-        popUpContextMenu(menu)
+        updateStatusTitle()
+        showMainPanel()
     }
 
-    private func popUpContextMenu(_ menu: NSMenu) {
-        let popUpMenuSelector = NSSelectorFromString("popUpStatusItemMenu:")
-        _ = statusItem.perform(popUpMenuSelector, with: menu)
-    }
-
-    private func addMenuBarConfigurationMenuItems(to menu: NSMenu) {
-        let contentItem = NSMenuItem(title: "显示内容", action: nil, keyEquivalent: "")
-        contentItem.submenu = makeMenuBarContentModeMenu()
-        contentItem.isEnabled = true
-        menu.addItem(contentItem)
-
-        let displayItem = NSMenuItem(title: "涨跌颜色", action: nil, keyEquivalent: "")
-        displayItem.submenu = makeMenuBarDisplayModeMenu()
-        displayItem.isEnabled = true
-        menu.addItem(displayItem)
-    }
-
-    private func makeMenuBarContentModeMenu() -> NSMenu {
-        let submenu = NSMenu(title: "显示内容")
-        for mode in MenuBarContentMode.allCases {
-            let item = NSMenuItem(
-                title: mode.title,
-                action: #selector(selectMenuBarContentModeFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = mode.rawValue
-            item.state = settingsStore.settings.menuBarContentMode == mode ? .on : .off
-            item.toolTip = mode.detail
-            submenu.addItem(item)
-        }
-        return submenu
-    }
-
-    private func makeMenuBarDisplayModeMenu() -> NSMenu {
-        let submenu = NSMenu(title: "涨跌颜色")
-        for mode in MenuBarDisplayMode.allCases {
-            let item = NSMenuItem(
-                title: mode.title,
-                action: #selector(selectMenuBarDisplayModeFromMenu(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = mode.rawValue
-            item.state = settingsStore.settings.menuBarDisplayMode == mode ? .on : .off
-            item.toolTip = mode.detail
-            submenu.addItem(item)
-        }
-        return submenu
-    }
-
-    private func addUpdateMenuItems(to menu: NSMenu) {
-        let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        applyUpdateMenuPresentation(to: item)
-        contextMenuUpdateItem = item
-        menu.addItem(item)
-    }
-
-    private func applyUpdateMenuPresentation(to item: NSMenuItem) {
-        let presentation = AppUpdateMenuItemPresentation(
-            status: contextMenuUpdateStatusOverride ?? updateStore.status,
-            downloadProgress: updateStore.downloadProgress,
-            activityFrame: contextMenuUpdateAnimationFrame
-        )
-        item.view = nil
-        item.title = presentation.title
-        item.action = updateMenuActionSelector(for: presentation.action)
-        item.isEnabled = presentation.isEnabled
-        item.toolTip = presentation.toolTip
-        item.menu?.itemChanged(item)
-    }
-
-    private func startContextMenuUpdateRefresh() {
-        contextMenuUpdateRefreshTimer?.invalidate()
-        contextMenuUpdateRefreshTimer = nil
-        contextMenuUpdateStatusOverride = nil
-        contextMenuUpdateAnimationFrame = 2
-        refreshContextMenuUpdateItem()
-
-        let timer = Timer(
-            timeInterval: 0.35,
-            target: self,
-            selector: #selector(contextMenuUpdateRefreshTimerFired(_:)),
-            userInfo: nil,
-            repeats: true
-        )
-        contextMenuUpdateRefreshTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-        RunLoop.main.add(timer, forMode: .eventTracking)
-    }
-
-    @objc private func contextMenuUpdateRefreshTimerFired(_ timer: Timer) {
-        finishContextMenuUpdateCheckIfReady()
-        refreshContextMenuUpdateItem()
-    }
-
-    private func refreshContextMenuUpdateItem() {
-        guard let contextMenuUpdateItem else {
-            if contextMenuUpdateCheck == nil {
-                stopContextMenuUpdateRefresh()
-            }
-            return
-        }
-        applyUpdateMenuPresentation(to: contextMenuUpdateItem)
-        contextMenuUpdateAnimationFrame += 1
-    }
-
-    private func stopContextMenuUpdateRefresh(cancelPendingCheck: Bool = false) {
-        if cancelPendingCheck {
-            contextMenuUpdateCheck?.task.cancel()
-            contextMenuUpdateCheck = nil
-        }
-        if contextMenuUpdateCheck == nil {
-            contextMenuUpdateRefreshTimer?.invalidate()
-            contextMenuUpdateRefreshTimer = nil
-        }
-        contextMenuUpdateItem = nil
-        contextMenuUpdateStatusOverride = nil
-    }
-
-    private func checkForUpdatesFromContextMenu() -> Bool {
-        finishContextMenuUpdateCheckIfReady()
-        if contextMenuUpdateCheck != nil {
-            contextMenuUpdateStatusOverride = .checking
-            refreshContextMenuUpdateItem()
-            return true
-        }
-        guard updateStore.status.shouldCheckWhenOpeningContextMenu else { return false }
-        guard let request = updateStore.startCheck(currentVersion: appVersion, mode: .interactive) else { return false }
-        let checkID = UUID()
-        let resultBox = ContextMenuUpdateCheckResultBox()
-        let task = Task.detached(priority: .userInitiated) { [request, resultBox] in
-            let completion: AppUpdateCheckCompletion
-            do {
-                let status = try await request.service.check(
-                    currentVersion: request.currentVersion,
-                    mode: request.mode
-                )
-                completion = .success(status)
-            } catch {
-                completion = .failure(error.localizedDescription)
-            }
-            resultBox.set(completion)
-        }
-        contextMenuUpdateCheck = ContextMenuUpdateCheck(
-            id: checkID,
-            request: request,
-            resultBox: resultBox,
-            task: task
-        )
-        contextMenuUpdateStatusOverride = .checking
-        refreshContextMenuUpdateItem()
-        statusBarUpdateLogger.info("Start context menu update check generation=\(request.generation, privacy: .public)")
-        return true
-    }
-
-    @discardableResult
-    private func finishContextMenuUpdateCheckIfReady(id: UUID? = nil) -> Bool {
-        guard let check = contextMenuUpdateCheck,
-              id == nil || id == check.id,
-              let completion = check.resultBox.take()
-        else { return false }
-
-        contextMenuUpdateCheck = nil
-        contextMenuUpdateStatusOverride = nil
-        updateStore.finishCheck(check.request, completion: completion)
-        statusBarUpdateLogger.info("Finish context menu update check generation=\(check.request.generation, privacy: .public)")
-        return true
-    }
-
-    private func updateMenuActionSelector(for action: AppUpdateMenuItemAction?) -> Selector? {
-        switch action {
-        case .checkForUpdates:
-            #selector(checkUpdateFromMenu)
-        case .openUpdate:
-            #selector(openUpdateFromMenu)
-        case nil:
-            nil
-        }
-    }
-
-    private func disabledMenuItem(_ title: String, toolTip: String? = nil) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.isEnabled = false
-        item.toolTip = toolTip
-        return item
-    }
-
-    private func checkForUpdates() {
-        Task { [weak self] in
-            await self?.onCheckUpdate(.interactive)
-        }
-    }
-
-    @objc private func refreshFromMenu() {
-        refreshQuotesAndStatusTitle()
-    }
-
-    @objc private func checkUpdateFromMenu() {
-        checkForUpdates()
-    }
-
-    @objc private func openUpdateFromMenu() {
-        onOpenUpdate()
-    }
-
-    @objc private func openSettingsFromMenu() {
-        openSettingsForFocusedAccount()
-    }
-
-    @objc private func selectMenuBarContentModeFromMenu(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let mode = MenuBarContentMode(rawValue: rawValue)
-        else { return }
-        settingsStore.setMenuBarContentMode(mode)
-        handleSettingsChanged()
-    }
-
-    @objc private func selectMenuBarDisplayModeFromMenu(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let mode = MenuBarDisplayMode(rawValue: rawValue)
-        else { return }
-        settingsStore.setMenuBarDisplayMode(mode)
-        handleSettingsChanged()
-    }
-
-    @objc private func importFundConfigurationFromMenu() {
+    @objc func importFundConfigurationFromMenu() {
         _ = importFundConfiguration()
     }
 
@@ -2343,7 +1810,14 @@ final class StatusBarController: NSObject {
         guard panel.runModal() == .OK, let url = panel.url else { return false }
 
         do {
-            try store.importPortfolio(from: url)
+            let preview = try store.previewPortfolioImport(from: url)
+            let confirmation = NSAlert()
+            confirmation.messageText = "替换“\(accountsStore.focusedAccount.name)”的持仓？"
+            confirmation.informativeText = "当前 \(store.snapshot.funds.count) 只基金将替换为 \(preview.funds.count) 只基金、\(preview.tradeRecords?.count ?? 0) 条流水。现有数据会先备份到持仓目录的 Backups 文件夹，可通过导入恢复。"
+            confirmation.addButton(withTitle: "备份并导入")
+            confirmation.addButton(withTitle: "取消")
+            guard confirmation.runModal() == .alertFirstButtonReturn else { return false }
+            try store.importPortfolio(preview)
             updateStatusTitle()
             sendFundThresholdRemindersIfNeeded()
             showMainPanel()
@@ -2354,7 +1828,7 @@ final class StatusBarController: NSObject {
         }
     }
 
-    @objc private func exportFundConfigurationFromMenu() {
+    @objc func exportFundConfigurationFromMenu() {
         NSApp.activate(ignoringOtherApps: true)
         ensureFocusedAccountIsSelected()
 
@@ -2376,7 +1850,7 @@ final class StatusBarController: NSObject {
         }
     }
 
-    @objc private func quitFromMenu() {
+    @objc func quitFromMenu() {
         NSApp.terminate(nil)
     }
 
@@ -2387,7 +1861,7 @@ final class StatusBarController: NSObject {
         return "fund-pulse-\(safeAccountName)-\(DateOnlyFormatter.string(from: .now)).json"
     }
 
-    private func openSettingsForFocusedAccount() {
+    func openSettingsForFocusedAccount() {
         ensureFocusedAccountIsSelected()
         showMainPanel()
         showChildPanel(.settings)
@@ -2410,14 +1884,14 @@ final class StatusBarController: NSObject {
         alert.runModal()
     }
 
-    private func refreshQuotesAndStatusTitle() {
+    func refreshQuotesAndStatusTitle() {
         Task { [weak self] in
             guard let self else { return }
             await refreshQuotesAndStatusTitleAsync()
         }
     }
 
-    private func handleSettingsChanged() {
+    func handleSettingsChanged() {
         normalizeAccountSelectionForAccountCount()
         updateStatusTitle()
         updateMainPanelRootView()

@@ -46,11 +46,9 @@ final class FundNetValueTrendChartTests: XCTestCase {
             source.range(of: "private var historySection", range: headerStart.upperBound..<source.endIndex)
         )
         let headerSource = source[headerStart.lowerBound..<headerEnd.lowerBound]
-        let chartStart = try XCTUnwrap(source.range(of: "private struct FundTrendMiniChart"))
-        let chartEnd = try XCTUnwrap(
-            source.range(of: "let panelBorderColor", range: chartStart.upperBound..<source.endIndex)
-        )
-        let chartSource = source[chartStart.lowerBound..<chartEnd.lowerBound]
+        let charts = try viewSource("FundCharts.swift")
+        let chartStart = try XCTUnwrap(charts.range(of: "struct FundTrendMiniChart"))
+        let chartSource = charts[chartStart.lowerBound...]
 
         XCTAssertTrue(headerSource.contains("HStack(alignment: .firstTextBaseline"))
         XCTAssertTrue(headerSource.contains("Text(\"最新 "))
@@ -63,12 +61,14 @@ final class FundNetValueTrendChartTests: XCTestCase {
         XCTAssertTrue(chartSource.contains("path.addLine(to: CGPoint(x: size.width, y: y))"))
     }
 
-    private func popoverSource() throws -> String {
+    private func popoverSource() throws -> String { try viewSource("FundDetailView.swift") }
+
+    private func viewSource(_ name: String) throws -> String {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appending(path: "Sources/FundPulse/Views/PopoverContentView.swift")
+            .appending(path: "Sources/FundPulse/Views/\(name)")
         return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }
