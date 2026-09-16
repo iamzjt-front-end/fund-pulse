@@ -24,7 +24,8 @@
     "swift:run": "./script/build_and_run.sh",
     "swift:verify": "./script/build_and_run.sh --verify",
     "swift:package": "./script/package_swift.sh",
-    "icon:build": "python3 scripts/generate-app-icon.py"
+    "icon:build": "python3 scripts/generate-app-icon.py",
+    "test:ci": "node --test scripts/tests/ci-signing.test.mjs"
   },
   "repository": {
     "type": "git",

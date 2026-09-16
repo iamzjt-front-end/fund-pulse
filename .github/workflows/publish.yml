@@ -5,16 +5,15 @@ on:
 
 jobs:
   build_release:
-    runs-on: macos-latest
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Setup repo
         uses: actions/checkout@v4
-        with:
-          ssh-key: ${{ secrets.SSH_KEY }}
-          submodules: recursive
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -22,10 +21,23 @@ jobs:
           node-version: 24
 
       - name: Run test
-        run: swift test
+        run: |
+          xcodebuild -version
+          swift --version
+          swift test
+          npm run test:ci
+          npm run test:release
+          npm run test:readme
 
       - name: Run package
-        run: npm run package
+        run: bash script/ci_package.sh
+        env:
+          MACOS_CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          FUND_PULSE_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -34,9 +46,3 @@ jobs:
           path: |
             release/swift/*.dmg
             release/swift/*.zip
-
-      - name: Upload release assets
-        if: github.event_name == 'release'
-        run: gh release upload "${{ github.event.release.tag_name }}" release/swift/* --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}

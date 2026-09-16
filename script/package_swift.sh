@@ -16,6 +16,10 @@ APP_FILE_NAME="$(basename "$APP_BUNDLE")"
 SIGN_IDENTITY="${FUND_PULSE_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${FUND_PULSE_NOTARY_PROFILE:-fund-pulse}"
 SKIP_NOTARY="${FUND_PULSE_SKIP_NOTARY:-0}"
+NOTARY_KEYCHAIN_OPTIONS=()
+if [[ -n "${FUND_PULSE_NOTARY_KEYCHAIN:-}" ]]; then
+  NOTARY_KEYCHAIN_OPTIONS=(--keychain "$FUND_PULSE_NOTARY_KEYCHAIN")
+fi
 SKIP_DMG_LAYOUT="${FUND_PULSE_SKIP_DMG_LAYOUT:-0}"
 SIGNING_KIND="custom"
 SIGN_TIMESTAMP_OPTION="--timestamp"
@@ -216,7 +220,7 @@ EOF
 fi
 
 if [[ "$SKIP_NOTARY" != "1" ]]; then
-  if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+  if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" ${NOTARY_KEYCHAIN_OPTIONS[@]+"${NOTARY_KEYCHAIN_OPTIONS[@]}"} >/dev/null 2>&1; then
     cat >&2 <<EOF
 error: missing notarytool keychain profile "$NOTARY_PROFILE".
 
@@ -241,7 +245,7 @@ codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 ditto -c -k --keepParent "$APP_BUNDLE" "$NOTARY_ZIP_PATH"
 
 if [[ "$SKIP_NOTARY" != "1" ]]; then
-  xcrun notarytool submit "$NOTARY_ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun notarytool submit "$NOTARY_ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" ${NOTARY_KEYCHAIN_OPTIONS[@]+"${NOTARY_KEYCHAIN_OPTIONS[@]}"} --wait
   xcrun stapler staple "$APP_BUNDLE"
   xcrun stapler validate "$APP_BUNDLE"
 fi
@@ -256,7 +260,7 @@ codesign --force "$SIGN_TIMESTAMP_OPTION" --sign "$SIGN_IDENTITY" "$DMG_PATH"
 codesign --verify --verbose=2 "$DMG_PATH"
 
 if [[ "$SKIP_NOTARY" != "1" ]]; then
-  xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun notarytool submit "$DMG_PATH" --keychain-profile "$NOTARY_PROFILE" ${NOTARY_KEYCHAIN_OPTIONS[@]+"${NOTARY_KEYCHAIN_OPTIONS[@]}"} --wait
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   xcrun syspolicy_check distribution "$APP_BUNDLE"
