@@ -7,12 +7,14 @@ struct AppUpdateInfo: Codable, Equatable, Sendable {
     var publishedAt: Date?
     var htmlURL: URL
     var downloadURL: URL?
+    var archiveDigest: String? = nil
 }
 
 struct AppUpdatePackage: Equatable, Sendable {
     var localURL: URL
     var stagedAppURL: URL
     var downloadedAt: Date
+    var expectedInfo: AppUpdateInfo? = nil
 }
 
 enum AppUpdateCheckMode: Equatable, Sendable {

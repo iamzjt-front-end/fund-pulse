@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 struct AppUpdateService: Sendable {
     enum UpdateError: LocalizedError {
@@ -15,6 +16,8 @@ struct AppUpdateService: Sendable {
         case toolFailed(String)
         case installerLaunchFailed(String)
         case checkTimedOut
+        case untrustedPublisher
+        case invalidArchiveDigest
 
         var errorDescription: String? {
             switch self {
@@ -44,6 +47,10 @@ struct AppUpdateService: Sendable {
                 "启动更新安装器失败：\(message)"
             case .checkTimedOut:
                 "检查更新超时，请稍后重试"
+            case .untrustedPublisher:
+                "无法验证更新发布者，请从项目发布页面手动更新"
+            case .invalidArchiveDigest:
+                "更新包摘要缺失或校验失败，请重新检查更新"
             }
         }
     }
@@ -120,9 +127,10 @@ struct AppUpdateService: Sendable {
             destinationURL: destinationURL,
             progressHandler: progressHandler
         )
+        try verifyArchive(downloadedURL, digest: info.archiveDigest)
         let stagedAppURL = try stageApp(from: downloadedURL, in: updateDirectory, expectedInfo: info)
 
-        return AppUpdatePackage(localURL: downloadedURL, stagedAppURL: stagedAppURL, downloadedAt: .now)
+        return AppUpdatePackage(localURL: downloadedURL, stagedAppURL: stagedAppURL, downloadedAt: .now, expectedInfo: info)
     }
 
     func installPackage(_ package: AppUpdatePackage, currentAppURL: URL, processIdentifier: Int32) throws {
@@ -132,6 +140,9 @@ struct AppUpdateService: Sendable {
         if currentAppURL.path.contains("/AppTranslocation/") {
             throw UpdateError.translocatedApp
         }
+        guard let info = package.expectedInfo else { throw UpdateError.invalidArchiveDigest }
+        try verifyArchive(package.localURL, digest: info.archiveDigest)
+        try verifyStagedApp(package.stagedAppURL, expectedInfo: info, currentAppURL: currentAppURL)
 
         let parentURL = currentAppURL.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: parentURL.path) else {
@@ -197,7 +208,8 @@ struct AppUpdateService: Sendable {
             releaseNotes: "",
             publishedAt: feed.releaseDate,
             htmlURL: htmlURL,
-            downloadURL: downloadURL
+            downloadURL: downloadURL,
+            archiveDigest: feed.files.first(where: { $0.url == downloadURL?.lastPathComponent })?.sha512.map { "sha512:" + $0 }
         )
 
         if VersionComparator.isVersion(latestVersion, newerThan: currentVersion) {
@@ -241,7 +253,8 @@ struct AppUpdateService: Sendable {
             releaseNotes: release.body ?? "",
             publishedAt: release.publishedAt,
             htmlURL: htmlURL,
-            downloadURL: downloadURL
+            downloadURL: downloadURL,
+            archiveDigest: release.assets.first(where: { $0.browserDownloadURL == downloadURL?.absoluteString })?.digest
         )
 
         if VersionComparator.isVersion(latestVersion, newerThan: currentVersion) {
@@ -419,20 +432,51 @@ struct AppUpdateService: Sendable {
         return appURL
     }
 
-    private func verifyStagedApp(_ appURL: URL, expectedInfo info: AppUpdateInfo) throws {
+    func verifyArchive(_ url: URL, digest: String?) throws {
+        guard let digest else { throw UpdateError.invalidArchiveDigest }
+        let parts = digest.split(separator: ":", maxSplits: 1).map(String.init)
+        guard parts.count == 2, ["sha256", "sha512"].contains(parts[0]) else { throw UpdateError.invalidArchiveDigest }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var sha256 = SHA256()
+        var sha512 = SHA512()
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            if parts[0] == "sha256" { sha256.update(data: data) } else { sha512.update(data: data) }
+        }
+        let actual = parts[0] == "sha256"
+            ? sha256.finalize().map { String(format: "%02x", $0) }.joined()
+            : Data(sha512.finalize()).base64EncodedString()
+        guard actual == parts[1] else { throw UpdateError.invalidArchiveDigest }
+    }
+
+    func verifyStagedApp(_ appURL: URL, expectedInfo info: AppUpdateInfo, currentAppURL: URL = Bundle.main.bundleURL) throws {
         try runTool("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", appURL.path])
 
         guard let stagedBundle = Bundle(url: appURL),
               let stagedBundleID = stagedBundle.bundleIdentifier,
-              stagedBundleID == Bundle.main.bundleIdentifier else {
+              stagedBundleID == Bundle(url: currentAppURL)?.bundleIdentifier else {
             throw UpdateError.bundleIdentifierMismatch
         }
 
         let stagedVersion = stagedBundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
             ?? stagedBundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
             ?? "0"
-        guard isVersion(stagedVersion, atLeast: info.version) else {
+        guard normalizedVersion(stagedVersion) == normalizedVersion(info.version) else {
             throw UpdateError.stagedVersionMismatch
+        }
+        let identity = try runTool("/usr/bin/codesign", arguments: ["--display", "--verbose=4", currentAppURL.path])
+        guard let team = identity.components(separatedBy: .newlines)
+            .first(where: { $0.hasPrefix("TeamIdentifier=") })?.dropFirst("TeamIdentifier=".count),
+              team.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil,
+              stagedBundleID.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) != nil else {
+            throw UpdateError.untrustedPublisher
+        }
+        // Apple anchor plus Team ID survives certificate renewal while excluding
+        // ad-hoc signatures and unrelated developers. Production updates require
+        // a Developer ID Application certificate, not Apple Development.
+        let requirement = "anchor apple generic and identifier \"\(stagedBundleID)\" and certificate leaf[subject.OU] = \"\(team)\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+        for app in [currentAppURL, appURL] {
+            try runTool("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", "-R", requirement, app.path])
         }
     }
 
@@ -451,7 +495,8 @@ struct AppUpdateService: Sendable {
         return nil
     }
 
-    private func runTool(_ launchPath: String, arguments: [String]) throws {
+    @discardableResult
+    private func runTool(_ launchPath: String, arguments: [String]) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
@@ -461,19 +506,14 @@ struct AppUpdateService: Sendable {
         process.standardError = output
 
         try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            let data = output.fileHandleForReading.readDataToEndOfFile()
             let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw UpdateError.toolFailed((message?.isEmpty == false ? message : nil) ?? "\(launchPath) exited \(process.terminationStatus)")
         }
-    }
-
-    private func isVersion(_ version: String, atLeast expectedVersion: String) -> Bool {
-        let normalized = normalizedVersion(version)
-        let expected = normalizedVersion(expectedVersion)
-        return normalized == expected || VersionComparator.isVersion(normalized, newerThan: expected)
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func prepareUpdateDirectory(removeExisting: Bool = true) throws -> URL {
@@ -582,6 +622,7 @@ private final class DownloadObservation: @unchecked Sendable {
 private struct MacReleaseFeed {
     struct File: Equatable {
         var url: String
+        var sha512: String? = nil
     }
 
     var version: String?
@@ -600,6 +641,8 @@ private struct MacReleaseFeed {
             } else if line.hasPrefix("releaseDate:") {
                 let dateText = value(after: "releaseDate:", in: line).trimmingCharacters(in: CharacterSet(charactersIn: "'\""))
                 releaseDate = ISO8601DateFormatter().date(from: dateText)
+            } else if line.hasPrefix("sha512:"), rawLine.hasPrefix("    "), !files.isEmpty {
+                files[files.count - 1].sha512 = value(after: "sha512:", in: line)
             } else if line.hasPrefix("- url:") {
                 let url = value(after: "- url:", in: line)
                 if !url.isEmpty {
@@ -638,10 +681,12 @@ private struct GitHubRelease: Decodable {
     struct Asset: Decodable {
         var name: String
         var browserDownloadURL: String
+        var digest: String?
 
         enum CodingKeys: String, CodingKey {
             case name
             case browserDownloadURL = "browser_download_url"
+            case digest
         }
     }
 }
