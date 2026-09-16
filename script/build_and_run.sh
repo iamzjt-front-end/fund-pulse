@@ -128,7 +128,7 @@ case "$MODE" in
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
-    for resource in alipay-support.png wechat-support.png; do
+    for resource in alipay-support.png wechat-support.png wechat-contact.png; do
       if ! find "$APP_RESOURCES/$RESOURCE_BUNDLE_NAME" -type f -name "$resource" -print -quit | grep -q .; then
         echo "error: bundled support resource not found: $resource" >&2
         exit 1

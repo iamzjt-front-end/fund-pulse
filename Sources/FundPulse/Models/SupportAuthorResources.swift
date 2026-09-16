@@ -27,10 +27,10 @@ enum SupportAuthorAsset: String, CaseIterable, Identifiable {
 enum SupportAuthorResources {
     static func url(
         for asset: SupportAuthorAsset,
-        bundle: Bundle = .module
+        bundle: Bundle? = AppResourceBundle.current
     ) -> URL? {
-        bundle.url(forResource: asset.rawValue, withExtension: "png")
-            ?? bundle.url(
+        bundle?.url(forResource: asset.rawValue, withExtension: "png")
+            ?? bundle?.url(
                 forResource: asset.rawValue,
                 withExtension: "png",
                 subdirectory: "Support"
