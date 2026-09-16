@@ -355,8 +355,13 @@ struct SettingsView: View {
     }
 
     private var settingsFooter: some View {
-        plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
-            NSApp.terminate(nil)
+        VStack(alignment: .leading, spacing: 6) {
+            if let error = settingsStore.lastError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+            plainTextButton("退出 Fund Pulse", systemImage: "power", role: .destructive) {
+                NSApp.terminate(nil)
+            }
         }
     }
 

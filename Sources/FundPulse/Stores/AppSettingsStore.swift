@@ -13,6 +13,9 @@ final class AppSettingsStore {
     private(set) var settings: AppSettings = AppSettings()
     private(set) var dataDirectory: URL
     private(set) var loadOrigin: LoadOrigin = .createdNew
+    private(set) var lastError: String?
+    private var persistedSettings = AppSettings()
+    private var preventsOverwrite = false
 
     init(dataDirectory: URL = AppDataPaths.sharedDataDirectory) {
         self.dataDirectory = dataDirectory
@@ -20,6 +23,7 @@ final class AppSettingsStore {
     }
 
     func load() {
+        preventsOverwrite = false
         do {
             let url = settingsFileURL
             guard FileManager.default.fileExists(atPath: url.path) else {
@@ -31,16 +35,24 @@ final class AppSettingsStore {
             loadOrigin = .loadedExisting
             let data = try Data(contentsOf: url)
             var decodedSettings = try JSONDecoder().decode(AppSettings.self, from: data)
+            guard (decodedSettings.settingsSchemaVersion ?? 0) <= AppSettings.currentSchemaVersion else {
+                preventsOverwrite = true
+                throw CocoaError(.coderReadCorrupt)
+            }
+            persistedSettings = decodedSettings
             if decodedSettings.settingsSchemaVersion != AppSettings.currentSchemaVersion {
                 decodedSettings.settingsSchemaVersion = AppSettings.currentSchemaVersion
                 settings = decodedSettings
                 try save()
             } else {
                 settings = decodedSettings
+                persistedSettings = decodedSettings
+                lastError = nil
             }
         } catch {
             loadOrigin = .recoveredInvalid
             settings = AppSettings()
+            lastError = error.localizedDescription
         }
     }
 
@@ -129,10 +141,19 @@ final class AppSettingsStore {
     }
 
     private func save() throws {
-        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(settings)
-        try data.write(to: settingsFileURL, options: .atomic)
+        do {
+            guard !preventsOverwrite else { throw CocoaError(.coderReadCorrupt) }
+            try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(settings)
+            try data.write(to: settingsFileURL, options: .atomic)
+            persistedSettings = settings
+            lastError = nil
+        } catch {
+            settings = persistedSettings
+            lastError = "设置未保存：\(error.localizedDescription)"
+            throw error
+        }
     }
 }
